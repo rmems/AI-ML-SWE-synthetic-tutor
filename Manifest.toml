@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "23b7bfe661ecc23439bf366ff586ab8b47b6abe8"
+project_hash = "cf9bd4c1c0fa24e9b7e7c5e8d3a8c2b1f4e7d9a2"
 
 [[deps.Artifacts]]
 uuid = "56f22d72-fd6d-98f1-02f0-08ddc0907c33"
@@ -22,8 +22,8 @@ deps = ["Libdl", "OpenBLAS_jll", "libblastrampoline_jll"]
 uuid = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 version = "1.12.0"
 
-[[deps.MathSandbox]]
-deps = ["Statistics"]
+[[deps.NeuroMathPlayground]]
+deps = ["LinearAlgebra", "Random", "Statistics"]
 path = "."
 uuid = "9f5e7e87-67c2-4e3d-b27e-7b4d63db6e3b"
 version = "0.1.0"
@@ -32,6 +32,10 @@ version = "0.1.0"
 deps = ["Artifacts", "CompilerSupportLibraries_jll", "Libdl"]
 uuid = "4536629a-c528-5b80-bd46-f80d51c5b363"
 version = "0.3.29+0"
+
+[[deps.Random]]
+uuid = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+version = "1.11.0"
 
 [[deps.Statistics]]
 deps = ["LinearAlgebra"]
