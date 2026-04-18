@@ -106,9 +106,9 @@ Broadcasting standard Julia operations over GPU arrays works out of the box:
 ```julia
 using CUDA
 n    = 1_000_000
-V    = CUDA.fill(Float32(-65.0), n)   # membrane potentials on GPU
+V    = CUDA.fill(-65f0, n)   # membrane potentials on GPU
 I    = CUDA.ones(Float32, n) .* 3.5f0
-V  .+= 0.1f0 .* (Float32.(-65.0) .- V .+ 10f0 .* I) ./ 20f0
+V  .+= 0.1f0 .* (-65f0 .- V .+ 10f0 .* I) ./ 20f0
 ```
 
 For custom CUDA kernels:

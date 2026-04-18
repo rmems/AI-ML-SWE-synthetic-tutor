@@ -93,8 +93,8 @@ Returns the spike times in milliseconds.
 
 # Example
 ```julia
-spikes = encode_rate(0.75, 0.0, 1.0)   # ≈ 150 Hz for 1 second
-println("encoded \$(length(spikes)) spikes at \$(150) Hz target")
+spikes = encode_rate(0.75, 0.0, 1.0)   # targets ≈150 Hz → ~150 spikes on average over 1 s
+println("encoded \$(length(spikes)) spikes (target rate: \$(150) Hz, Poisson so count varies)")
 ```
 """
 function encode_rate(

@@ -43,7 +43,7 @@ scatter!(plt1, spks, fill(p.v_thresh, length(spks));
     label = "spikes", marker = :circle, ms = 4, color = :orange,
 )
 savefig(plt1, "lif_trace.png")
-println("Saved: lif_trace.png  ($(length(spks)) spikes at $(round(firing_rate(spks,200.0),digits=1)) Hz)")
+println("Saved: lif_trace.png  ($(length(spks)) spikes at $(round(firing_rate(spks, 200.0), digits=1)) Hz)")
 
 # ── 2. F-I curve ──────────────────────────────────────────────────────────────
 currents = 0.5:0.25:6.0
