@@ -8,13 +8,13 @@
 #
 # Run with:   julia --project=. sandbox/05_kelly_sizing.jl
 
-using MathSandbox
+using NeuroMathPlayground
 using Printf
 using Random
 using Statistics
 
 println("=" ^ 60)
-println("  MathSandbox — 05 Kelly Criterion and Position Sizing")
+println("  NeuroMathPlayground — 05 Kelly Criterion and Position Sizing")
 println("=" ^ 60)
 println()
 

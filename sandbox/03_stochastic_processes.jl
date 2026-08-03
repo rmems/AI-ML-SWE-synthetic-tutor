@@ -9,13 +9,13 @@
 #
 # Run with:   julia --project=. sandbox/03_stochastic_processes.jl
 
-using MathSandbox
+using NeuroMathPlayground
 using Printf
 using Random
 using Statistics
 
 println("=" ^ 60)
-println("  MathSandbox — 03 Stochastic Processes")
+println("  NeuroMathPlayground — 03 Stochastic Processes")
 println("=" ^ 60)
 println()
 

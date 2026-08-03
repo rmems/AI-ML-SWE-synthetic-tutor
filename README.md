@@ -53,13 +53,13 @@ When you `using NeuroMathPlayground`, a welcome banner prints automatically:
 
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║         NeuroMathPlayground.jl  —  v0.1                     ║
-║   Julia playground for math & neuromorphic computing        ║
+║         NeuroMathPlayground.jl  —  v0.1                      ║
+║   Julia playground for math & neuromorphic computing         ║
 ╠══════════════════════════════════════════════════════════════╣
-║  📐 Math:   mat_demo()   gradient_approx(f,x)  softmax(v)  ║
-║  🧠 Neuro:  lif_demo()   spike_threshold(x)    neuro_demo() ║
-║  🖥️  GPU:   gpu_info()   cuda_kernel_demo()                 ║
-║  ❓ Help:   repl_help()   (lists everything)                 ║
+║  Math:   mat_demo()   gradient_approx(f,x)  softmax(v)       ║
+║  Neuro:  lif_demo()   spike_threshold(x)    neuro_demo()     ║
+║  GPU:    gpu_info()   cuda_kernel_demo()                     ║
+║  Help:   repl_help()   (lists everything)                    ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 

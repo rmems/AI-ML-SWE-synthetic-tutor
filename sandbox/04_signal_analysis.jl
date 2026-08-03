@@ -8,13 +8,13 @@
 #
 # Run with:   julia --project=. sandbox/04_signal_analysis.jl
 
-using MathSandbox
+using NeuroMathPlayground
 using Printf
 using Random
 using Statistics
 
 println("=" ^ 60)
-println("  MathSandbox — 04 Signal Analysis")
+println("  NeuroMathPlayground — 04 Signal Analysis")
 println("=" ^ 60)
 println()
 

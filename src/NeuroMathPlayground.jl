@@ -83,13 +83,13 @@ export welcome, repl_help
 
 const _BANNER = """
 ╔══════════════════════════════════════════════════════════════╗
-║         NeuroMathPlayground.jl  —  v0.1                     ║
-║   Julia playground for math & neuromorphic computing        ║
+║         NeuroMathPlayground.jl  —  v0.1                      ║
+║   Julia playground for math & neuromorphic computing         ║
 ╠══════════════════════════════════════════════════════════════╣
-║  📐 Math:   mat_demo()   gradient_approx(f,x)  softmax(v)  ║
-║  🧠 Neuro:  lif_demo()   spike_threshold(x)    neuro_demo() ║
-║  🖥️  GPU:   gpu_info()   cuda_kernel_demo()                 ║
-║  ❓ Help:   repl_help()   (lists everything)                 ║
+║  Math:   mat_demo()   gradient_approx(f,x)  softmax(v)       ║
+║  Neuro:  lif_demo()   spike_threshold(x)    neuro_demo()     ║
+║  GPU:    gpu_info()   cuda_kernel_demo()                     ║
+║  Help:   repl_help()   (lists everything)                    ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 
@@ -174,11 +174,9 @@ Run welcome() to show the banner again.
 """)
 end
 
-# Print the banner automatically when the module is loaded interactively.
+# Print the banner automatically when the module is loaded.
 function __init__()
-    if isinteractive()
-        println(_BANNER)
-    end
+    println(_BANNER)
 end
 
 end # module NeuroMathPlayground

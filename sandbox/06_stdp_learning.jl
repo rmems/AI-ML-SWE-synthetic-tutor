@@ -9,13 +9,13 @@
 #
 # Run with:   julia --project=. sandbox/06_stdp_learning.jl
 
-using MathSandbox
+using NeuroMathPlayground
 using Printf
 using Random
 using Statistics
 
 println("=" ^ 60)
-println("  MathSandbox — 06 STDP Unsupervised Learning")
+println("  NeuroMathPlayground — 06 STDP Unsupervised Learning")
 println("=" ^ 60)
 println()
 

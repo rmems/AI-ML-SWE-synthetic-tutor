@@ -123,8 +123,8 @@ Returns `T` (end of window) when the rate is zero.
 
 # Example
 ```julia
-rate_to_phase(100.0)   # ≈ 9.09 ms  (fast response)
-rate_to_phase(10.0)    # ≈ 50.0 ms  (slow response)
+rate_to_phase(100.0)   # ≈ 9.90 ms  (fast response)
+rate_to_phase(10.0)    # ≈ 90.91 ms  (slow response)
 rate_to_phase(0.0)     # 1000.0 ms  (no spike)
 ```
 """

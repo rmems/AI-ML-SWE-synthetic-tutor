@@ -21,7 +21,11 @@ Then load it before (or after) this module: `using CUDA`
 function gpu_available()::Bool
     cuda = get(Base.loaded_modules, Base.PkgId(_CUDA_UUID, "CUDA"), nothing)
     cuda === nothing && return false
-    return cuda.functional()
+    try
+        return cuda.functional()::Bool
+    catch
+        return false
+    end
 end
 
 """
@@ -48,14 +52,19 @@ function gpu_info()
         return
     end
 
-    if !cuda.functional()
-        println("✗  CUDA.jl is loaded but no functional GPU was found.")
-        println("   Check your NVIDIA driver installation.")
-        return
-    end
+    try
+        if !cuda.functional()
+            println("✗  CUDA.jl is loaded but no functional GPU was found.")
+            println("   Check your NVIDIA driver installation.")
+            return
+        end
 
-    println("✓  CUDA is functional")
-    cuda.versioninfo()
+        println("✓  CUDA is functional")
+        cuda.versioninfo()
+    catch e
+        println("✗  CUDA.jl is loaded but an error occurred while querying the GPU.")
+        println("   Error: ", sprint(showerror, e))
+    end
 end
 
 """
@@ -77,27 +86,42 @@ function cuda_kernel_demo()
 
     n = 1_000_000
 
-    if cuda !== nothing && cuda.functional()
-        # ── GPU path ──────────────────────────────────────────────────────────
-        println("Running vector-add on GPU  (n = $n)")
-        a = cuda.ones(Float32, n)
-        b = cuda.fill(2f0, n)
-        c = a .+ b
-        s = sum(c)
-        println("  result  = $s  (expected $(3f0 * n))")
-        println("  device  = ", cuda.name(cuda.device()))
-    else
-        # ── CPU fallback ──────────────────────────────────────────────────────
-        println("No CUDA GPU available — running CPU equivalent  (n = $n)")
-        a = ones(Float32, n)
-        b = fill(2f0, n)
-        c = a .+ b
-        s = sum(c)
-        println("  result  = $s  (expected $(3f0 * n))")
-        println()
-        println("  To enable GPU acceleration:")
-        println("    using Pkg; Pkg.add(\"CUDA\")")
-        println("    using CUDA")
-        println("    cuda_kernel_demo()")
+    use_gpu = false
+    if cuda !== nothing
+        try
+            use_gpu = cuda.functional()
+        catch
+            use_gpu = false
+        end
     end
+
+    if use_gpu
+        try
+            # ── GPU path ──────────────────────────────────────────────────────────
+            println("Running vector-add on GPU  (n = $n)")
+            a = cuda.ones(Float32, n)
+            b = cuda.fill(2f0, n)
+            c = a .+ b
+            s = sum(c)
+            println("  result  = $s  (expected $(3f0 * n))")
+            println("  device  = ", cuda.name(cuda.device()))
+            return
+        catch e
+            println("CUDA kernel demo failed, falling back to CPU:")
+            println("  ", sprint(showerror, e))
+        end
+    end
+
+    # ── CPU fallback ──────────────────────────────────────────────────────────────
+    println("No CUDA GPU available — running CPU equivalent  (n = $n)")
+    a = ones(Float32, n)
+    b = fill(2f0, n)
+    c = a .+ b
+    s = sum(c)
+    println("  result  = $s  (expected $(3f0 * n))")
+    println()
+    println("  To enable GPU acceleration:")
+    println("    using Pkg; Pkg.add(\"CUDA\")")
+    println("    using CUDA")
+    println("    cuda_kernel_demo()")
 end

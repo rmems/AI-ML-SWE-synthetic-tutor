@@ -8,12 +8,12 @@
 #
 # Run with:   julia --project=. sandbox/02_lif_neuron.jl
 
-using MathSandbox
+using NeuroMathPlayground
 using Printf
 using Statistics
 
 println("=" ^ 60)
-println("  MathSandbox — 02 LIF Neuron Dynamics")
+println("  NeuroMathPlayground — 02 LIF Neuron Dynamics")
 println("=" ^ 60)
 println()
 
