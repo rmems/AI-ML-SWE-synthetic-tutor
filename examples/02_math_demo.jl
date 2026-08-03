@@ -59,7 +59,7 @@ lr = 0.1
 println("  Starting at: $x   f = $(f_bowl(x))")
 for iter in 1:20
     g = gradient_approx(f_bowl, x)
-    x = x .- lr .* g
+    global x = x .- lr .* g
 end
 println("  After 20 steps: $(round.(x, digits=6))   f = $(round(f_bowl(x), digits=8))")
 println("  Minimum is at [0, 0]   f = 0")
