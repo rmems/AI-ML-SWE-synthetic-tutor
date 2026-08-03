@@ -10,7 +10,7 @@
 #   julia --project=.
 
 println("=" ^ 60)
-println("  MathSandbox — 01 Julia Basics")
+println("  NeuroMathPlayground — 01 Julia Basics")
 println("=" ^ 60)
 println()
 

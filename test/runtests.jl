@@ -1,9 +1,10 @@
 using Test
 using Random
-using MathSandbox
+using NeuroMathPlayground
 using Statistics
+using LinearAlgebra
 
-@testset "MathSandbox" begin
+@testset "NeuroMathPlayground" begin
 
     # ── LIF Neuron ─────────────────────────────────────────────────────────────
     @testset "LIF Neuron" begin
@@ -277,6 +278,90 @@ using Statistics
                 f = confidence_to_kelly(conf)
                 @test 0.0 <= f <= 1.0
             end
+        end
+    end
+
+    # ── Neuro utilities ───────────────────────────────────────────────────────
+    @testset "Neuro utilities" begin
+        @testset "spike_threshold" begin
+            @test spike_threshold(1.0)       == 1.0
+            @test spike_threshold(-1.0)      == 0.0
+            @test spike_threshold(0.0)       == 1.0   # x >= 0
+            @test spike_threshold(0.4, 0.5)  == 0.0
+            @test spike_threshold(0.5, 0.5)  == 1.0
+        end
+
+        @testset "lif_activation" begin
+            @test lif_activation(0.0)  == 0.0
+            @test lif_activation(-1.0) == 0.0          # negative → 0
+            @test lif_activation(1.0)  ≈ log(2.0) atol=1e-10
+            @test lif_activation(2.0; gain=2.0) ≈ 2.0 * log1p(2.0) atol=1e-10
+        end
+
+        @testset "spike_kernel" begin
+            @test spike_kernel(0.0)   == 1.0
+            @test spike_kernel(-1.0)  == 0.0           # before spike
+            @test spike_kernel(20.0)  ≈ exp(-1.0) atol=1e-10  # one τ
+            @test spike_kernel(40.0, 20.0) ≈ exp(-2.0) atol=1e-10
+        end
+
+        @testset "rate_to_phase" begin
+            @test rate_to_phase(0.0)    == 1000.0      # zero rate → end of window
+            @test rate_to_phase(0.0, 500.0) == 500.0
+            phase = rate_to_phase(100.0)
+            @test 0.0 < phase < 1000.0
+        end
+
+        @testset "encode_rate — approximately correct count" begin
+            spks = encode_rate(1.0, 0.0, 1.0, 1000.0)
+            @test length(spks) > 50   # 200 Hz for 1 second
+        end
+
+        @testset "encode_rate — empty for equal lo/hi" begin
+            @test encode_rate(0.5, 1.0, 1.0) == Float64[]
+        end
+    end
+
+    # ── Math utilities ────────────────────────────────────────────────────────
+    @testset "Math utilities" begin
+        @testset "gradient_approx" begin
+            f = x -> x[1]^2 + 2 * x[2]^2
+            g = gradient_approx(f, [1.0, 1.0])
+            @test g ≈ [2.0, 4.0] atol=1e-5
+        end
+
+        @testset "hessian_approx" begin
+            f = x -> x[1]^2 + 3 * x[2]^2
+            H = hessian_approx(f, [0.0, 0.0])
+            @test H[1, 1] ≈ 2.0 atol=1e-3
+            @test H[2, 2] ≈ 6.0 atol=1e-3
+            @test H[1, 2] ≈ 0.0 atol=1e-3
+        end
+
+        @testset "softmax" begin
+            p = softmax([1.0, 2.0, 3.0])
+            @test sum(p) ≈ 1.0 atol=1e-10
+            @test all(p .> 0.0)
+            @test argmax(p) == 3
+        end
+
+        @testset "normalize_vec" begin
+            u = normalize_vec([3.0, 4.0])
+            @test norm(u) ≈ 1.0 atol=1e-10
+            @test u ≈ [0.6, 0.8] atol=1e-10
+        end
+
+        @testset "normalize_vec — zero vector unchanged" begin
+            z = normalize_vec([0.0, 0.0])
+            @test z == [0.0, 0.0]
+        end
+    end
+
+    # ── GPU utilities (no-GPU path) ───────────────────────────────────────────
+    @testset "GPU utilities" begin
+        @testset "gpu_available returns Bool" begin
+            result = gpu_available()
+            @test result isa Bool
         end
     end
 
