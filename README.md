@@ -1,12 +1,12 @@
 # AI-ML-SWE-synthetic-tutor
 
-Synthetic tutoring datasets for post-training. This repository generates
-multi-turn tutoring dialogues — verified problems, synthetic student attempts
+Synthetic tutoring datasets for post-training. This repository is being
+built (*planned*, see status below) to generate multi-turn tutoring dialogues — verified problems, synthetic student attempts
 with labelled misconceptions, and hint-ladder tutor turns — so a model learns
 to **tutor** (diagnose a mistake, ask a targeted question, give a graded hint)
 instead of only producing final answers. Sources are procedural generation
-plus open-weight / distillable teachers; datasets ship as small per-family
-Hugging Face datasets.
+plus open-weight / distillable teachers; datasets will ship as small
+per-family Hugging Face datasets.
 
 Topics: synthetic data · post-training · distillation · tutor
 
@@ -79,7 +79,7 @@ Every batch leaves a run-log manifest
 | Role | Choice |
 |------|--------|
 | Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace — *planned* ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5)) |
-| Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. |
+| Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. *Planned* ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5), [#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)); no worker or ZMQ code exists yet. |
 | Teachers | **DeepSeek V4.1 Flash** and **Nemotron 3** (exact variant pinned per use). They vary dialogue surface and critique drafts; they never decide a correct answer — verification does. |
 | Python | Not a pipeline language here. It returns later as a *target* language students are tutored in. |
 
@@ -97,7 +97,7 @@ it does not rebuild a general-purpose factory.
 
 ## How a row is verified
 
-No unverified answer ships. Problem generators emit a problem and its answer
+*Planned* ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)); this is the policy the pipeline must enforce. No unverified answer ships. Problem generators emit a problem and its answer
 together with a replay seed; a separate verification pass then checks that
 answer by an independent method (across the Rust / Julia ZMQ boundary for
 math-heavy problems, and by compiling and running code for code-bearing
