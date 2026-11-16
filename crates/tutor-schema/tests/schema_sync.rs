@@ -143,6 +143,13 @@ fn unknown_and_missing_fields_are_rejected() {
 }
 
 #[test]
+fn null_verification_is_rejected() {
+    let mut value = fixture();
+    value["verification"] = Value::Null;
+    assert!(Problem::from_json(&value.to_string()).is_err());
+}
+
+#[test]
 fn constraint_violations_are_rejected() {
     let cases: Vec<Mutation> = vec![
         Box::new(|v| v["schema_version"] = json!(2)),

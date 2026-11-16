@@ -39,8 +39,21 @@ pub struct Problem {
     /// The generator's answer. Untrusted until verified.
     pub answer: Answer,
     /// Set by an independent verifier; absent on unverified candidates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub verification: Option<Verification>,
+}
+
+// The schema allows `verification` to be absent but not `null`.
+fn deserialize_present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 /// Generator identity and seed: enough to regenerate the problem exactly.
