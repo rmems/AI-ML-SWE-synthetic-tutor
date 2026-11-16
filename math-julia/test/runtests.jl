@@ -92,7 +92,7 @@ request(fields...) = JSON.json(Dict("protocol" => PROTOCOL, "request_id" => "t-1
     @testset "REP worker over ZMQ" begin
         endpoint = "tcp://127.0.0.1:55571"
         ready = Channel{Nothing}(1)
-        worker = @async serve(endpoint; max_requests = 2, on_ready = () -> put!(ready, nothing))
+        worker = @async serve(endpoint; max_requests = 3, on_ready = () -> put!(ready, nothing))
         bind(ready, worker)  # a failing worker closes the channel instead of hanging take!
         take!(ready)
         context = ZMQ.Context()
@@ -100,6 +100,11 @@ request(fields...) = JSON.json(Dict("protocol" => PROTOCOL, "request_id" => "t-1
         try
             client.rcvtimeo = 10_000
             ZMQ.connect(client, endpoint)
+            ZMQ.send(client, request("op" => "ping"); more = true)
+            ZMQ.send(client, "extra frame")
+            multipart = JSON.parse(ZMQ.recv(client, String))
+            @test multipart["status"] == "error"
+            @test multipart["error"]["code"] == "malformed_request"
             ZMQ.send(client, request("op" => "ping"))
             @test JSON.parse(ZMQ.recv(client, String))["status"] == "ok"
             ZMQ.send(client, request("op" => "generate_problem", "generator" => "polynomial_derivative_at_point", "seed" => 3))
@@ -109,6 +114,6 @@ request(fields...) = JSON.json(Dict("protocol" => PROTOCOL, "request_id" => "t-1
             close(client)
             close(context)
         end
-        @test fetch(worker) == 2
+        @test fetch(worker) == 3
     end
 end

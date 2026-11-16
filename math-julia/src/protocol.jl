@@ -121,11 +121,15 @@ function handle_request(raw::AbstractString)::String
         err isa InterruptException && rethrow()
         failure =
             err isa RequestError ? err : RequestError("internal_error", sprint(showerror, err))
-        return JSON.json((
-            protocol = PROTOCOL,
-            request_id = request_id,
-            status = "error",
-            error = (code = failure.code, message = failure.message),
-        ))
+        return error_reply(failure, request_id)
     end
+end
+
+function error_reply(failure::RequestError, request_id = nothing)::String
+    return JSON.json((
+        protocol = PROTOCOL,
+        request_id = request_id,
+        status = "error",
+        error = (code = failure.code, message = failure.message),
+    ))
 end

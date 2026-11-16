@@ -41,7 +41,16 @@ function serve(
         on_ready()
         while max_requests === nothing || handled < max_requests
             raw = ZMQ.recv(socket, String)
-            ZMQ.send(socket, handle_request(raw))
+            if socket.rcvmore
+                # REP cannot reply until every frame is read; drain and reject.
+                while socket.rcvmore
+                    ZMQ.recv(socket)
+                end
+                reply = error_reply(RequestError("malformed_request", "request must be a single frame"))
+            else
+                reply = handle_request(raw)
+            end
+            ZMQ.send(socket, reply)
             handled += 1
         end
     finally
