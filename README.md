@@ -101,8 +101,9 @@ No unverified answer ships. Problem generators emit a problem and its answer
 together with a replay seed; a separate verification pass then checks that
 answer by an independent method (across the Rust / Julia ZMQ boundary for
 math-heavy problems, and by compiling and running code for code-bearing
-families) and records the method and pass/fail result on the row. A row that
-fails or skips verification is never assembled into a dialogue. Details:
+families) and records the method and pass/fail result on the row. This runs
+after the tutor dialogue is drafted, as step 5 of the loop above; a row that
+fails or skips verification is dropped before QA and never reaches a split. Details:
 [problem generators + verification pipeline (#18)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18).
 
 ---
