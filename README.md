@@ -1,293 +1,156 @@
-# NeuroMathPlayground.jl
+# AI-ML-SWE-synthetic-tutor
 
-A personal Julia playground for mathematics and neuromorphic computing.
-Practice Julia in the REPL while exploring the same math that powers
-[Limen-Neural](https://github.com/Limen-Neural)'s spiking neural network
-ecosystem — from LIF neurons and STDP to GPU-accelerated kernels.
+Synthetic tutoring datasets for post-training. This repository is being
+built (*planned*, see status below) to generate multi-turn tutoring dialogues — verified problems, synthetic student attempts
+with labelled misconceptions, and hint-ladder tutor turns — so a model learns
+to **tutor** (diagnose a mistake, ask a targeted question, give a graded hint)
+instead of only producing final answers. Sources are procedural generation
+plus open-weight / distillable teachers; datasets will ship as small
+per-family Hugging Face datasets.
 
----
+Topics: synthetic data · post-training · distillation · tutor
 
-## What is this?
-
-| Area | What you get |
-|------|-------------|
-| **REPL playground** | Load the module, see a banner, call `repl_help()` for a live reference sheet |
-| **Neuromorphic math** | LIF neuron ODE, STDP learning rule, spike kernels, rate/phase coding |
-| **General math** | Numerical gradient & Hessian, softmax, L2 normalise, matrix demos |
-| **Stochastic processes** | GBM, Ornstein-Uhlenbeck, Poisson spike trains |
-| **Signal analysis** | Hurst exponent, Hawkes intensity, GBM surprise Z-score |
-| **Kelly criterion** | Optimal position sizing from SNN confidence scores |
-| **GPU acceleration** | CUDA.jl integration with graceful CPU fallback |
-| **Plotting** | Plots.jl examples (optional) |
-| **Notebooks** | Pluto.jl starter notebook |
+> **Status: pivot in progress.** The Rust workspace, schemas, and generators
+> described below are planned under the
+> [pivot epic (#4)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/4)
+> and do not exist yet. Nothing in this README describes code that is not
+> already in the repo unless it says *planned*. The pre-pivot Julia
+> playground is still here; see [Legacy](#legacy-neuromathplaygroundjl).
 
 ---
 
-## Quick Start
+## What one row is
 
-```julia
-# 1. Clone and open a project REPL
-git clone https://github.com/rmems/NeuroMathPlayground.jl
-cd NeuroMathPlayground.jl
-julia --project=.
+Each dataset row is one tutoring dialogue in a standard chat format:
 
-# 2. Instantiate dependencies (first time only)
-julia> using Pkg; Pkg.instantiate()
+- grounded in a problem whose correct answer has passed independent verification
+- a student attempt that is either correct or carries exactly one planted,
+  taxonomy-labelled misconception
+  ([misconception taxonomy, #6](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/6))
+- tutor turns that follow a defined hint ladder — diagnose first, then
+  nudge → targeted question → partial worked step → full solution only as a
+  last resort ([dialogue schema + tutor policy, #13](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/13))
+- full provenance: generator, teacher (if any), verification result,
+  curriculum topic, and rights status
 
-# 3. Load the module — banner prints automatically
-julia> using NeuroMathPlayground
-
-# 4. Explore
-julia> repl_help()      # full function reference
-julia> lif_demo()       # LIF neuron walkthrough
-julia> math_demo()      # gradient, softmax, normalise
-julia> neuro_demo()     # spike functions and rate coding
-julia> gpu_info()       # GPU detection
-```
+A full gold example row will be shown here once the dialogue schema issue
+(#13) lands its gold examples.
 
 ---
 
-## REPL Mode
-
-When you `using NeuroMathPlayground`, a welcome banner prints automatically:
+## Generation loop
 
 ```
-╔══════════════════════════════════════════════════════════════╗
-║         NeuroMathPlayground.jl  —  v0.1                      ║
-║   Julia playground for math & neuromorphic computing         ║
-╠══════════════════════════════════════════════════════════════╣
-║  Math:   mat_demo()   gradient_approx(f,x)  softmax(v)       ║
-║  Neuro:  lif_demo()   spike_threshold(x)    neuro_demo()     ║
-║  GPU:    gpu_info()   cuda_kernel_demo()                     ║
-║  Help:   repl_help()   (lists everything)                    ║
-╚══════════════════════════════════════════════════════════════╝
+curriculum topic
+      │
+      ▼
+problem generator ──► synthetic student attempt ──► tutor dialogue
+                                                        │
+                                                        ▼
+Hugging Face export ◄── split ◄── QA ◄────────── verification
 ```
 
-Useful REPL shortcuts:
+1. **Curriculum topic** — a row in the coverage matrix
+   ([#16](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/16)).
+2. **Problem generator** — parameterised, seeded, produces the problem and its
+   answer together ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)).
+3. **Synthetic student attempt** — correct, or wrong with one planted
+   misconception at graded difficulty
+   ([#19](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/19)).
+4. **Tutor dialogue** — hint-ladder turns per the tutor policy
+   ([#13](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/13)).
+5. **Verification** — the answer is checked independently of the generator
+   ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)).
+6. **QA** — sampled human review with recorded verdicts
+   ([#21](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/21)).
+7. **Split** — dedup, decontamination against the held-out eval set, frozen
+   train / validation / test splits
+   ([#8](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/8)).
+8. **Hugging Face export** — one dataset per family
+   ([#21](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/21)).
 
-```julia
-welcome()               # reprint the banner
-repl_help()             # full function reference (grouped by topic)
-
-lif_demo()              # step-by-step LIF walkthrough with F-I curve
-neuro_demo()            # spike functions, kernels, rate/phase coding
-math_demo()             # gradient, softmax, normalise demos
-mat_demo()              # matrix multiply, SVD, eigendecomposition
-gpu_info()              # detect and describe GPU
-cuda_kernel_demo()      # vector-add on GPU (or CPU fallback)
-```
+Every batch leaves a run-log manifest
+([#7](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/7)).
 
 ---
 
-## Running GPU Examples
+## Stack
 
-The playground uses **CUDA.jl** for GPU acceleration. It must be installed
-separately so the core module works offline without a GPU.
+| Role | Choice |
+|------|--------|
+| Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace — *planned* ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5)) |
+| Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. *Planned* ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5), [#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)); no worker or ZMQ code exists yet. |
+| Teachers | **DeepSeek V4.1 Flash** and **Nemotron 3** (exact variant pinned per use). They vary dialogue surface and critique drafts; they never decide a correct answer — verification does. |
+| Python | Not a pipeline language here. It returns later as a *target* language students are tutored in. |
 
-```julia
-# 1. Install CUDA.jl (once)
-julia --project=. -e 'using Pkg; Pkg.add("CUDA")'
+**Rights rule: no terms snapshot, no generation.** No row may be generated
+from a source without an `allowed` entry and a pinned terms snapshot in the
+rights registry ([#17](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/17)).
+Blocked sources are listed as blocked, not omitted.
 
-# 2. Load in a REPL session
-julia> using CUDA
-julia> using NeuroMathPlayground
-julia> gpu_info()           # shows RTX 5080 info
-julia> cuda_kernel_demo()   # vector-add kernel on GPU
-```
-
-Run the GPU example script:
-
-```bash
-julia --project=. examples/01_gpu_example.jl
-```
-
-Broadcasting standard Julia operations over GPU arrays works out of the box:
-
-```julia
-using CUDA
-n    = 1_000_000
-V    = CUDA.fill(-65f0, n)   # membrane potentials on GPU
-I    = CUDA.ones(Float32, n) .* 3.5f0
-V  .+= 0.1f0 .* (-65f0 .- V .+ 10f0 .* I) ./ 20f0
-```
-
-For custom CUDA kernels:
-
-```julia
-function lif_kernel!(V, I, dt, tau_m, v_rest, r_m, v_thresh, v_reset)
-    idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
-    if idx <= length(V)
-        dv       = (dt / tau_m) * (-(V[idx] - v_rest) + r_m * I[idx])
-        V[idx]  += dv
-        V[idx] >= v_thresh && (V[idx] = v_reset)
-    end
-    return
-end
-
-n = 1_000_000
-V = CUDA.fill(-65f0, n)
-I = CUDA.ones(Float32, n) .* 3.5f0
-@cuda threads=256 blocks=cld(n,256) lif_kernel!(V, I, 0.1f0, 20f0, -65f0, 10f0, -50f0, -65f0)
-CUDA.synchronize()
-```
+This repo is a tutoring-only spin-out that reuses the provenance, rights, and
+verification patterns of [synthetic-factory](https://github.com/rmems/synthetic-factory)
+(see [synthetic-factory#186](https://github.com/rmems/synthetic-factory/issues/186));
+it does not rebuild a general-purpose factory.
 
 ---
 
-## Example Scripts
+## How a row is verified
 
-Run any script from the project root with `julia --project=. examples/<file>`:
-
-| File | Topic |
-|------|-------|
-| `examples/01_gpu_example.jl` | GPU detection and CUDA kernel demo |
-| `examples/02_math_demo.jl`  | Matrix ops, gradient descent, Jacobian |
-| `examples/03_neuro_demo.jl` | LIF, STDP, spike encoding, SNN features |
-| `examples/04_plotting_demo.jl` | Plots.jl visualisations (requires Plots.jl) |
-| `examples/05_repl_quickstart.jl` | Full REPL walkthrough (paste into REPL) |
-
----
-
-## Sandbox Scripts
-
-Step-by-step worked examples. Run each with `julia --project=. sandbox/NN_name.jl`:
-
-| File | Topic |
-|------|-------|
-| `sandbox/01_julia_basics.jl` | Julia syntax: types, functions, structs, dispatch |
-| `sandbox/02_lif_neuron.jl` | LIF dynamics, F-I curve, STDP learning rule |
-| `sandbox/03_stochastic_processes.jl` | GBM paths, OU mean-reversion, Poisson trains |
-| `sandbox/04_signal_analysis.jl` | Hurst, Hawkes, GBM surprise — SNN feature pipeline |
-| `sandbox/05_kelly_sizing.jl` | Kelly criterion, bankroll growth, SNN confidence mapping |
-| `sandbox/06_stdp_learning.jl` | STDP window, competitive learning, LIF+STDP circuit |
+*Planned* ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)); this is the policy the pipeline must enforce. No unverified answer ships. Problem generators emit a problem and its answer
+together with a replay seed; a separate verification pass then checks that
+answer by an independent method (across the Rust / Julia ZMQ boundary for
+math-heavy problems, and by compiling and running code for code-bearing
+families) and records the method and pass/fail result on the row. This runs
+after the tutor dialogue is drafted, as step 5 of the loop above; a row that
+fails or skips verification is dropped before QA and never reaches a split. Details:
+[problem generators + verification pipeline (#18)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18).
 
 ---
 
-## Pluto Notebook
+## Dataset families
 
-An interactive starter notebook is in `notebooks/playground.jl`.
+Math comes first (most mechanically verifiable), then ML math, then tutoring
+datasets for other programming languages. Status values come from the
+[curriculum coverage matrix (#16)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/16),
+not from this README; until the matrix exists, no family has a status.
 
-```julia
-# Install Pluto.jl once
-julia --project=. -e 'using Pkg; Pkg.add("Pluto")'
+| Family / slice | Issue | Status |
+|----------------|-------|--------|
+| Pilot: derivative misconceptions | [#20](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/20) | per coverage matrix (pending #16) |
+| Calculus I | [#11](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/11) | per coverage matrix (pending #16) |
+| ↳ slice: derivative definition — secant to tangent | [#15](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/15) | per coverage matrix (pending #16) |
+| Precalculus | [#10](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/10) | per coverage matrix (pending #16) |
+| ↳ slice: function transformations | [#14](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/14) | per coverage matrix (pending #16) |
+| ML math | [#12](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/12) | per coverage matrix (pending #16) |
 
-# Launch
-julia --project=. -e 'using Pluto; Pluto.run()'
-# Then open notebooks/playground.jl in the browser
-```
-
----
-
-## Optional Dependencies
-
-Install these for the full experience:
-
-```julia
-using Pkg
-Pkg.add("CUDA")       # GPU acceleration (RTX 5080)
-Pkg.add("Plots")      # visualisation
-Pkg.add("Symbolics")  # symbolic differentiation
-Pkg.add("Pluto")      # interactive notebooks
-```
-
-Using Symbolics:
-
-```julia
-using Symbolics
-@variables x y
-D = Differential(x)
-expand_derivatives(D(x^2 + 2*y^2 + x*y))   # 2x + y
-```
+The repo name says AI / ML / SWE, but current coverage is math and ML math
+only; programming-language families are planned after the math pipeline is
+proven.
 
 ---
 
-## Module Structure
+## Out of scope
 
-```
-NeuroMathPlayground
-├── src/
-│   ├── NeuroMathPlayground.jl  — main module, banner, REPL helpers
-│   ├── neurons.jl              — LIF neuron ODE, STDP learning rule
-│   ├── neuro.jl                — spike functions, kernels, rate coding
-│   ├── stochastic.jl           — GBM, OU, Poisson spike trains
-│   ├── signals.jl              — Hurst, Hawkes, GBM surprise
-│   ├── kelly.jl                — Kelly criterion, position sizing
-│   ├── math.jl                 — gradient, Hessian, softmax, normalise
-│   └── gpu.jl                  — GPU detection, CUDA kernel demo
-├── examples/                   — runnable demo scripts
-├── notebooks/                  — Pluto starter notebook
-├── sandbox/                    — step-by-step worked examples
-└── test/                       — test suite
-```
+- Training or fine-tuning models (that lives in the training-infra repos)
+- A tutoring app, UI, or live tutor service
+- Personal study logging (logging survives only as the generation run log)
 
 ---
 
-## Running the Tests
+## Legacy: NeuroMathPlayground.jl
 
-```julia
-julia --project=. test/runtests.jl
-```
+Before the pivot this repo was **NeuroMathPlayground.jl**, a personal Julia
+playground for math and neuromorphic computing. Its code is kept, not
+deleted, and parts of it seed the Julia math workers; the restructure issue
+([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5)) moves it
+into `math-julia/` or `legacy/`. Until then it lives where it always has:
 
----
+| Path | Contents |
+|------|----------|
+| `src/` | `NeuroMathPlayground` module: LIF / STDP, spike functions, stochastic processes, signals, Kelly, math helpers, GPU detection |
+| `examples/`, `sandbox/`, `notebooks/` | Demo scripts, worked examples, Pluto notebook |
+| `test/runtests.jl` | Playground test suite (`julia --project=. test/runtests.jl`) |
 
-## Mathematical Foundations
-
-### LIF Neuron ODE
-```
-τ_m · dV/dt = -(V - V_rest) + R_m · I(t)
-```
-Euler discretisation: `V(t+Δt) = V(t) + Δt/τ_m · [-(V-V_rest) + R_m·I]`
-
-### STDP Learning Rule (Bi & Poo 1998)
-```
-ΔW =  A_+ · exp(-|Δt| / τ_+)   if Δt ≥ 0  (LTP)
-ΔW = -A_- · exp(-|Δt| / τ_-)   if Δt < 0  (LTD)
-```
-
-### Exponential PSP Kernel
-```
-K(Δt) = exp(-Δt / τ)   for Δt ≥ 0
-```
-
-### Rate Coding
-```
-rate(x) = x_norm · rate_max    where x_norm = (x - lo) / (hi - lo)
-```
-
-### Geometric Brownian Motion
-```
-dS = μ·S·dt + σ·S·dW
-S(T) = S₀ · exp((μ - σ²/2)·T + σ·√T·Z)   Z ~ N(0,1)
-```
-
-### Ornstein-Uhlenbeck Process
-```
-dX = κ·(μ - X)·dt + σ·dW
-Stationary: X_∞ ~ N(μ, σ²/(2κ))
-```
-
-### Hurst Exponent (R/S Analysis)
-```
-H = log(R/S) / log(n)
-H > 0.5 → trending  |  H ≈ 0.5 → random walk  |  H < 0.5 → mean-reverting
-```
-
-### Kelly Criterion (Kelly 1956)
-```
-F* = (p·b - (1-p)) / b        full Kelly
-F  = F*/2                       half Kelly (practical)
-G(f) = p·log(1+b·f) + (1-p)·log(1-f)   expected log-growth
-```
-
----
-
-## Part of the Limen-Neural Ecosystem
-
-This playground uses the same mathematical building blocks as:
-
-| Library | Purpose |
-|---------|---------|
-| [SpikenautSignals.jl](https://github.com/Limen-Neural/SpikenautSignals.jl) | Streaming feature extraction (Hurst, Hawkes, GBM) |
-| [SpikenautKelly.jl](https://github.com/Limen-Neural/SpikenautKelly.jl) | Half-Kelly position sizing from SNN confidence |
-| [SpikenautLSM.jl](https://github.com/Limen-Neural/SpikenautLSM.jl) | GPU-accelerated Liquid State Machine |
-| [SpikenautNero.jl](https://github.com/Limen-Neural/SpikenautNero.jl) | Multi-lobe relevance scoring |
-| [neuromod](https://github.com/Limen-Neural/neuromod) | LIF + Izhikevich + STDP + dopamine (Rust) |
+The full pre-pivot README is preserved at
+[`6198dea`](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/blob/6198dea/README.md).
