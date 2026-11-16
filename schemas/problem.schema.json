@@ -44,11 +44,11 @@
             "coefficients": {
               "description": "Integer coefficients in ascending order of power; the last (leading) one must be nonzero.",
               "type": "array",
-              "items": { "type": "integer" },
+              "items": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
               "minItems": 1,
               "maxItems": 16
             },
-            "point": { "type": "integer" }
+            "point": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
           }
         }
       ]
@@ -61,7 +61,7 @@
           "required": ["kind", "value"],
           "properties": {
             "kind": { "const": "integer" },
-            "value": { "type": "integer" }
+            "value": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
           }
         }
       ]
