@@ -15,7 +15,10 @@ Wire protocol identifier shared with `crates/tutor-wire`.
 const PROTOCOL = "tutor-math/1"
 
 """
-Largest request accepted, in bytes; larger ones get a `request_too_large` error.
+Largest request accepted, in bytes. `handle_request` answers larger input with a
+`request_too_large` error; over the wire, `serve` sets `ZMQ_MAXMSGSIZE` to this value, so
+libzmq drops oversized frames and the peer's connection without a reply, and the client
+sees a receive timeout instead.
 """
 const MAX_REQUEST_BYTES = 1 << 20
 
