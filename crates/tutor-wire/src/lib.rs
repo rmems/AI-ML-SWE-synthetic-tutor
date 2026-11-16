@@ -232,7 +232,7 @@ impl MathClient {
     /// Connect to `endpoint` with a per-message `timeout`. ZMQ connects lazily, so a
     /// missing worker shows up as [`WireError::Timeout`] on the first request.
     pub fn connect(endpoint: &str, timeout: Duration) -> Result<Self, WireError> {
-        if timeout.is_zero() || timeout.as_millis() > i32::MAX as u128 {
+        if timeout.as_millis() == 0 || timeout.as_millis() > i32::MAX as u128 {
             return Err(WireError::InvalidRequest(format!(
                 "timeout {timeout:?} must be between 1ms and {}ms",
                 i32::MAX

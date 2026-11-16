@@ -122,9 +122,11 @@ fn recovers_after_timeout() {
 }
 
 #[test]
-fn rejects_zero_timeout() {
-    let err = MathClient::connect("tcp://127.0.0.1:1", Duration::ZERO)
-        .err()
-        .unwrap();
-    assert_eq!(err.code(), "wire_invalid_request");
+fn rejects_sub_millisecond_timeouts() {
+    for timeout in [Duration::ZERO, Duration::from_micros(500)] {
+        let err = MathClient::connect("tcp://127.0.0.1:1", timeout)
+            .err()
+            .unwrap();
+        assert_eq!(err.code(), "wire_invalid_request");
+    }
 }
