@@ -210,7 +210,7 @@ impl Problem {
                         format!("must have 1..={MAX_COEFFICIENTS} entries"),
                     ));
                 }
-                if coefficients.len() > 1 && coefficients.last() == Some(&0) {
+                if coefficients.last() == Some(&0) {
                     return Err(invalid(
                         "parameters.coefficients",
                         "leading coefficient must be nonzero",

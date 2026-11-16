@@ -154,6 +154,7 @@ fn constraint_violations_are_rejected() {
         Box::new(|v| v["statement"] = json!("")),
         Box::new(|v| v["parameters"]["coefficients"] = json!([])),
         Box::new(|v| v["parameters"]["coefficients"] = json!([1, 2, 0])),
+        Box::new(|v| v["parameters"]["coefficients"] = json!([0])),
         Box::new(|v| v["parameters"]["coefficients"] = json!(vec![1; 17])),
         Box::new(|v| {
             v["verification"] = json!({"method": "", "verifier": "v", "verifier_version": "1"})
