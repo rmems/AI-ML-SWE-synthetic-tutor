@@ -1,0 +1,7 @@
+# Misconception taxonomy — STUB.
+#
+# Filled in by issue #6 (https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/6):
+# stable namespaced IDs (e.g. calculus.derivatives.<name>), a wrong worked example and a
+# diagnostic question per entry. A planted error carries exactly one primary ID from here.
+schema_version: 0
+misconceptions: []

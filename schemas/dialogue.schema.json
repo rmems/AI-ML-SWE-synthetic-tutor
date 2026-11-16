@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/rmems/AI-ML-SWE-synthetic-tutor/schemas/dialogue.schema.json",
+  "title": "Dialogue (stub)",
+  "description": "STUB. One tutoring dialogue row. Issue #13 replaces this with the full schema (hint levels, misconception label, provenance, gold examples). Only the chat shape is fixed here.",
+  "type": "object",
+  "required": ["schema_version", "problem_id", "messages"],
+  "properties": {
+    "schema_version": { "const": 0 },
+    "problem_id": {
+      "description": "problem_id of the verified problem this dialogue is grounded in.",
+      "type": "string",
+      "minLength": 1
+    },
+    "messages": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "content"],
+        "properties": {
+          "role": { "enum": ["system", "user", "assistant"] },
+          "content": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

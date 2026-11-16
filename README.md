@@ -1,7 +1,7 @@
 # AI-ML-SWE-synthetic-tutor
 
 Synthetic tutoring datasets for post-training. This repository is being
-built (*planned*, see status below) to generate multi-turn tutoring dialogues — verified problems, synthetic student attempts
+built (see status below) to generate multi-turn tutoring dialogues — verified problems, synthetic student attempts
 with labelled misconceptions, and hint-ladder tutor turns — so a model learns
 to **tutor** (diagnose a mistake, ask a targeted question, give a graded hint)
 instead of only producing final answers. Sources are procedural generation
@@ -10,12 +10,14 @@ per-family Hugging Face datasets.
 
 Topics: synthetic data · post-training · distillation · tutor
 
-> **Status: pivot in progress.** The Rust workspace, schemas, and generators
-> described below are planned under the
-> [pivot epic (#4)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/4)
-> and do not exist yet. Nothing in this README describes code that is not
-> already in the repo unless it says *planned*. The pre-pivot Julia
-> playground is still here; see [Legacy](#legacy-neuromathplaygroundjl).
+> **Status: pivot in progress** under the
+> [pivot epic (#4)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/4).
+> The repo layout, Rust workspace, Julia math worker, ZMQ bridge, one seeded
+> generator (`polynomial_derivative_at_point`), and independent answer
+> verification exist ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5)).
+> Student attempts, tutor dialogues, QA, splits, and export do not exist yet;
+> anything not yet in the repo says *planned*. The pre-pivot Julia
+> playground lives in [`legacy/`](legacy/README.md).
 
 ---
 
@@ -78,8 +80,8 @@ Every batch leaves a run-log manifest
 
 | Role | Choice |
 |------|--------|
-| Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace — *planned* ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5)) |
-| Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. *Planned* ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5), [#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)); no worker or ZMQ code exists yet. |
+| Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace (`crates/`). Schema types, the ZMQ client, and verification exist; generators beyond the pilot, the student simulator, assembly, and export are *planned*. |
+| Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. The worker is `TutorMath` in `math-julia/` (protocol `tutor-math/1`); more generators are *planned* in [#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18). |
 | Teachers | **DeepSeek V4.1 Flash** and **Nemotron 3** (exact variant pinned per use). They vary dialogue surface and critique drafts; they never decide a correct answer — verification does. |
 | Python | Not a pipeline language here. It returns later as a *target* language students are tutored in. |
 
@@ -97,7 +99,7 @@ it does not rebuild a general-purpose factory.
 
 ## How a row is verified
 
-*Planned* ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)); this is the policy the pipeline must enforce. No unverified answer ships. Problem generators emit a problem and its answer
+This is the policy the pipeline enforces; `crates/tutor-verify` implements it for the pilot generator, and the rest is *planned* in [#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18). No unverified answer ships. Problem generators emit a problem and its answer
 together with a replay seed; a separate verification pass then checks that
 answer by an independent method (across the Rust / Julia ZMQ boundary for
 math-heavy problems, and by compiling and running code for code-bearing
@@ -138,19 +140,63 @@ proven.
 
 ---
 
+## Repository layout
+
+```
+Cargo.toml, Cargo.lock, rust-toolchain.toml   Rust workspace (Rust 1.99.1, edition 2024)
+crates/
+  tutor-schema/     problem row types + validation (mirrors schemas/problem.schema.json)
+  tutor-wire/       ZMQ REQ client for the Julia worker (tutor-math/1 JSON envelope)
+  tutor-verify/     independent answer verification + Rust<->Julia bridge proof test
+  tutor-generate/   placeholder: generators, student simulator (#18, #19)
+  tutor-teachers/   placeholder: teacher model clients (#17)
+  tutor-build/      placeholder: dedup, splits, Hugging Face export (#8, #21)
+math-julia/         TutorMath: seeded problem generators + ZMQ REP worker
+schemas/            problem.schema.json, dialogue.schema.json (stub), taxonomy.yaml (stub)
+docs/               mission, tutor policy, rights (stubs owned by their issues)
+curriculum/         coverage matrix (#16)
+datasets/           one folder per dataset family; generated rows are gitignored
+evals/              heldout/ items and grading rubric
+legacy/             pre-pivot NeuroMathPlayground.jl, unchanged
+```
+
+## Development
+
+Linux (or WSL) with `libzmq3-dev` and `pkg-config`, Rust 1.99.1 (pinned by
+`rust-toolchain.toml`), and Julia 1.13. The `zmq` crate does not build on
+Windows with the MinGW toolchain; use WSL there. CI (`.github/workflows/ci.yml`)
+runs everything below.
+
+```sh
+# Rust
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo test --locked
+
+# Julia worker
+julia --project=math-julia -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+
+# Rust <-> Julia bridge proof (worker binds tcp://127.0.0.1:5557; override with TUTOR_MATH_ENDPOINT)
+julia --project=math-julia math-julia/bin/serve.jl &
+cargo test --locked -p tutor-verify --test julia_bridge -- --ignored
+```
+
+---
+
 ## Legacy: NeuroMathPlayground.jl
 
 Before the pivot this repo was **NeuroMathPlayground.jl**, a personal Julia
 playground for math and neuromorphic computing. Its code is kept, not
-deleted, and parts of it seed the Julia math workers; the restructure issue
-([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5)) moves it
-into `math-julia/` or `legacy/`. Until then it lives where it always has:
+deleted, under [`legacy/NeuroMathPlayground/`](legacy/README.md), moved with
+`git mv` so history follows. Its finite-difference math helpers were copied
+into `math-julia/` to cross-check generated answers; `legacy/README.md`
+records what moved, what was reused, and why.
 
 | Path | Contents |
 |------|----------|
-| `src/` | `NeuroMathPlayground` module: LIF / STDP, spike functions, stochastic processes, signals, Kelly, math helpers, GPU detection |
-| `examples/`, `sandbox/`, `notebooks/` | Demo scripts, worked examples, Pluto notebook |
-| `test/runtests.jl` | Playground test suite (`julia --project=. test/runtests.jl`) |
+| `legacy/NeuroMathPlayground/src/` | `NeuroMathPlayground` module: LIF / STDP, spike functions, stochastic processes, signals, Kelly, math helpers, GPU detection |
+| `legacy/NeuroMathPlayground/examples/`, `sandbox/`, `notebooks/` | Demo scripts, worked examples, Pluto notebook |
+| `legacy/NeuroMathPlayground/test/runtests.jl` | Playground test suite (`julia --project=legacy/NeuroMathPlayground -e 'using Pkg; Pkg.test()'`) |
 
 The full pre-pivot README is preserved at
 [`6198dea`](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/blob/6198dea/README.md).
