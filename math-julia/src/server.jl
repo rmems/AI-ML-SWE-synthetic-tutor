@@ -13,6 +13,19 @@ Bind a REP socket to `endpoint` and answer requests with [`handle_request`](@ref
 until `max_requests` have been handled (forever when `nothing`). `on_ready` runs once
 the socket is bound. Returns the number of requests handled.
 """
+const ZMQ_MAXMSGSIZE = Cint(22)
+
+# ZMQ.jl's `socket.maxmsgsize` setter passes the wrong option width (EINVAL), so call
+# libzmq directly. With the limit set, libzmq drops oversized frames before allocating them.
+function set_max_message_size!(socket::ZMQ.Socket, bytes::Integer)
+    value = Ref{Int64}(bytes)
+    rc = ccall((:zmq_setsockopt, ZMQ.libzmq), Cint,
+               (Ptr{Cvoid}, Cint, Ptr{Cvoid}, Csize_t),
+               socket, ZMQ_MAXMSGSIZE, value, sizeof(Int64))
+    rc == 0 || throw(ZMQ.StateError("zmq_setsockopt(ZMQ_MAXMSGSIZE) failed"))
+    return nothing
+end
+
 function serve(
     endpoint::AbstractString = DEFAULT_ENDPOINT;
     max_requests::Union{Nothing,Integer} = nothing,
@@ -23,6 +36,7 @@ function serve(
     handled = 0
     try
         socket.linger = 0
+        set_max_message_size!(socket, MAX_REQUEST_BYTES)
         ZMQ.bind(socket, endpoint)
         on_ready()
         while max_requests === nothing || handled < max_requests
