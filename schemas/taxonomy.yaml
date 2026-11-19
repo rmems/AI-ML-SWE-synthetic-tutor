@@ -1,7 +1,464 @@
-# Misconception taxonomy — STUB.
+# Misconception taxonomy — version 1.
 #
-# Filled in by issue #6 (https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/6):
-# stable namespaced IDs (e.g. calculus.derivatives.<name>), a wrong worked example and a
-# diagnostic question per entry. A planted error carries exactly one primary ID from here.
-schema_version: 0
-misconceptions: []
+# The label set for synthetic student errors: every planted error in a dataset row
+# carries exactly one primary `id` from this file, and the simulator, problem
+# families, and eval all validate against `tutor_schema::MisconceptionId`, which is
+# kept in sync with this file by `crates/tutor-schema/tests/taxonomy_sync.rs`.
+#
+# Versioning rule: an id, once used in a published dataset row, never changes
+# meaning. Split or rename an entry only by adding a new id and marking the old
+# one `status: deprecated`. New ids are added only with a worked wrong example —
+# no example, no id. Bump `version` on every change to the file.
+#
+# ID format: `<area>.<snake_case_name>`, where area is one of algebra, functions,
+# trig, limits, derivatives, integrals. The seed list used `area:kebab-name`; v1
+# normalizes to the dotted form used by curriculum topic IDs.
+#
+# Entry fields:
+#   id                 stable namespaced ID (see rules above)
+#   status             active | deprecated (deprecated ids stay parseable forever)
+#   error_pattern      the faulty reasoning, one sentence — not the topic name
+#   bites_at           the step in the student's work where the error bites
+#   wrong_attempt      a minimal worked example of the error
+#   correct_reasoning  the right reasoning in one or two lines
+#   diagnostic_question  what a tutor should ask to surface the misconception
+#   first_hint         hint-ladder level 1: the first hint a tutor should give
+#   topics             at least two curriculum topic IDs where it can appear
+version: 1
+misconceptions:
+  - id: algebra.distribution_error
+    status: active
+    error_pattern: >-
+      Multiplies a factor into only part of a sum, leaving later terms untouched.
+    bites_at: >-
+      Expanding a product over a sum — the last term never gets multiplied.
+    wrong_attempt: |-
+      Expand 3(x − 4). Student writes 3x − 4. Correct: 3x − 12.
+    correct_reasoning: >-
+      The factor outside the parentheses multiplies every term inside, so
+      3(x − 4) = 3x − 12.
+    diagnostic_question: >-
+      Did the 3 get multiplied by both terms inside the parentheses?
+    first_hint: >-
+      The outside factor has to multiply every term inside — check the last term too.
+    topics:
+      - algebra.distributive_property
+      - algebra.polynomial_expansion
+
+  - id: algebra.exponent_rule
+    status: active
+    error_pattern: >-
+      Multiplies exponents when multiplying powers with the same base, instead of
+      adding them.
+    bites_at: >-
+      Combining exponential factors — choosing add vs multiply vs power.
+    wrong_attempt: |-
+      Simplify x² · x³. Student writes x⁶ (multiplies the exponents).
+      Correct: x⁵ (add the exponents).
+    correct_reasoning: >-
+      x² · x³ is x multiplied by itself five times in total, so the exponents add:
+      x^(2+3) = x⁵.
+    diagnostic_question: >-
+      When you multiply x² by x³, how many factors of x are there altogether?
+    first_hint: >-
+      Count the x's: x²·x³ has five x's multiplied together, so the exponents add.
+    topics:
+      - algebra.exponent_rules
+      - algebra.polynomial_operations
+
+  - id: algebra.like_terms
+    status: active
+    error_pattern: >-
+      Combines terms that are not like terms, adding coefficients of unlike terms.
+    bites_at: >-
+      Simplifying an expression — merging 2x and 3 into a single term.
+    wrong_attempt: |-
+      Simplify 2x + 3. Student writes 5x. Correct: 2x + 3 is already simplified.
+    correct_reasoning: >-
+      Only terms with the same variable part can be combined; 3 has no x, so
+      2x + 3 cannot collapse further.
+    diagnostic_question: >-
+      Is the 3 an x-term? What variable is it multiplied by?
+    first_hint: >-
+      You can only add terms that share the same variable part — 3 has no x in it.
+    topics:
+      - algebra.combining_like_terms
+      - algebra.linear_equations
+
+  - id: algebra.sign_error
+    status: active
+    error_pattern: >-
+      Moves a term across the equals sign, or distributes a negative, without
+      flipping its sign.
+    bites_at: >-
+      Isolating the variable — the sign of the moved term.
+    wrong_attempt: |-
+      Solve 3x − 7 = 2x + 5. Student writes 3x − 2x = 5 − 7, so x = −2.
+      Correct: x = 12.
+    correct_reasoning: >-
+      Moving a term means adding its opposite to both sides. Subtracting 2x is
+      fine, but the 7 must be added to both sides: x = 5 + 7 = 12.
+    diagnostic_question: >-
+      When you moved the 7 to the other side, what did you do to both sides?
+    first_hint: >-
+      Whatever you do to one side, do the same to the other — moving a term
+      means adding its opposite on both sides.
+    topics:
+      - algebra.linear_equations
+      - algebra.multi_step_equations
+
+  - id: derivatives.chain_rule
+    status: active
+    error_pattern: >-
+      Differentiates a composite function as if the inside were a constant,
+      dropping the inner derivative.
+    bites_at: >-
+      Applying the chain rule — forgetting to multiply by d/dx of the inside.
+    wrong_attempt: |-
+      Find d/dx sin(x²). Student writes cos(x²). Correct: 2x·cos(x²).
+    correct_reasoning: >-
+      Differentiate the outside function first (cos), then multiply by the
+      derivative of the inside (2x): d/dx sin(u) = cos(u)·u′.
+    diagnostic_question: >-
+      What is the derivative of the inside function x²?
+    first_hint: >-
+      Differentiate the outside, then multiply by the derivative of what's inside.
+    topics:
+      - calculus.derivatives.chain_rule
+      - calculus.derivatives.composite_functions
+
+  - id: derivatives.implicit_differentiation
+    status: active
+    error_pattern: >-
+      Differentiates both sides of an equation containing y but forgets the
+      dy/dx factor on y-terms, treating y as a constant.
+    bites_at: >-
+      Applying d/dx to terms that contain y.
+    wrong_attempt: |-
+      Given x² + y² = 25, find dy/dx. Student writes 2x + 2y = 0.
+      Correct: 2x + 2y·(dy/dx) = 0.
+    correct_reasoning: >-
+      In an implicit equation y is a function of x, so every y-term needs the
+      chain rule and produces a dy/dx factor: d/dx(y²) = 2y·dy/dx.
+    diagnostic_question: >-
+      When you differentiated y², where did the dy/dx go?
+    first_hint: >-
+      y is a function of x here — every y-term needs the chain rule, which
+      leaves a dy/dx factor behind.
+    topics:
+      - calculus.derivatives.implicit_differentiation
+      - calculus.derivatives.chain_rule
+
+  - id: derivatives.power_rule_overgeneralised
+    status: active
+    error_pattern: >-
+      Applies d/dx xⁿ = n·xⁿ⁻¹ to expressions where it does not apply — an
+      exponent containing x (eˣ, aˣ, xˣ) or a base that is not the variable
+      alone.
+    bites_at: >-
+      Choosing the differentiation rule for eˣ-type or shifted-power expressions.
+    wrong_attempt: |-
+      Find d/dx eˣ. Student writes x·eˣ⁻¹, treating the exponent x as the
+      power n. Correct: eˣ.
+    correct_reasoning: >-
+      The power rule needs a constant exponent. eˣ has x in the exponent, so it
+      follows its own rule: the derivative of eˣ is eˣ.
+    diagnostic_question: >-
+      In eˣ, is the exponent a constant? Does the power rule require one?
+    first_hint: >-
+      The power rule only works for a constant exponent — eˣ has x in the
+      exponent, and its derivative is eˣ itself.
+    topics:
+      - calculus.derivatives.exponential_derivatives
+      - calculus.derivatives.power_rule
+
+  - id: derivatives.product_rule
+    status: active
+    error_pattern: >-
+      Differentiates a product as the product of the derivatives, f′·g′,
+      instead of f′g + fg′.
+    bites_at: >-
+      Expanding (fg)′ — multiplying the two derivatives term by term.
+    wrong_attempt: |-
+      Find d/dx [x·sin x]. Student writes cos x (1·cos x).
+      Correct: sin x + x·cos x.
+    correct_reasoning: >-
+      The derivative of a product is derivative-of-first times second, plus
+      first times derivative-of-second: (x·sin x)′ = 1·sin x + x·cos x.
+    diagnostic_question: >-
+      Did you multiply the two derivatives, or add the two cross terms?
+    first_hint: >-
+      Product rule: first-prime times second, plus first times second-prime —
+      two terms added, not multiplied.
+    topics:
+      - calculus.derivatives.product_rule
+      - calculus.derivatives.trigonometric_derivatives
+
+  - id: derivatives.quotient_rule
+    status: active
+    error_pattern: >-
+      Differentiates a quotient as f′/g′, or builds the numerator with the
+      wrong sign or order.
+    bites_at: >-
+      Applying the quotient rule to f/g.
+    wrong_attempt: |-
+      Find d/dx [x/(x + 1)]. Student writes 1/1 = 1 (derivative of top over
+      derivative of bottom). Correct: [(1)(x+1) − x(1)]/(x+1)² = 1/(x+1)².
+    correct_reasoning: >-
+      The quotient rule is (f′g − fg′)/g²: low-d-high minus high-d-low, all
+      over low squared.
+    diagnostic_question: >-
+      Is the quotient rule f′/g′, or (f′g − fg′)/g²?
+    first_hint: >-
+      Low d-high minus high d-low, over low squared — and it's a minus, not a plus.
+    topics:
+      - calculus.derivatives.quotient_rule
+      - calculus.derivatives.rational_functions
+
+  - id: functions.composition_order
+    status: active
+    error_pattern: >-
+      Evaluates f(g(x)) in the wrong order — applies f first, then g — or
+      treats composition as multiplication.
+    bites_at: >-
+      Reading f∘g — which function is applied to the input first.
+    wrong_attempt: |-
+      f(x) = x + 1, g(x) = 2x. Find (f∘g)(3). Student computes g(f(3)) =
+      g(4) = 8. Correct: f(g(3)) = f(6) = 7.
+    correct_reasoning: >-
+      Composition works inside out: g acts on 3 first giving 6, then f gives 7.
+      f∘g means f(g(x)), not g(f(x)).
+    diagnostic_question: >-
+      In f∘g, which function touches the input 3 first?
+    first_hint: >-
+      Work inside out — the right-hand function in f∘g goes first.
+    topics:
+      - functions.composition
+      - functions.function_notation
+
+  - id: functions.domain_range
+    status: active
+    error_pattern: >-
+      Assumes a function's domain or range is all real numbers without checking
+      restrictions like division by zero, even roots, or a parabola's vertex.
+    bites_at: >-
+      Stating domain or range before analyzing the formula's restrictions.
+    wrong_attempt: |-
+      For f(x) = 1/(x − 2), student says the domain is all real numbers
+      "because you can plug in anything". Correct: x ≠ 2.
+      (Equivalently: range of f(x) = x² is all reals; correct is y ≥ 0.)
+    correct_reasoning: >-
+      Check what the formula forbids: denominators cannot be zero, square roots
+      need non-negative insides, and x² never outputs a negative y.
+    diagnostic_question: >-
+      What value of x makes the denominator zero — or what is the smallest
+      output x² can produce?
+    first_hint: >-
+      Test the formula's restrictions: denominators can't be zero and square
+      roots need non-negative insides.
+    topics:
+      - functions.domain
+      - functions.range
+      - functions.rational_functions
+
+  - id: functions.inverse_not_reciprocal
+    status: active
+    error_pattern: >-
+      Reads f⁻¹(x) as the reciprocal 1/f(x) instead of the inverse function.
+    bites_at: >-
+      Interpreting inverse-function notation.
+    wrong_attempt: |-
+      f(x) = 2x + 4. Student writes f⁻¹(x) = 1/(2x + 4).
+      Correct: f⁻¹(x) = (x − 4)/2.
+    correct_reasoning: >-
+      f⁻¹ undoes f: solve y = f(x) for x. For y = 2x + 4 that gives
+      x = (y − 4)/2, so f⁻¹(x) = (x − 4)/2 — not a reciprocal.
+    diagnostic_question: >-
+      Does f⁻¹(10) ask "what input gives output 10", or "what is 1 over f(10)"?
+    first_hint: >-
+      f⁻¹ means undo f — solve y = f(x) for x. It is not 1/f(x).
+    topics:
+      - functions.inverse_functions
+      - functions.function_notation
+
+  - id: integrals.antiderivative_exponent
+    status: active
+    error_pattern: >-
+      Raises the exponent by one but divides by the original exponent instead of
+      the new one — the reverse power rule applied with the wrong denominator.
+    bites_at: >-
+      Applying the reverse power rule to xⁿ.
+    wrong_attempt: |-
+      Evaluate ∫ x² dx. Student writes x³/2 (adds 1 to the exponent but
+      divides by the old power). Correct: x³/3 + C.
+    correct_reasoning: >-
+      ∫xⁿ dx = xⁿ⁺¹/(n+1) + C: the denominator is the NEW exponent, n+1, not n.
+    diagnostic_question: >-
+      You raised the exponent from 2 to 3 — should the denominator be 2 or 3?
+    first_hint: >-
+      ∫xⁿ dx = xⁿ⁺¹/(n+1) + C — divide by the new exponent, not the old one.
+    topics:
+      - integrals.power_rule
+      - integrals.basic_antiderivatives
+
+  - id: integrals.constant_of_integration
+    status: active
+    error_pattern: >-
+      Drops the +C when writing an indefinite integral, treating one
+      antiderivative as the whole answer.
+    bites_at: >-
+      Writing the final antiderivative of an indefinite integral.
+    wrong_attempt: |-
+      Evaluate ∫(2x + 3) dx. Student writes x² + 3x with no constant.
+      Correct: x² + 3x + C.
+    correct_reasoning: >-
+      Differentiation kills constants, so every antiderivative is a family
+      F(x) + C; without an initial condition the +C must stay.
+    diagnostic_question: >-
+      There are infinitely many antiderivatives differing by a constant —
+      where did yours go?
+    first_hint: >-
+      Every indefinite integral ends in +C until an initial condition pins it down.
+    topics:
+      - integrals.indefinite_integrals
+      - integrals.antiderivatives
+
+  - id: integrals.setup_confusion
+    status: active
+    error_pattern: >-
+      Translates integral notation into the wrong computation — e.g. evaluates a
+      definite integral as f(b) − f(a) on the integrand instead of
+      F(b) − F(a) on an antiderivative, or splits ∫f·g into ∫f·∫g.
+    bites_at: >-
+      Setting up the evaluation of a definite integral.
+    wrong_attempt: |-
+      Evaluate ∫₁³ x² dx. Student writes 3² − 1² = 8.
+      Correct: [x³/3]₁³ = 9 − 1/3 = 26/3.
+    correct_reasoning: >-
+      A definite integral is F(b) − F(a) where F is an antiderivative of the
+      integrand — antidifferentiate first, then substitute the bounds.
+    diagnostic_question: >-
+      Did you antidifferentiate x² before plugging in the bounds?
+    first_hint: >-
+      Definite integral = antiderivative at b minus antiderivative at a —
+      not the integrand at b minus the integrand at a.
+    topics:
+      - integrals.definite_integrals
+      - integrals.fundamental_theorem_of_calculus
+
+  - id: limits.divide_by_zero_form
+    status: active
+    error_pattern: >-
+      Substitutes x = a, gets 0/0, and concludes the limit does not exist
+      instead of simplifying the expression first.
+    bites_at: >-
+      Direct substitution — treating the indeterminate form as the answer.
+    wrong_attempt: |-
+      Evaluate lim(x→2) (x² − 4)/(x − 2). Student plugs in 2, gets 0/0,
+      and says the limit does not exist. Correct: factor to (x + 2),
+      limit = 4.
+    correct_reasoning: >-
+      0/0 is indeterminate, not "undefined": factor or rationalize first, then
+      substitute. Here (x²−4)/(x−2) = x + 2 for x ≠ 2, so the limit is 4.
+    diagnostic_question: >-
+      Does 0/0 mean the limit fails, or that you need to simplify first?
+    first_hint: >-
+      0/0 is indeterminate — try factoring or rationalizing before deciding
+      the limit doesn't exist.
+    topics:
+      - limits.indeterminate_forms
+      - limits.limit_evaluation
+      - algebra.rational_expressions
+
+  - id: limits.infinity_indeterminate_form
+    status: active
+    error_pattern: >-
+      Splits a limit into a difference of divergent limits and treats
+      ∞ − ∞ (or ∞/∞) as a number, usually 0, instead of an indeterminate form
+      that needs algebra.
+    bites_at: >-
+      Applying limit laws term by term when both pieces blow up.
+    wrong_attempt: |-
+      Evaluate lim(x→∞) [x²/(x + 1) − x]. Student writes ∞ − ∞ = 0.
+      Correct: combine over a common denominator to get −x/(x + 1), limit = −1.
+    correct_reasoning: >-
+      Limit laws only split a limit when each piece converges. ∞ − ∞ is
+      indeterminate; combine into one fraction first: x²/(x+1) − x = −x/(x+1).
+    diagnostic_question: >-
+      Can you split this into a difference of two limits when both pieces
+      diverge?
+    first_hint: >-
+      ∞ − ∞ is indeterminate — put everything over a common denominator first.
+    topics:
+      - limits.indeterminate_forms
+      - limits.limit_laws
+      - limits.limits_at_infinity
+
+  - id: limits.one_sided_limit
+    status: active
+    error_pattern: >-
+      Computes only one one-sided limit — usually by plugging in or approaching
+      from the convenient side — and reports it as the two-sided limit.
+    bites_at: >-
+      Checking agreement of the left and right limits at the point.
+    wrong_attempt: |-
+      Evaluate lim(x→0) |x|/x. Student approaches from the right, gets 1,
+      and reports the limit is 1. Correct: does not exist (left side gives −1).
+    correct_reasoning: >-
+      A two-sided limit exists only when the left and right limits agree.
+      Here they are −1 and 1, so the limit does not exist.
+    diagnostic_question: >-
+      What happens if you approach 0 from the left instead of the right?
+    first_hint: >-
+      A two-sided limit needs both sides to agree — check the left side too.
+    topics:
+      - limits.one_sided_limits
+      - limits.limit_existence
+      - functions.piecewise_functions
+
+  - id: trig.identity_confusion
+    status: active
+    error_pattern: >-
+      Confuses trig identities — e.g. reads tan θ as cos θ/sin θ (reciprocal),
+      or mixes the Pythagorean identity sin²θ + cos²θ = 1 with double-angle
+      formulas.
+    bites_at: >-
+      Recalling or selecting which identity to apply.
+    wrong_attempt: |-
+      Rewrite tan θ using sin and cos. Student writes cos θ/sin θ.
+      Correct: sin θ/cos θ.
+    correct_reasoning: >-
+      tan θ = sin θ/cos θ — "sine on top". Verify with θ = π/4 where both
+      interpretations give 1, then test θ = π/6 where they differ.
+    diagnostic_question: >-
+      Is tangent sine over cosine, or cosine over sine? Test with an angle
+      where sin ≠ cos.
+    first_hint: >-
+      tan θ = sin θ / cos θ — sine on top. Check it on a 30-60-90 triangle.
+    topics:
+      - trig.identities
+      - trig.tangent
+      - trig.pythagorean_identity
+
+  - id: trig.unit_circle
+    status: active
+    error_pattern: >-
+      Misremembers the coordinates of standard angles on the unit circle —
+      swaps sin and cos values or confuses degree and radian measure.
+    bites_at: >-
+      Evaluating sin or cos at π/6, π/4, π/3 and friends.
+    wrong_attempt: |-
+      Evaluate sin(π/6). Student writes √3/2 — that is cos(π/6).
+      Correct: 1/2.
+    correct_reasoning: >-
+      The point at angle π/6 is (√3/2, 1/2); sin is the y-coordinate and cos
+      is the x-coordinate, so sin(π/6) = 1/2.
+    diagnostic_question: >-
+      At π/6 the point is (√3/2, 1/2) — which coordinate is sine?
+    first_hint: >-
+      On the unit circle, sin θ is the y-coordinate and cos θ is the
+      x-coordinate.
+    topics:
+      - trig.unit_circle
+      - trig.trigonometric_functions
+      - trig.special_angles
