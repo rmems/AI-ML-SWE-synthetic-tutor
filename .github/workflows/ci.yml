@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test, doc)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install libzmq
+        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.99.1
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --all-targets --all-features --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo doc --no-deps --all-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  julia:
+    name: Julia (math-julia, legacy)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: julia-actions/setup-julia@da908477b5db94c10ffce8cfea9f2b3b9d5db687 # v3.0.3
+        with:
+          version: "1.13"
+      - uses: julia-actions/cache@9353db09a0f2bbbdec6f41791918c75d37391b36 # v3.5.0
+      - name: TutorMath tests
+        run: julia --project=math-julia -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+      - name: Legacy NeuroMathPlayground tests
+        run: julia --project=legacy/NeuroMathPlayground -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+
+  bridge:
+    name: Rust <-> Julia bridge proof
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install libzmq
+        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: julia-actions/setup-julia@da908477b5db94c10ffce8cfea9f2b3b9d5db687 # v3.0.3
+        with:
+          version: "1.13"
+      - uses: julia-actions/cache@9353db09a0f2bbbdec6f41791918c75d37391b36 # v3.5.0
+      - run: julia --project=math-julia -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+      - run: cargo build --locked -p tutor-verify --tests
+      - name: Start worker and run bridge tests
+        run: |
+          julia --project=math-julia math-julia/bin/serve.jl > worker.log 2>&1 &
+          for _ in $(seq 1 120); do grep -q listening worker.log && break; sleep 1; done
+          cat worker.log
+          grep -q listening worker.log
+          cargo test --locked -p tutor-verify --test julia_bridge -- --ignored

@@ -1,0 +1,18 @@
+[package]
+name = "tutor-wire"
+description = "ZMQ REQ client for the TutorMath Julia worker (tutor-math/1 JSON protocol)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tutor-schema.workspace = true
+zmq.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "problem_id": "polynomial_derivative_at_point/v1/seed-7",
+  "topic": "calculus.derivatives.power_rule",
+  "generator": {
+    "name": "polynomial_derivative_at_point",
+    "version": 1,
+    "language": "julia",
+    "runtime_version": "1.13.4",
+    "seed": 7
+  },
+  "statement": "Let f(x) = 3x^2 - 2x + 5. Compute f'(2).",
+  "parameters": {
+    "kind": "polynomial_derivative_at_point",
+    "coefficients": [5, -2, 3],
+    "point": 2
+  },
+  "answer": { "kind": "integer", "value": 10 }
+}

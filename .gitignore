@@ -11,3 +11,15 @@
 
 # OS artifacts
 .DS_Store
+
+# math-julia resolves its own Manifest; legacy/NeuroMathPlayground keeps its committed one
+math-julia/Manifest.toml
+
+# Rust build output
+/target/
+
+# Generated dataset rows: only READMEs and dataset-card drafts are committed
+/datasets/**
+!/datasets/README.md
+!/datasets/*/
+!/datasets/*/CARD.md
