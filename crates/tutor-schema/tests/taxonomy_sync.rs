@@ -6,7 +6,8 @@ use tutor_schema::{MisconceptionId, TAXONOMY_VERSION};
 
 const TAXONOMY: &str = include_str!("../../../schemas/taxonomy.yaml");
 
-const REQUIRED_FIELDS: [&str; 7] = [
+const REQUIRED_FIELDS: [&str; 8] = [
+    "status",
     "error_pattern",
     "bites_at",
     "wrong_attempt",
@@ -15,6 +16,8 @@ const REQUIRED_FIELDS: [&str; 7] = [
     "first_hint",
     "topics",
 ];
+
+const STATUSES: [&str; 2] = ["active", "deprecated"];
 
 /// `(id, block)` pairs for each `misconceptions:` list item.
 fn entries() -> Vec<(String, String)> {
@@ -37,6 +40,16 @@ fn entries() -> Vec<(String, String)> {
     out
 }
 
+/// The value of a top-level (4-space indented) `key:` line in an entry block.
+fn top_level_value<'a>(block: &'a str, key: &str) -> Option<&'a str> {
+    block.lines().find_map(|line| {
+        line.strip_prefix("    ")
+            .and_then(|rest| rest.strip_prefix(key))
+            .and_then(|rest| rest.strip_prefix(':'))
+            .map(|rest| rest.trim())
+    })
+}
+
 #[test]
 fn taxonomy_version_matches() {
     let version = TAXONOMY
@@ -51,7 +64,15 @@ fn taxonomy_version_matches() {
 
 #[test]
 fn yaml_ids_match_misconception_id_all() {
-    let yaml_ids: BTreeSet<String> = entries().into_iter().map(|(id, _)| id).collect();
+    let parsed = entries();
+    let ids: Vec<&str> = parsed.iter().map(|(id, _)| id.as_str()).collect();
+    let unique: BTreeSet<&str> = ids.iter().copied().collect();
+    assert_eq!(
+        ids.len(),
+        unique.len(),
+        "taxonomy.yaml has duplicate ids: {ids:?}"
+    );
+    let yaml_ids: BTreeSet<String> = parsed.into_iter().map(|(id, _)| id).collect();
     let rust_ids: BTreeSet<String> = MisconceptionId::ALL
         .iter()
         .map(|id| id.as_str().to_owned())
@@ -61,14 +82,29 @@ fn yaml_ids_match_misconception_id_all() {
 }
 
 #[test]
+fn all_ids_are_unique_sorted_and_covered() {
+    let strs: Vec<&str> = MisconceptionId::ALL.iter().map(|id| id.as_str()).collect();
+    let unique: BTreeSet<&str> = strs.iter().copied().collect();
+    assert_eq!(strs.len(), unique.len(), "ALL has duplicate ids");
+    let mut sorted = strs.clone();
+    sorted.sort_unstable();
+    assert_eq!(strs, sorted, "ALL must stay sorted by id");
+}
+
+#[test]
 fn every_entry_has_required_fields() {
     for (id, block) in entries() {
         for field in REQUIRED_FIELDS {
             assert!(
-                block.contains(&format!("    {field}:")),
-                "{id} is missing `{field}`"
+                top_level_value(&block, field).is_some(),
+                "{id} is missing top-level `{field}`"
             );
         }
+        let status = top_level_value(&block, "status").expect("status present");
+        assert!(
+            STATUSES.contains(&status),
+            "{id} has unsupported status {status:?}"
+        );
     }
 }
 

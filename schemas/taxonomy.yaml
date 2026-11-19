@@ -110,8 +110,8 @@ misconceptions:
   - id: derivatives.chain_rule
     status: active
     error_pattern: >-
-      Differentiates a composite function as if the inside were a constant,
-      dropping the inner derivative.
+      Applies the outer derivative to a composite function but omits the
+      inner-derivative factor.
     bites_at: >-
       Applying the chain rule — forgetting to multiply by d/dx of the inside.
     wrong_attempt: |-
@@ -130,8 +130,8 @@ misconceptions:
   - id: derivatives.implicit_differentiation
     status: active
     error_pattern: >-
-      Differentiates both sides of an equation containing y but forgets the
-      dy/dx factor on y-terms, treating y as a constant.
+      Differentiates both sides of an equation containing y but omits the
+      dy/dx factor on y-terms.
     bites_at: >-
       Applying d/dx to terms that contain y.
     wrong_attempt: |-
@@ -166,8 +166,8 @@ misconceptions:
     diagnostic_question: >-
       In eˣ, is the exponent a constant? Does the power rule require one?
     first_hint: >-
-      The power rule only works for a constant exponent — eˣ has x in the
-      exponent, and its derivative is eˣ itself.
+      The power rule needs a constant exponent — look at what sits in the
+      exponent of eˣ.
     topics:
       - calculus.derivatives.exponential_derivatives
       - calculus.derivatives.power_rule
@@ -180,8 +180,8 @@ misconceptions:
     bites_at: >-
       Expanding (fg)′ — multiplying the two derivatives term by term.
     wrong_attempt: |-
-      Find d/dx [x·sin x]. Student writes cos x (1·cos x).
-      Correct: sin x + x·cos x.
+      Find d/dx [x·sin x]. Student writes the product of the derivatives,
+      1·cos x = cos x. Correct: sin x + x·cos x.
     correct_reasoning: >-
       The derivative of a product is derivative-of-first times second, plus
       first times derivative-of-second: (x·sin x)′ = 1·sin x + x·cos x.
@@ -292,11 +292,12 @@ misconceptions:
       Evaluate ∫ x² dx. Student writes x³/2 (adds 1 to the exponent but
       divides by the old power). Correct: x³/3 + C.
     correct_reasoning: >-
-      ∫xⁿ dx = xⁿ⁺¹/(n+1) + C: the denominator is the NEW exponent, n+1, not n.
+      ∫xⁿ dx = xⁿ⁺¹/(n+1) + C for n ≠ −1: the denominator is the NEW exponent.
+      The exception is ∫x⁻¹ dx = ln|x| + C, since n + 1 = 0 there.
     diagnostic_question: >-
       You raised the exponent from 2 to 3 — should the denominator be 2 or 3?
     first_hint: >-
-      ∫xⁿ dx = xⁿ⁺¹/(n+1) + C — divide by the new exponent, not the old one.
+      ∫xⁿ dx raises the exponent by one — what should the denominator be?
     topics:
       - integrals.power_rule
       - integrals.basic_antiderivatives
@@ -358,8 +359,9 @@ misconceptions:
       and says the limit does not exist. Correct: factor to (x + 2),
       limit = 4.
     correct_reasoning: >-
-      0/0 is indeterminate, not "undefined": factor or rationalize first, then
-      substitute. Here (x²−4)/(x−2) = x + 2 for x ≠ 2, so the limit is 4.
+      0/0 is an indeterminate form — it does not decide the limit. Factor or
+      rationalize first, then substitute: (x²−4)/(x−2) = x + 2 for x ≠ 2,
+      so the limit is 4.
     diagnostic_question: >-
       Does 0/0 mean the limit fails, or that you need to simplify first?
     first_hint: >-
