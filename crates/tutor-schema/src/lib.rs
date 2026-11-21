@@ -11,6 +11,9 @@ use thiserror::Error;
 /// Current `schema_version` of [`Problem`].
 pub const PROBLEM_SCHEMA_VERSION: u32 = 1;
 
+/// Current `version` of the misconception taxonomy in `schemas/taxonomy.yaml`.
+pub const TAXONOMY_VERSION: u32 = 1;
+
 /// Largest generator seed (2^53 - 1), so seeds survive any JSON parser exactly.
 pub const MAX_SEED: u64 = (1 << 53) - 1;
 
@@ -116,6 +119,128 @@ pub struct Verification {
     pub verifier: String,
     /// Verifier version.
     pub verifier_version: String,
+}
+
+/// Stable misconception taxonomy ID, e.g. `derivatives.chain_rule`.
+///
+/// Serialized as the dotted ID string used in `schemas/taxonomy.yaml`, so a
+/// dataset row's primary misconception label validates against the same list the
+/// simulator, families, and eval read. IDs are permanent once published: a renamed
+/// or split entry gets a new variant and the old one stays parseable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum MisconceptionId {
+    /// `algebra.distribution_error`.
+    #[serde(rename = "algebra.distribution_error")]
+    AlgebraDistributionError,
+    /// `algebra.exponent_rule`.
+    #[serde(rename = "algebra.exponent_rule")]
+    AlgebraExponentRule,
+    /// `algebra.like_terms`.
+    #[serde(rename = "algebra.like_terms")]
+    AlgebraLikeTerms,
+    /// `algebra.sign_error`.
+    #[serde(rename = "algebra.sign_error")]
+    AlgebraSignError,
+    /// `derivatives.chain_rule`.
+    #[serde(rename = "derivatives.chain_rule")]
+    DerivativesChainRule,
+    /// `derivatives.implicit_differentiation`.
+    #[serde(rename = "derivatives.implicit_differentiation")]
+    DerivativesImplicitDifferentiation,
+    /// `derivatives.power_rule_overgeneralised`.
+    #[serde(rename = "derivatives.power_rule_overgeneralised")]
+    DerivativesPowerRuleOvergeneralised,
+    /// `derivatives.product_rule`.
+    #[serde(rename = "derivatives.product_rule")]
+    DerivativesProductRule,
+    /// `derivatives.quotient_rule`.
+    #[serde(rename = "derivatives.quotient_rule")]
+    DerivativesQuotientRule,
+    /// `functions.composition_order`.
+    #[serde(rename = "functions.composition_order")]
+    FunctionsCompositionOrder,
+    /// `functions.domain_range`.
+    #[serde(rename = "functions.domain_range")]
+    FunctionsDomainRange,
+    /// `functions.inverse_not_reciprocal`.
+    #[serde(rename = "functions.inverse_not_reciprocal")]
+    FunctionsInverseNotReciprocal,
+    /// `integrals.antiderivative_exponent`.
+    #[serde(rename = "integrals.antiderivative_exponent")]
+    IntegralsAntiderivativeExponent,
+    /// `integrals.constant_of_integration`.
+    #[serde(rename = "integrals.constant_of_integration")]
+    IntegralsConstantOfIntegration,
+    /// `integrals.setup_confusion`.
+    #[serde(rename = "integrals.setup_confusion")]
+    IntegralsSetupConfusion,
+    /// `limits.divide_by_zero_form`.
+    #[serde(rename = "limits.divide_by_zero_form")]
+    LimitsDivideByZeroForm,
+    /// `limits.infinity_indeterminate_form`.
+    #[serde(rename = "limits.infinity_indeterminate_form")]
+    LimitsInfinityIndeterminateForm,
+    /// `limits.one_sided_limit`.
+    #[serde(rename = "limits.one_sided_limit")]
+    LimitsOneSidedLimit,
+    /// `trig.identity_confusion`.
+    #[serde(rename = "trig.identity_confusion")]
+    TrigIdentityConfusion,
+    /// `trig.unit_circle`.
+    #[serde(rename = "trig.unit_circle")]
+    TrigUnitCircle,
+}
+
+impl MisconceptionId {
+    /// Every taxonomy ID, sorted by ID string.
+    pub const ALL: &'static [Self] = &[
+        Self::AlgebraDistributionError,
+        Self::AlgebraExponentRule,
+        Self::AlgebraLikeTerms,
+        Self::AlgebraSignError,
+        Self::DerivativesChainRule,
+        Self::DerivativesImplicitDifferentiation,
+        Self::DerivativesPowerRuleOvergeneralised,
+        Self::DerivativesProductRule,
+        Self::DerivativesQuotientRule,
+        Self::FunctionsCompositionOrder,
+        Self::FunctionsDomainRange,
+        Self::FunctionsInverseNotReciprocal,
+        Self::IntegralsAntiderivativeExponent,
+        Self::IntegralsConstantOfIntegration,
+        Self::IntegralsSetupConfusion,
+        Self::LimitsDivideByZeroForm,
+        Self::LimitsInfinityIndeterminateForm,
+        Self::LimitsOneSidedLimit,
+        Self::TrigIdentityConfusion,
+        Self::TrigUnitCircle,
+    ];
+
+    /// The dotted taxonomy ID, e.g. `derivatives.chain_rule`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AlgebraDistributionError => "algebra.distribution_error",
+            Self::AlgebraExponentRule => "algebra.exponent_rule",
+            Self::AlgebraLikeTerms => "algebra.like_terms",
+            Self::AlgebraSignError => "algebra.sign_error",
+            Self::DerivativesChainRule => "derivatives.chain_rule",
+            Self::DerivativesImplicitDifferentiation => "derivatives.implicit_differentiation",
+            Self::DerivativesPowerRuleOvergeneralised => "derivatives.power_rule_overgeneralised",
+            Self::DerivativesProductRule => "derivatives.product_rule",
+            Self::DerivativesQuotientRule => "derivatives.quotient_rule",
+            Self::FunctionsCompositionOrder => "functions.composition_order",
+            Self::FunctionsDomainRange => "functions.domain_range",
+            Self::FunctionsInverseNotReciprocal => "functions.inverse_not_reciprocal",
+            Self::IntegralsAntiderivativeExponent => "integrals.antiderivative_exponent",
+            Self::IntegralsConstantOfIntegration => "integrals.constant_of_integration",
+            Self::IntegralsSetupConfusion => "integrals.setup_confusion",
+            Self::LimitsDivideByZeroForm => "limits.divide_by_zero_form",
+            Self::LimitsInfinityIndeterminateForm => "limits.infinity_indeterminate_form",
+            Self::LimitsOneSidedLimit => "limits.one_sided_limit",
+            Self::TrigIdentityConfusion => "trig.identity_confusion",
+            Self::TrigUnitCircle => "trig.unit_circle",
+        }
+    }
 }
 
 /// Why a value is not schema-valid.
