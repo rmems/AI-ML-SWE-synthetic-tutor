@@ -177,11 +177,14 @@ pub struct Difficulty {
 impl Difficulty {
     /// Every bound must be positive.
     pub fn validate(&self) -> Result<(), SchemaError> {
-        if self.max_degree == 0 || self.coefficient_bound == 0 || self.point_bound == 0 {
-            return Err(invalid(
-                "difficulty",
-                "max_degree, coefficient_bound and point_bound must be positive",
-            ));
+        for (name, bound) in [
+            ("max_degree", self.max_degree),
+            ("coefficient_bound", self.coefficient_bound),
+            ("point_bound", self.point_bound),
+        ] {
+            if bound == 0 {
+                return Err(invalid("difficulty", format!("{name} must be positive")));
+            }
         }
         Ok(())
     }
@@ -556,8 +559,8 @@ impl Problem {
             Parameters::PolynomialDerivativeAtPoint { coefficients, .. } => {
                 check_polynomial_bounds("parameters.coefficients", coefficients, d)?;
             }
-            Parameters::BinomialDerivativeAtPoint { a, m, b, point, .. } => {
-                return check_binomial_bounds(*a, *m, *b, *point, d);
+            Parameters::BinomialDerivativeAtPoint { .. } => {
+                return check_binomial_bounds(&self.parameters, d);
             }
             Parameters::ProductRuleAtPoint { p, q, .. } => {
                 check_polynomial_bounds("parameters.p", p, d)?;
@@ -602,29 +605,23 @@ fn check_polynomial_bounds(
         ));
     }
     for c in coefficients {
-        if c.unsigned_abs() > u64::from(d.coefficient_bound) {
-            return Err(invalid(
-                "parameters",
-                format!(
-                    "{field} coefficient {c} exceeds difficulty.coefficient_bound {}",
-                    d.coefficient_bound
-                ),
-            ));
-        }
+        check_magnitude(
+            &format!("{field} coefficient"),
+            *c,
+            d.coefficient_bound,
+            "coefficient_bound",
+        )?;
     }
     Ok(())
 }
 
 /// The binomial's exponent and coefficients must fit the declared difficulty
 /// bounds.
-fn check_binomial_bounds(
-    a: i64,
-    m: u32,
-    b: i64,
-    point: i64,
-    d: &Difficulty,
-) -> Result<(), SchemaError> {
-    if m > d.max_degree {
+fn check_binomial_bounds(parameters: &Parameters, d: &Difficulty) -> Result<(), SchemaError> {
+    let Parameters::BinomialDerivativeAtPoint { a, m, b, point, .. } = parameters else {
+        unreachable!("only the binomial variant reaches this check")
+    };
+    if *m > d.max_degree {
         return Err(invalid(
             "parameters",
             format!(
@@ -634,31 +631,30 @@ fn check_binomial_bounds(
         ));
     }
     for (name, c) in [("a", a), ("b", b)] {
-        if c.unsigned_abs() > u64::from(d.coefficient_bound) {
-            return Err(invalid(
-                "parameters",
-                format!(
-                    "{name}={c} exceeds difficulty.coefficient_bound {}",
-                    d.coefficient_bound
-                ),
-            ));
-        }
+        check_magnitude(name, *c, d.coefficient_bound, "coefficient_bound")?;
     }
-    check_point_bound(point, d)
+    check_point_bound(*point, d)
+}
+
+/// Reject `value` when `|value|` exceeds `difficulty.<bound_name>`.
+fn check_magnitude(
+    field: &str,
+    value: i64,
+    bound: u32,
+    bound_name: &str,
+) -> Result<(), SchemaError> {
+    if value.unsigned_abs() > u64::from(bound) {
+        return Err(invalid(
+            "parameters",
+            format!("{field} {value} exceeds difficulty.{bound_name} {bound}"),
+        ));
+    }
+    Ok(())
 }
 
 /// The evaluation point must fit the declared difficulty bound.
 fn check_point_bound(point: i64, d: &Difficulty) -> Result<(), SchemaError> {
-    if point.unsigned_abs() > u64::from(d.point_bound) {
-        return Err(invalid(
-            "parameters",
-            format!(
-                "point {point} exceeds difficulty.point_bound {}",
-                d.point_bound
-            ),
-        ));
-    }
-    Ok(())
+    check_magnitude("point", point, d.point_bound, "point_bound")
 }
 
 fn validate_binomial(a: i64, m: u32, b: i64, n: u32) -> Result<(), SchemaError> {

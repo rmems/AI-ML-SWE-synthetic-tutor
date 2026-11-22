@@ -93,9 +93,9 @@
           "required": ["kind", "a", "m", "b", "n", "point"],
           "properties": {
             "kind": { "const": "binomial_derivative_at_point" },
-            "a": { "description": "Coefficient of the x^m term; nonzero.", "type": "integer", "not": { "const": 0 } },
+            "a": { "description": "Coefficient of the x^m term; nonzero.", "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807, "not": { "const": 0 } },
             "m": { "description": "Leading exponent; must exceed n and be below 16.", "type": "integer", "minimum": 1, "maximum": 15 },
-            "b": { "description": "Coefficient of the x^n term; nonzero.", "type": "integer", "not": { "const": 0 } },
+            "b": { "description": "Coefficient of the x^n term; nonzero.", "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807, "not": { "const": 0 } },
             "n": { "description": "Lower exponent.", "type": "integer", "minimum": 0, "maximum": 14 },
             "point": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
           }
