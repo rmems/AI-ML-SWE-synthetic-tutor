@@ -330,6 +330,7 @@ pub struct RunReport {
 /// Settings for [`run`].
 pub struct RunConfig {
     /// Generator specs to draw from (all [`GENERATORS`] when empty at the CLI).
+    /// Duplicate names are drawn once.
     pub generators: Vec<&'static GeneratorSpec>,
     /// First seed drawn, inclusive.
     pub seed_start: u64,
@@ -343,11 +344,17 @@ pub struct RunConfig {
     pub out_dir: PathBuf,
     /// `problem.schema.json` content for the jsonschema pass.
     pub schema_json: serde_json::Value,
+    /// Schema identifier recorded in the manifest (usually the file path used).
+    pub schema: String,
 }
 
 /// Generate `count` seeded problems per generator, verify each on the opposite
 /// side of the boundary, and write verified problems, rejections, and a
 /// manifest under `config.out_dir`.
+///
+/// A run that verifies nothing writes only rejections and the manifest — it
+/// never truncates a `verified/problems.jsonl` left by an earlier successful
+/// run in the same directory.
 pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
     use rayon::prelude::*;
 
@@ -356,12 +363,17 @@ pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
 
     let endpoint = config.endpoint.clone();
     let timeout = config.timeout;
-    let schema_json = config.schema_json.clone();
+    let seed_end = config
+        .seed_start
+        .checked_add(config.count)
+        .ok_or_else(|| io_err("seed_start + count overflows u64".to_owned()))?;
 
+    let mut seen = std::collections::HashSet::new();
     let work: Vec<(&'static GeneratorSpec, u64)> = config
         .generators
         .iter()
-        .flat_map(|spec| (config.seed_start..config.seed_start + config.count).map(|s| (*spec, s)))
+        .filter(|spec| seen.insert(spec.name))
+        .flat_map(|spec| (config.seed_start..seed_end).map(|s| (*spec, s)))
         .collect();
 
     let results: Vec<(String, u64, Result<Problem, RejectRecord>)> = work
@@ -369,51 +381,11 @@ pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
         .map_init(
             || MathClient::connect(&endpoint, timeout).ok(),
             |client_state, (spec, seed)| {
-                let fail = |stage: &'static str,
-                            problem_id: Option<String>,
-                            code: &str,
-                            detail: String| {
-                    RejectRecord {
-                        generator: spec.name.to_owned(),
-                        seed: *seed,
-                        problem_id,
-                        stage,
-                        code: code.to_owned(),
-                        detail,
-                    }
-                };
-                let outcome = (|| {
-                    let problem = generate(spec, *seed, client_state.as_mut())
-                        .map_err(|err| fail("generate", None, err.code(), err.to_string()))?;
-                    // Second gate: the JSON Schema file itself, in case the
-                    // worker's idea of the schema drifted from the repo's.
-                    let as_json = serde_json::to_value(&problem)
-                        .map_err(|err| fail("schema", None, "schema_serialize", err.to_string()))?;
-                    if !schema_validator.is_valid(&as_json) {
-                        let detail = schema_validator
-                            .iter_errors(&as_json)
-                            .map(|e| e.to_string())
-                            .take(5)
-                            .collect::<Vec<_>>()
-                            .join("; ");
-                        let _ = &schema_json;
-                        return Err(fail(
-                            "schema",
-                            Some(problem.problem_id.clone()),
-                            "schema_invalid",
-                            detail,
-                        ));
-                    }
-                    match tutor_verify::verify_auto(&problem, client_state.as_mut().unwrap()) {
-                        Ok(verified) => Ok(verified),
-                        Err(Rejection {
-                            problem_id,
-                            code,
-                            detail,
-                        }) => Err(fail("verify", Some(problem_id), code.as_str(), detail)),
-                    }
-                })();
-                (spec.name.to_owned(), *seed, outcome)
+                (
+                    spec.name.to_owned(),
+                    *seed,
+                    check_candidate(spec, *seed, client_state.as_mut(), &schema_validator),
+                )
             },
         )
         .collect();
@@ -429,52 +401,172 @@ pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
     verified.sort_by(|a, b| a.problem_id.cmp(&b.problem_id));
     rejected.sort_by_key(|a| (a.generator.clone(), a.seed));
 
+    let report = RunReport {
+        schema: config.schema.clone(),
+        endpoint: config.endpoint.clone(),
+        seeds: format!("{}..{}", config.seed_start, seed_end),
+        generators: generator_counts(config, &verified, &rejected),
+        total_verified: verified.len(),
+        total_rejected: rejected.len(),
+    };
+    emit_outputs(config, &verified, &rejected, &report)?;
+    Ok(report)
+}
+
+/// Generate, schema-check and verify one candidate. `client` may be `None`
+/// when the worker is unreachable: Rust-generated problems then fail
+/// verification (`verify_verifier_unavailable`) rather than panic.
+fn check_candidate(
+    spec: &'static GeneratorSpec,
+    seed: u64,
+    client: Option<&mut MathClient>,
+    schema_validator: &jsonschema::Validator,
+) -> Result<Problem, RejectRecord> {
+    let fail = |stage: &'static str, problem_id: Option<String>, code: &str, detail: String| {
+        RejectRecord {
+            generator: spec.name.to_owned(),
+            seed,
+            problem_id,
+            stage,
+            code: code.to_owned(),
+            detail,
+        }
+    };
+    let mut client = client;
+    let problem = generate(spec, seed, client.as_deref_mut())
+        .map_err(|err| fail("generate", None, err.code(), err.to_string()))?;
+    // The candidate must carry the provenance of the spec that produced it —
+    // a mislabeled `language` would route verification to the generator's own
+    // side of the boundary.
+    let expected_language = match spec.backend {
+        Backend::Rust => GeneratorLanguage::Rust,
+        Backend::Julia => GeneratorLanguage::Julia,
+    };
+    if problem.generator.name != spec.name || problem.generator.language != expected_language {
+        return Err(fail(
+            "generate",
+            Some(problem.problem_id.clone()),
+            "generate_language_mismatch",
+            format!(
+                "expected generator {}/{expected_language:?}, got {}/{:?}",
+                spec.name, problem.generator.name, problem.generator.language
+            ),
+        ));
+    }
+    // Second gate: the JSON Schema file itself, in case the worker's idea of
+    // the schema drifted from the repo's.
+    let as_json = serde_json::to_value(&problem)
+        .map_err(|err| fail("schema", None, "schema_serialize", err.to_string()))?;
+    if !schema_validator.is_valid(&as_json) {
+        let detail = schema_validator
+            .iter_errors(&as_json)
+            .map(|e| e.to_string())
+            .take(5)
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(fail(
+            "schema",
+            Some(problem.problem_id.clone()),
+            "schema_invalid",
+            detail,
+        ));
+    }
+    // Verify on the opposite side of the boundary. Rust-generated problems
+    // need the worker; without it they reject with verify_verifier_unavailable.
+    let outcome = match (problem.generator.language, client) {
+        (GeneratorLanguage::Julia, _) => tutor_verify::verify(&problem),
+        (GeneratorLanguage::Rust, Some(client)) => tutor_verify::verify_remote(&problem, client),
+        (GeneratorLanguage::Rust, None) => Err(Rejection {
+            problem_id: problem.problem_id.clone(),
+            code: tutor_verify::ReasonCode::VerifierUnavailable,
+            detail: "math worker unreachable".to_owned(),
+        }),
+    };
+    outcome.map_err(
+        |Rejection {
+             problem_id,
+             code,
+             detail,
+         }| fail("verify", Some(problem_id), code.as_str(), detail),
+    )
+}
+
+/// Write `verified/problems.jsonl`, `rejected/rejections.jsonl` and
+/// `manifest.json`. Each file is written to a temporary sibling and renamed
+/// into place, so a failed write never leaves a truncated artifact. An empty
+/// verified batch leaves an existing `problems.jsonl` untouched so a failed
+/// rerun cannot erase a previous batch.
+fn emit_outputs(
+    config: &RunConfig,
+    verified: &[Problem],
+    rejected: &[RejectRecord],
+    report: &RunReport,
+) -> std::io::Result<()> {
     let verified_dir = config.out_dir.join("verified");
     let rejected_dir = config.out_dir.join("rejected");
     std::fs::create_dir_all(&verified_dir)?;
     std::fs::create_dir_all(&rejected_dir)?;
-    write_jsonl(
-        &verified_dir.join("problems.jsonl"),
-        verified.iter().map(|p| serde_json::to_value(p).unwrap()),
-    )?;
-    write_jsonl(
+    if !verified.is_empty() {
+        stage_jsonl(
+            &verified_dir.join("problems.jsonl"),
+            verified
+                .iter()
+                .map(serde_json::to_value)
+                .map(|v| v.unwrap()),
+        )?;
+    }
+    stage_jsonl(
         &rejected_dir.join("rejections.jsonl"),
         rejected
             .iter()
             .map(serde_json::to_value)
-            .map(|r| r.unwrap()),
+            .map(|v| v.unwrap()),
     )?;
+    let manifest = serde_json::to_string_pretty(report).map_err(|e| io_err(e.to_string()))?;
+    let manifest_path = config.out_dir.join("manifest.json");
+    let tmp = manifest_path.with_extension("json.tmp");
+    std::fs::write(&tmp, manifest)?;
+    publish(&tmp, &manifest_path)
+}
 
+/// Write `rows` to a temporary sibling of `path`, then rename it into place.
+fn stage_jsonl(path: &Path, rows: impl Iterator<Item = serde_json::Value>) -> std::io::Result<()> {
+    let tmp = path.with_extension("jsonl.tmp");
+    write_jsonl(&tmp, rows)?;
+    publish(&tmp, path)
+}
+
+/// Replace `dest` with the fully written `tmp` file.
+fn publish(tmp: &Path, dest: &Path) -> std::io::Result<()> {
+    // rename does not replace an existing destination on Windows.
+    if dest.exists() {
+        std::fs::remove_file(dest)?;
+    }
+    std::fs::rename(tmp, dest)
+}
+
+/// Per-generator generated/verified/rejected counts for the manifest.
+fn generator_counts(
+    config: &RunConfig,
+    verified: &[Problem],
+    rejected: &[RejectRecord],
+) -> BTreeMap<String, GeneratorCounts> {
     let mut generators: BTreeMap<String, GeneratorCounts> = BTreeMap::new();
     for spec in &config.generators {
         generators.insert(spec.name.to_owned(), GeneratorCounts::default());
     }
-    for p in &verified {
+    for p in verified {
         let counts = generators.entry(p.generator.name.clone()).or_default();
         counts.generated += 1;
         counts.verified += 1;
     }
-    for r in &rejected {
+    for r in rejected {
         let counts = generators.entry(r.generator.clone()).or_default();
-        counts.generated += 1;
+        // Only candidates that produced a problem count as generated.
+        counts.generated += usize::from(r.problem_id.is_some());
         counts.rejected += 1;
     }
-
-    let report = RunReport {
-        schema: "schemas/problem.schema.json".to_owned(),
-        endpoint: config.endpoint.clone(),
-        seeds: format!(
-            "{}..{}",
-            config.seed_start,
-            config.seed_start + config.count
-        ),
-        generators,
-        total_verified: verified.len(),
-        total_rejected: rejected.len(),
-    };
-    let manifest = serde_json::to_string_pretty(&report).map_err(|e| io_err(e.to_string()))?;
-    std::fs::write(config.out_dir.join("manifest.json"), manifest)?;
-    Ok(report)
+    generators
 }
 
 fn io_err(message: String) -> std::io::Error {

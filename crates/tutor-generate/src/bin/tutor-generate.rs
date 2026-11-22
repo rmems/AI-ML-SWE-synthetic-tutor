@@ -30,9 +30,10 @@ enum Command {
         /// Seeds per generator.
         #[arg(long, default_value_t = 40)]
         count: u64,
-        /// ZMQ endpoint of the math-julia worker.
-        #[arg(long, default_value = DEFAULT_ENDPOINT)]
-        endpoint: String,
+        /// ZMQ endpoint of the math-julia worker
+        /// (default: $TUTOR_MATH_ENDPOINT or the built-in endpoint).
+        #[arg(long)]
+        endpoint: Option<String>,
         /// Per-request timeout in seconds.
         #[arg(long, default_value_t = 30)]
         timeout_secs: u64,
@@ -67,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             schema,
             out,
         } => {
-            let specs: Vec<_> = if generators.is_empty() {
+            let mut specs: Vec<_> = if generators.is_empty() {
                 GENERATORS.iter().collect()
             } else {
                 generators
@@ -75,6 +76,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|name| spec(name).ok_or_else(|| format!("unknown generator {name:?}")))
                     .collect::<Result<_, String>>()?
             };
+            specs.sort_by_key(|s| s.name);
+            specs.dedup_by_key(|s| s.name);
+            let endpoint = endpoint.or_else(|| std::env::var("TUTOR_MATH_ENDPOINT").ok());
+            let endpoint = endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
             let schema_json: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&schema)?)?;
             let report = run(&RunConfig {
@@ -85,6 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 timeout: Duration::from_secs(timeout_secs),
                 out_dir: out.clone(),
                 schema_json,
+                schema: schema.display().to_string(),
             })?;
             for (name, counts) in &report.generators {
                 println!(
