@@ -120,6 +120,14 @@ fn julia_verify_answer_round_trip() {
     *m = 1_000_000;
     let rejection = tutor_verify::verify_remote(&huge, &mut client).unwrap_err();
     assert_eq!(rejection.code, ReasonCode::SchemaInvalid);
+
+    // Sent straight over the wire — past verify_remote's Rust-side gate — the
+    // worker's own dense_binomial bound still refuses the exponent.
+    let direct = client.verify_answer(&huge).unwrap_err();
+    assert!(
+        direct.to_string().contains("exponent must be below"),
+        "{direct:?}"
+    );
 }
 
 /// A problem of the same shape `tutor-generate`'s Rust binomial generator

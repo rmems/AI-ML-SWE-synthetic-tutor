@@ -194,6 +194,8 @@ struct Replay {
     produced: HashMap<i64, u64>,
     /// The last produced integer (the running result chain head).
     last: Option<i64>,
+    /// Index of the step being replayed, for error messages.
+    step_index: usize,
 }
 
 impl Replay {
@@ -215,6 +217,7 @@ impl Replay {
             declared,
             produced: HashMap::new(),
             last: None,
+            step_index: 0,
         }
     }
 
@@ -249,21 +252,23 @@ impl Replay {
         }
     }
 
-    fn replay_differentiate(
-        &mut self,
-        i: usize,
-        input: &[i64],
-        output: &[i64],
-    ) -> Result<(), String> {
+    /// `steps[i]` in error messages.
+    fn step_prefix(&self) -> String {
+        format!("steps[{}]", self.step_index)
+    }
+
+    fn replay_differentiate(&mut self, input: &[i64], output: &[i64]) -> Result<(), String> {
+        let at = self.step_prefix();
         if !self.polynomial_known(input) {
             return Err(format!(
-                "steps[{i}]: differentiate input {input:?} is not a declared parameter or earlier output"
+                "{at}: differentiate input {input:?} is not a declared parameter or earlier output"
             ));
         }
-        let recomputed = polynomial_derivative(input).ok_or("steps[{i}]: derivative overflowed")?;
+        let recomputed =
+            polynomial_derivative(input).ok_or(format!("{at}: derivative overflowed"))?;
         if recomputed != output {
             return Err(format!(
-                "steps[{i}]: derivative of {input:?} is {recomputed:?}, not {output:?}"
+                "{at}: derivative of {input:?} is {recomputed:?}, not {output:?}"
             ));
         }
         self.produce_polynomial(output.to_vec());
@@ -272,27 +277,27 @@ impl Replay {
 
     fn replay_evaluate(
         &mut self,
-        i: usize,
         coefficients: &[i64],
         point: i64,
         value: i64,
     ) -> Result<(), String> {
+        let at = self.step_prefix();
         if !self.polynomial_known(coefficients) {
             return Err(format!(
-                "steps[{i}]: evaluate coefficients {coefficients:?} are not a declared parameter or earlier output"
+                "{at}: evaluate coefficients {coefficients:?} are not a declared parameter or earlier output"
             ));
         }
         // `point` must be a declared parameter or an earlier integer output.
         if !self.take_integer(point) {
             return Err(format!(
-                "steps[{i}]: evaluation point {point} is not a declared parameter or earlier output"
+                "{at}: evaluation point {point} is not a declared parameter or earlier output"
             ));
         }
-        let recomputed =
-            polynomial_value_at(coefficients, point).ok_or("steps[{i}]: evaluation overflowed")?;
+        let recomputed = polynomial_value_at(coefficients, point)
+            .ok_or(format!("{at}: evaluation overflowed"))?;
         if recomputed != value {
             return Err(format!(
-                "steps[{i}]: {coefficients:?} at {point} is {recomputed}, not {value}"
+                "{at}: {coefficients:?} at {point} is {recomputed}, not {value}"
             ));
         }
         self.produce_integer(value);
@@ -303,15 +308,15 @@ impl Replay {
     /// checked `op` semantics, compare and produce `value`.
     fn replay_combine(
         &mut self,
-        i: usize,
         op: CombineOp,
         operands: &[i64],
         value: i64,
     ) -> Result<(), String> {
+        let at = self.step_prefix();
         for operand in operands {
             if !self.take_integer(*operand) {
                 return Err(format!(
-                    "steps[{i}]: {} {operand} is not a declared parameter or earlier output",
+                    "{at}: {} {operand} is not a declared parameter or earlier output",
                     op.operand_name()
                 ));
             }
@@ -319,10 +324,10 @@ impl Replay {
         let recomputed = operands
             .iter()
             .try_fold(op.identity(), |acc, o| op.combine(acc, *o))
-            .ok_or(format!("steps[{i}]: recomputation overflowed"))?;
+            .ok_or(format!("{at}: recomputation overflowed"))?;
         if recomputed != value {
             return Err(format!(
-                "steps[{i}]: {}s {operands:?} combine to {recomputed}, not {value}",
+                "{at}: {}s {operands:?} combine to {recomputed}, not {value}",
                 op.operand_name()
             ));
         }
@@ -390,19 +395,20 @@ fn replay_steps(problem: &Problem) -> Result<i64, String> {
 }
 
 fn replay_step(replay: &mut Replay, i: usize, step: &Step) -> Result<(), String> {
+    replay.step_index = i;
     match step {
         Step::DifferentiatePolynomial { input, output } => {
-            replay.replay_differentiate(i, input, output)
+            replay.replay_differentiate(input, output)
         }
         Step::EvaluatePolynomial {
             coefficients,
             point,
             value,
-        } => replay.replay_evaluate(i, coefficients, *point, *value),
+        } => replay.replay_evaluate(coefficients, *point, *value),
         Step::Multiply { factors, value } => {
-            replay.replay_combine(i, CombineOp::Multiply, factors, *value)
+            replay.replay_combine(CombineOp::Multiply, factors, *value)
         }
-        Step::Add { addends, value } => replay.replay_combine(i, CombineOp::Add, addends, *value),
+        Step::Add { addends, value } => replay.replay_combine(CombineOp::Add, addends, *value),
     }
 }
 
