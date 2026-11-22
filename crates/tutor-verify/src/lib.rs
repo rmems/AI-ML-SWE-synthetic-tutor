@@ -255,91 +255,127 @@ impl Replay {
 /// Returns the final step's value on success.
 fn replay_steps(problem: &Problem) -> Result<i64, String> {
     let mut replay = Replay::new(problem);
+    let mut saw_differentiation = false;
     for (i, step) in problem.steps.iter().enumerate() {
-        match step {
-            Step::DifferentiatePolynomial { input, output } => {
-                if !replay.polynomial_known(input) {
-                    return Err(format!(
-                        "steps[{i}]: differentiate input {input:?} is not a declared parameter or earlier output"
-                    ));
-                }
-                let recomputed =
-                    polynomial_derivative(input).ok_or("steps[{i}]: derivative overflowed")?;
-                if &recomputed != output {
-                    return Err(format!(
-                        "steps[{i}]: derivative of {input:?} is {recomputed:?}, not {output:?}"
-                    ));
-                }
-                replay.produce_polynomial(output.clone());
-            }
-            Step::EvaluatePolynomial {
-                coefficients,
-                point,
-                value,
-            } => {
-                if !replay.polynomial_known(coefficients) {
-                    return Err(format!(
-                        "steps[{i}]: evaluate coefficients {coefficients:?} are not a declared parameter or earlier output"
-                    ));
-                }
-                // `point` must be a declared parameter or an earlier integer output.
-                if !replay.take_integer(*point) {
-                    return Err(format!(
-                        "steps[{i}]: evaluation point {point} is not a declared parameter or earlier output"
-                    ));
-                }
-                let recomputed = polynomial_value_at(coefficients, *point)
-                    .ok_or("steps[{i}]: evaluation overflowed")?;
-                if recomputed != *value {
-                    return Err(format!(
-                        "steps[{i}]: {coefficients:?} at {point} is {recomputed}, not {value}"
-                    ));
-                }
-                replay.produce_integer(*value);
-            }
-            Step::Multiply { factors, value } => {
-                for factor in factors {
-                    if !replay.take_integer(*factor) {
-                        return Err(format!(
-                            "steps[{i}]: factor {factor} is not a declared parameter or earlier output"
-                        ));
-                    }
-                }
-                let recomputed = factors
-                    .iter()
-                    .try_fold(1i64, |acc, f| acc.checked_mul(*f))
-                    .ok_or("steps[{i}]: product overflowed")?;
-                if recomputed != *value {
-                    return Err(format!(
-                        "steps[{i}]: product of {factors:?} is {recomputed}, not {value}"
-                    ));
-                }
-                replay.produce_integer(*value);
-            }
-            Step::Add { addends, value } => {
-                for addend in addends {
-                    if !replay.take_integer(*addend) {
-                        return Err(format!(
-                            "steps[{i}]: addend {addend} is not a declared parameter or earlier output"
-                        ));
-                    }
-                }
-                let recomputed = addends
-                    .iter()
-                    .try_fold(0i64, |acc, a| acc.checked_add(*a))
-                    .ok_or("steps[{i}]: sum overflowed")?;
-                if recomputed != *value {
-                    return Err(format!(
-                        "steps[{i}]: sum of {addends:?} is {recomputed}, not {value}"
-                    ));
-                }
-                replay.produce_integer(*value);
-            }
-        }
+        replay_step(&mut replay, i, step)?;
+        saw_differentiation |= matches!(step, Step::DifferentiatePolynomial { .. });
+    }
+    // Every topic is a derivative problem: a solution that never
+    // differentiates cannot have shown the work for the answer.
+    if !saw_differentiation {
+        return Err("steps never differentiate a polynomial".to_owned());
+    }
+    // The worked solution must end on the answer: a trailing non-integer step
+    // (e.g. a spare differentiation) leaves a result chain that never lands.
+    if !matches!(
+        problem.steps.last(),
+        Some(Step::EvaluatePolynomial { .. } | Step::Multiply { .. } | Step::Add { .. })
+    ) {
+        return Err("steps must end on an integer-producing step".to_owned());
     }
     replay
         .last
         .ok_or_else(|| "no step produced an integer result".to_owned())
+}
+
+fn replay_step(replay: &mut Replay, i: usize, step: &Step) -> Result<(), String> {
+    match step {
+        Step::DifferentiatePolynomial { input, output } => {
+            replay_differentiate(replay, i, input, output)
+        }
+        Step::EvaluatePolynomial {
+            coefficients,
+            point,
+            value,
+        } => replay_evaluate(replay, i, coefficients, *point, *value),
+        Step::Multiply { factors, value } => {
+            replay_combine(replay, i, "factor", factors, *value, 1, i64::checked_mul)
+        }
+        Step::Add { addends, value } => {
+            replay_combine(replay, i, "addend", addends, *value, 0, i64::checked_add)
+        }
+    }
+}
+
+fn replay_differentiate(
+    replay: &mut Replay,
+    i: usize,
+    input: &[i64],
+    output: &[i64],
+) -> Result<(), String> {
+    if !replay.polynomial_known(input) {
+        return Err(format!(
+            "steps[{i}]: differentiate input {input:?} is not a declared parameter or earlier output"
+        ));
+    }
+    let recomputed = polynomial_derivative(input).ok_or("steps[{i}]: derivative overflowed")?;
+    if recomputed != output {
+        return Err(format!(
+            "steps[{i}]: derivative of {input:?} is {recomputed:?}, not {output:?}"
+        ));
+    }
+    replay.produce_polynomial(output.to_vec());
+    Ok(())
+}
+
+fn replay_evaluate(
+    replay: &mut Replay,
+    i: usize,
+    coefficients: &[i64],
+    point: i64,
+    value: i64,
+) -> Result<(), String> {
+    if !replay.polynomial_known(coefficients) {
+        return Err(format!(
+            "steps[{i}]: evaluate coefficients {coefficients:?} are not a declared parameter or earlier output"
+        ));
+    }
+    // `point` must be a declared parameter or an earlier integer output.
+    if !replay.take_integer(point) {
+        return Err(format!(
+            "steps[{i}]: evaluation point {point} is not a declared parameter or earlier output"
+        ));
+    }
+    let recomputed =
+        polynomial_value_at(coefficients, point).ok_or("steps[{i}]: evaluation overflowed")?;
+    if recomputed != value {
+        return Err(format!(
+            "steps[{i}]: {coefficients:?} at {point} is {recomputed}, not {value}"
+        ));
+    }
+    replay.produce_integer(value);
+    Ok(())
+}
+
+/// Shared replay for `multiply`/`add`: consume each operand, recompute with the
+/// checked `combine`, compare and produce `value`.
+fn replay_combine(
+    replay: &mut Replay,
+    i: usize,
+    operand_name: &str,
+    operands: &[i64],
+    value: i64,
+    identity: i64,
+    combine: fn(i64, i64) -> Option<i64>,
+) -> Result<(), String> {
+    for operand in operands {
+        if !replay.take_integer(*operand) {
+            return Err(format!(
+                "steps[{i}]: {operand_name} {operand} is not a declared parameter or earlier output"
+            ));
+        }
+    }
+    let recomputed = operands
+        .iter()
+        .try_fold(identity, |acc, o| combine(acc, *o))
+        .ok_or(format!("steps[{i}]: recomputation overflowed"))?;
+    if recomputed != value {
+        return Err(format!(
+            "steps[{i}]: {operand_name}s {operands:?} combine to {recomputed}, not {value}"
+        ));
+    }
+    replay.produce_integer(value);
+    Ok(())
 }
 
 /// Check `problem` independently (schema, step replay, answer recompute) and
@@ -410,24 +446,33 @@ pub fn verify_remote(
             Some("verify_step_replay") => ReasonCode::StepReplay,
             Some("verify_overflow") => ReasonCode::Overflow,
             Some("verify_unknown_parameter_kind") => ReasonCode::UnknownParameterKind,
-            Some("verify_schema_invalid") => ReasonCode::SchemaInvalid,
+            Some("verify_schema_invalid") | Some("malformed_problem") => ReasonCode::SchemaInvalid,
             Some("verify_already_verified") => ReasonCode::AlreadyVerified,
-            Some(_) | None => ReasonCode::StepReplay,
+            // A verifier-side failure (internal_error or an unrecognized
+            // code) is not the problem's fault.
+            Some(_) | None => ReasonCode::VerifierUnavailable,
         };
         return Err(Rejection::new(&problem, code, detail));
     }
-    if let Some(expected) = expected {
-        let expected: i64 = serde_json::from_value(expected).map_err(|err| {
-            Rejection::new(&problem, ReasonCode::VerifierUnavailable, err.to_string())
-        })?;
-        let Answer::Integer { value } = problem.answer;
-        if expected != value {
-            return Err(Rejection::new(
-                &problem,
-                ReasonCode::AnswerMismatch,
-                format!("stated {value}, worker computed {expected}"),
-            ));
-        }
+    // A passing verdict must carry the worker's independently computed
+    // answer; `verified: true` without it proves nothing.
+    let Some(expected) = expected else {
+        return Err(Rejection::new(
+            &problem,
+            ReasonCode::VerifierUnavailable,
+            "worker verdict omitted the recomputed answer",
+        ));
+    };
+    let expected: i64 = serde_json::from_value(expected).map_err(|err| {
+        Rejection::new(&problem, ReasonCode::VerifierUnavailable, err.to_string())
+    })?;
+    let Answer::Integer { value } = problem.answer;
+    if expected != value {
+        return Err(Rejection::new(
+            &problem,
+            ReasonCode::AnswerMismatch,
+            format!("stated {value}, worker computed {expected}"),
+        ));
     }
     problem.verification = Some(Verification {
         method: JULIA_RECOMPUTE.to_owned(),
@@ -741,8 +786,15 @@ mod tests {
 
     #[test]
     fn fails_closed() {
-        // Derivative [0, MAX/2] fits, but evaluating it at x = 4 overflows.
-        let overflow = verify(&problem(vec![0, 0, i64::MAX / 4], 4, 0)).unwrap_err();
+        // Derivative [0, 2·u32::MAX] fits, but evaluating it at x = u32::MAX overflows.
+        // Loose declared bounds let the parameters validate; replay still fails closed.
+        let mut overflowing = problem(vec![0, 0, i64::from(u32::MAX)], i64::from(u32::MAX), 0);
+        overflowing.difficulty = Difficulty {
+            max_degree: 4,
+            coefficient_bound: u32::MAX,
+            point_bound: u32::MAX,
+        };
+        let overflow = verify(&overflowing).unwrap_err();
         assert_eq!(overflow.code, ReasonCode::Overflow);
         let invalid = verify(&problem(vec![1, 0], 2, 0)).unwrap_err();
         assert_eq!(invalid.code, ReasonCode::SchemaInvalid);

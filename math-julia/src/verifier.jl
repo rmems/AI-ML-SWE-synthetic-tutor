@@ -15,7 +15,40 @@ const VERIFY_KINDS = Set([
     "chain_rule_at_point",
 ])
 
+# Checked integer arithmetic: the verifier never wraps. Any overflow throws
+# `OverflowError`, which `verify_answer` maps to `verify_overflow` — the Rust
+# side uses checked ops throughout, so the two verifiers agree.
+checked_mul(a::Integer, b::Integer) = Base.checked_mul(a, b)
+checked_add(a::Integer, b::Integer) = Base.checked_add(a, b)
+
+"""`p(x)` for `p = Σ c_k x^k` (Horner, checked). Throws `OverflowError`."""
+function checked_polynomial_at(coeffs::AbstractVector{<:Integer}, x::Integer)::Int
+    acc = 0
+    for c in Iterators.reverse(coeffs)
+        acc = checked_add(checked_mul(acc, x), c)
+    end
+    return acc
+end
+
+"""`p'(x)`, checked. Throws `OverflowError`."""
+checked_derivative_at(coeffs::AbstractVector{<:Integer}, x::Integer) =
+    checked_polynomial_at(derivative_coefficients(coeffs), x)
+
+checked_product(v::AbstractVector{<:Integer}) = foldl(checked_mul, v; init = 1)
+checked_sum(v::AbstractVector{<:Integer}) = foldl(checked_add, v; init = 0)
+
+# Dense binomial coefficients; `m` is request-controlled, so bound it like the
+# schema does (m + 1 entries, at most MAX_COEFFICIENTS) or a huge exponent
+# becomes a memory-exhaustion attack on the worker.
+const MAX_DENSE_LENGTH = 16
+
 function dense_binomial(a::Integer, m::Integer, b::Integer, n::Integer)::Vector{Int}
+    (1 <= m < MAX_DENSE_LENGTH && 0 <= n < m) || throw(
+        RequestError(
+            "malformed_problem",
+            "binomial exponents must satisfy 0 <= n < m < $MAX_DENSE_LENGTH",
+        ),
+    )
     coeffs = zeros(Int, m + 1)
     coeffs[m + 1] = a
     coeffs[n + 1] = b
@@ -34,7 +67,7 @@ function expected_answer(problem::AbstractDict)::Int
         throw(RequestError("malformed_problem", "parameters must be an object"))
     kind = get(parameters, "kind", nothing)
     if kind == "polynomial_derivative_at_point"
-        return derivative_at(
+        return checked_derivative_at(
             [Int(c) for c in parameters["coefficients"]],
             Int(parameters["point"]),
         )
@@ -43,19 +76,27 @@ function expected_answer(problem::AbstractDict)::Int
         m = Int(parameters["m"])
         b = Int(parameters["b"])
         n = Int(parameters["n"])
-        return derivative_at(dense_binomial(a, m, b, n), Int(parameters["point"]))
+        return checked_derivative_at(
+            dense_binomial(a, m, b, n),
+            Int(parameters["point"]),
+        )
     elseif kind == "product_rule_at_point"
         p = [Int(c) for c in parameters["p"]]
         q = [Int(c) for c in parameters["q"]]
         x = Int(parameters["point"])
-        return derivative_at(p, x) * polynomial_at(q, x) +
-               polynomial_at(p, x) * derivative_at(q, x)
+        return checked_add(
+            checked_mul(checked_derivative_at(p, x), checked_polynomial_at(q, x)),
+            checked_mul(checked_polynomial_at(p, x), checked_derivative_at(q, x)),
+        )
     elseif kind == "chain_rule_at_point"
         outer = [Int(c) for c in parameters["outer"]]
         inner = [Int(c) for c in parameters["inner"]]
         x = Int(parameters["point"])
-        u = polynomial_at(inner, x)
-        return polynomial_at(derivative_coefficients(outer), u) * derivative_at(inner, x)
+        u = checked_polynomial_at(inner, x)
+        return checked_mul(
+            checked_polynomial_at(derivative_coefficients(outer), u),
+            checked_derivative_at(inner, x),
+        )
     else
         throw(RequestError("verify_unknown_parameter_kind", "cannot verify kind $(repr(kind))"))
     end
@@ -104,10 +145,14 @@ function replay_steps(problem::AbstractDict)
     produced = Dict{Int,Int}()  # value => remaining uses
     polynomials = Set{Vector{Int}}()
     last_value = nothing
+    ended_on_value = false
+    saw_differentiation = false
     for (i, step) in enumerate(steps)
         step isa AbstractDict ||
             throw(RequestError("malformed_problem", "step $i must be an object"))
         skind = get(step, "kind", nothing)
+        ended_on_value = skind != "differentiate_polynomial"
+        saw_differentiation |= skind == "differentiate_polynomial"
         if skind == "differentiate_polynomial"
             input = [Int(c) for c in step["input"]]
             output = [Int(c) for c in step["output"]]
@@ -126,7 +171,7 @@ function replay_steps(problem::AbstractDict)
             end
             use_integer!(produced, declared, x) ||
                 return (false, "step $i: evaluation point not produced")
-            polynomial_at(coeffs, x) == value ||
+            checked_polynomial_at(coeffs, x) == value ||
                 return (false, "step $i: wrong evaluation")
             produced[value] = get(produced, value, 0) + 1
             last_value = value
@@ -137,7 +182,8 @@ function replay_steps(problem::AbstractDict)
                 use_integer!(produced, declared, f) ||
                     return (false, "step $i: factor $f not produced")
             end
-            prod(factors) == value || return (false, "step $i: wrong product")
+            checked_product(factors) == value ||
+                return (false, "step $i: wrong product")
             produced[value] = get(produced, value, 0) + 1
             last_value = value
         elseif skind == "add"
@@ -147,7 +193,8 @@ function replay_steps(problem::AbstractDict)
                 use_integer!(produced, declared, d) ||
                     return (false, "step $i: addend $d not produced")
             end
-            sum(addends) == value || return (false, "step $i: wrong sum")
+            checked_sum(addends) == value ||
+                return (false, "step $i: wrong sum")
             produced[value] = get(produced, value, 0) + 1
             last_value = value
         else
@@ -156,6 +203,12 @@ function replay_steps(problem::AbstractDict)
     end
     last_value === nothing &&
         return (false, "steps produce no integer answer")
+    # Every topic is a derivative problem: a worked solution must actually
+    # differentiate something, and it must end on the answer.
+    saw_differentiation ||
+        return (false, "steps never differentiate a polynomial")
+    ended_on_value ||
+        return (false, "steps must end on an integer-producing step")
     return (true, last_value)
 end
 

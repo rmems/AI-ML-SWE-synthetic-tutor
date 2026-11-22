@@ -14,7 +14,10 @@
 //! `TUTOR_MATH_ENDPOINT` overrides the endpoint for both sides.
 
 use std::time::Duration;
-use tutor_schema::{Answer, GeneratorLanguage};
+use tutor_schema::{
+    Answer, Difficulty, GeneratorLanguage, GeneratorProvenance, MisconceptionId, Parameters,
+    Problem, Step,
+};
 use tutor_verify::{ReasonCode, verify};
 use tutor_wire::{MathClient, PROTOCOL};
 
@@ -101,6 +104,63 @@ fn julia_verify_answer_round_trip() {
         ),
         "{rejection:?}"
     );
+
+    // The Rust-native binomial parameter kind is verified by the worker too:
+    // the same shape tutor-generate emits, not a relabeled Julia problem.
+    let binomial = rust_binomial_problem(3, 4, -2, 2, 1);
+    tutor_verify::verify_remote(&binomial, &mut client)
+        .expect("worker verifies rust binomial problem");
+
+    // An out-of-schema exponent must reject, never reach the worker's dense
+    // binomial allocation.
+    let mut huge = rust_binomial_problem(1, 2, 1, 1, 0);
+    let Parameters::BinomialDerivativeAtPoint { m, .. } = &mut huge.parameters else {
+        unreachable!()
+    };
+    *m = 1_000_000;
+    let rejection = tutor_verify::verify_remote(&huge, &mut client).unwrap_err();
+    assert_eq!(rejection.code, ReasonCode::SchemaInvalid);
+}
+
+/// A problem of the same shape `tutor-generate`'s Rust binomial generator
+/// emits (kind `binomial_derivative_at_point`, `language = "rust"`).
+fn rust_binomial_problem(a: i64, m: u32, b: i64, n: u32, point: i64) -> Problem {
+    let dense = tutor_verify::dense_binomial(a, m, b, n);
+    let derivative = tutor_verify::polynomial_derivative(&dense).unwrap();
+    let value = tutor_verify::polynomial_value_at(&derivative, point).unwrap();
+    Problem {
+        schema_version: 1,
+        problem_id: format!("binomial_derivative_at_point/v1/seed-{a}-{m}-{b}-{n}"),
+        topic: "calculus.derivatives.power_rule".into(),
+        generator: GeneratorProvenance {
+            name: "binomial_derivative_at_point".into(),
+            version: 1,
+            language: GeneratorLanguage::Rust,
+            runtime_version: "test".into(),
+            seed: 0,
+        },
+        statement: format!("Let f(x) = {a}x^{m} + {b}x^{n}. Compute f'({point})."),
+        parameters: Parameters::BinomialDerivativeAtPoint { a, m, b, n, point },
+        difficulty: Difficulty {
+            max_degree: 6,
+            coefficient_bound: 9,
+            point_bound: 5,
+        },
+        answer: Answer::Integer { value },
+        steps: vec![
+            Step::DifferentiatePolynomial {
+                input: dense,
+                output: derivative.clone(),
+            },
+            Step::EvaluatePolynomial {
+                coefficients: derivative,
+                point,
+                value,
+            },
+        ],
+        misconception_ids: vec![MisconceptionId::DerivativesPowerRuleOvergeneralised],
+        verification: None,
+    }
 }
 
 #[test]
