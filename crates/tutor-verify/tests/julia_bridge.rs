@@ -107,13 +107,13 @@ fn julia_verify_answer_round_trip() {
 
     // The Rust-native binomial parameter kind is verified by the worker too:
     // the same shape tutor-generate emits, not a relabeled Julia problem.
-    let binomial = rust_binomial_problem(3, 4, -2, 2, 1);
+    let binomial = rust_binomial_problem(((3, 4), (-2, 2)), 1);
     tutor_verify::verify_remote(&binomial, &mut client)
         .expect("worker verifies rust binomial problem");
 
     // An out-of-schema exponent must reject, never reach the worker's dense
     // binomial allocation.
-    let mut huge = rust_binomial_problem(1, 2, 1, 1, 0);
+    let mut huge = rust_binomial_problem(((1, 2), (1, 1)), 0);
     let Parameters::BinomialDerivativeAtPoint { m, .. } = &mut huge.parameters else {
         unreachable!()
     };
@@ -124,7 +124,8 @@ fn julia_verify_answer_round_trip() {
 
 /// A problem of the same shape `tutor-generate`'s Rust binomial generator
 /// emits (kind `binomial_derivative_at_point`, `language = "rust"`).
-fn rust_binomial_problem(a: i64, m: u32, b: i64, n: u32, point: i64) -> Problem {
+fn rust_binomial_problem(terms: ((i64, u32), (i64, u32)), point: i64) -> Problem {
+    let ((a, m), (b, n)) = terms;
     let dense = tutor_verify::dense_binomial(a, m, b, n);
     let derivative = tutor_verify::polynomial_derivative(&dense).unwrap();
     let value = tutor_verify::polynomial_value_at(&derivative, point).unwrap();

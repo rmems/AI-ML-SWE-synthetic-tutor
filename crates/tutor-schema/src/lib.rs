@@ -148,6 +148,18 @@ pub enum Parameters {
     },
 }
 
+impl Parameters {
+    /// The point every parameter kind evaluates at.
+    pub fn point(&self) -> &i64 {
+        match self {
+            Parameters::PolynomialDerivativeAtPoint { point, .. }
+            | Parameters::BinomialDerivativeAtPoint { point, .. }
+            | Parameters::ProductRuleAtPoint { point, .. }
+            | Parameters::ChainRuleAtPoint { point, .. } => point,
+        }
+    }
+}
+
 /// The ranges a generator drew from; recorded so difficulty is comparable
 /// across problems of one family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +172,19 @@ pub struct Difficulty {
     pub coefficient_bound: u32,
     /// Inclusive bound on the evaluation point magnitude.
     pub point_bound: u32,
+}
+
+impl Difficulty {
+    /// Every bound must be positive.
+    pub fn validate(&self) -> Result<(), SchemaError> {
+        if self.max_degree == 0 || self.coefficient_bound == 0 || self.point_bound == 0 {
+            return Err(invalid(
+                "difficulty",
+                "max_degree, coefficient_bound and point_bound must be positive",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// One worked-solution step, tagged by `kind`.
@@ -484,15 +509,7 @@ impl Problem {
         }
         require_non_empty("statement", &self.statement)?;
         self.validate_parameters()?;
-        if self.difficulty.max_degree == 0
-            || self.difficulty.coefficient_bound == 0
-            || self.difficulty.point_bound == 0
-        {
-            return Err(invalid(
-                "difficulty",
-                "max_degree, coefficient_bound and point_bound must be positive",
-            ));
-        }
+        self.difficulty.validate()?;
         self.validate_difficulty_bounds()?;
         self.validate_steps()?;
         if self.misconception_ids.is_empty() || self.misconception_ids.len() > MAX_MISCONCEPTION_IDS
@@ -535,93 +552,23 @@ impl Problem {
     /// Parameters must fit inside the `difficulty` bounds they declare.
     fn validate_difficulty_bounds(&self) -> Result<(), SchemaError> {
         let d = &self.difficulty;
-        let check_poly = |field: &str, coefficients: &[i64]| -> Result<(), SchemaError> {
-            if coefficients.len().saturating_sub(1) > d.max_degree as usize {
-                return Err(invalid(
-                    "parameters",
-                    format!(
-                        "{field} degree exceeds difficulty.max_degree {}",
-                        d.max_degree
-                    ),
-                ));
-            }
-            for c in coefficients {
-                if c.unsigned_abs() > u64::from(d.coefficient_bound) {
-                    return Err(invalid(
-                        "parameters",
-                        format!(
-                            "{field} coefficient {c} exceeds difficulty.coefficient_bound {}",
-                            d.coefficient_bound
-                        ),
-                    ));
-                }
-            }
-            Ok(())
-        };
-        let check_point = |point: i64| -> Result<(), SchemaError> {
-            if point.unsigned_abs() > u64::from(d.point_bound) {
-                return Err(invalid(
-                    "parameters",
-                    format!(
-                        "point {point} exceeds difficulty.point_bound {}",
-                        d.point_bound
-                    ),
-                ));
-            }
-            Ok(())
-        };
         match &self.parameters {
-            Parameters::PolynomialDerivativeAtPoint {
-                coefficients,
-                point,
-            } => {
-                check_poly("parameters.coefficients", coefficients)?;
-                check_point(*point)
+            Parameters::PolynomialDerivativeAtPoint { coefficients, .. } => {
+                check_polynomial_bounds("parameters.coefficients", coefficients, d)?;
             }
-            Parameters::BinomialDerivativeAtPoint {
-                a,
-                m,
-                b,
-                n: _,
-                point,
-            } => {
-                if *m > d.max_degree {
-                    return Err(invalid(
-                        "parameters",
-                        format!(
-                            "exponent m={m} exceeds difficulty.max_degree {}",
-                            d.max_degree
-                        ),
-                    ));
-                }
-                for (name, c) in [("a", a), ("b", b)] {
-                    if c.unsigned_abs() > u64::from(d.coefficient_bound) {
-                        return Err(invalid(
-                            "parameters",
-                            format!(
-                                "{name}={c} exceeds difficulty.coefficient_bound {}",
-                                d.coefficient_bound
-                            ),
-                        ));
-                    }
-                }
-                check_point(*point)
+            Parameters::BinomialDerivativeAtPoint { a, m, b, point, .. } => {
+                return check_binomial_bounds(*a, *m, *b, *point, d);
             }
-            Parameters::ProductRuleAtPoint { p, q, point } => {
-                check_poly("parameters.p", p)?;
-                check_poly("parameters.q", q)?;
-                check_point(*point)
+            Parameters::ProductRuleAtPoint { p, q, .. } => {
+                check_polynomial_bounds("parameters.p", p, d)?;
+                check_polynomial_bounds("parameters.q", q, d)?;
             }
-            Parameters::ChainRuleAtPoint {
-                outer,
-                inner,
-                point,
-            } => {
-                check_poly("parameters.outer", outer)?;
-                check_poly("parameters.inner", inner)?;
-                check_point(*point)
+            Parameters::ChainRuleAtPoint { outer, inner, .. } => {
+                check_polynomial_bounds("parameters.outer", outer, d)?;
+                check_polynomial_bounds("parameters.inner", inner, d)?;
             }
         }
+        check_point_bound(*self.parameters.point(), d)
     }
 
     fn validate_steps(&self) -> Result<(), SchemaError> {
@@ -636,6 +583,82 @@ impl Problem {
         }
         Ok(())
     }
+}
+
+/// A parameter polynomial's degree and coefficient magnitudes must fit the
+/// declared difficulty bounds.
+fn check_polynomial_bounds(
+    field: &str,
+    coefficients: &[i64],
+    d: &Difficulty,
+) -> Result<(), SchemaError> {
+    if coefficients.len().saturating_sub(1) > d.max_degree as usize {
+        return Err(invalid(
+            "parameters",
+            format!(
+                "{field} degree exceeds difficulty.max_degree {}",
+                d.max_degree
+            ),
+        ));
+    }
+    for c in coefficients {
+        if c.unsigned_abs() > u64::from(d.coefficient_bound) {
+            return Err(invalid(
+                "parameters",
+                format!(
+                    "{field} coefficient {c} exceeds difficulty.coefficient_bound {}",
+                    d.coefficient_bound
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The binomial's exponent and coefficients must fit the declared difficulty
+/// bounds.
+fn check_binomial_bounds(
+    a: i64,
+    m: u32,
+    b: i64,
+    point: i64,
+    d: &Difficulty,
+) -> Result<(), SchemaError> {
+    if m > d.max_degree {
+        return Err(invalid(
+            "parameters",
+            format!(
+                "exponent m={m} exceeds difficulty.max_degree {}",
+                d.max_degree
+            ),
+        ));
+    }
+    for (name, c) in [("a", a), ("b", b)] {
+        if c.unsigned_abs() > u64::from(d.coefficient_bound) {
+            return Err(invalid(
+                "parameters",
+                format!(
+                    "{name}={c} exceeds difficulty.coefficient_bound {}",
+                    d.coefficient_bound
+                ),
+            ));
+        }
+    }
+    check_point_bound(point, d)
+}
+
+/// The evaluation point must fit the declared difficulty bound.
+fn check_point_bound(point: i64, d: &Difficulty) -> Result<(), SchemaError> {
+    if point.unsigned_abs() > u64::from(d.point_bound) {
+        return Err(invalid(
+            "parameters",
+            format!(
+                "point {point} exceeds difficulty.point_bound {}",
+                d.point_bound
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_binomial(a: i64, m: u32, b: i64, n: u32) -> Result<(), SchemaError> {
