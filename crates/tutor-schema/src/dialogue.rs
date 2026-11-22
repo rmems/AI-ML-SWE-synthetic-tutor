@@ -94,8 +94,8 @@ pub struct Turn {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint_level: Option<u8>,
     /// Whether the turn states the verified final answer. May be `true` only
-    /// on the last turn (the tutor `closing` turn): the first tutor turn never
-    /// contains the final answer.
+    /// on an L4 worked-solution `hint` or on the last turn (the tutor
+    /// `closing` turn): no other turn reveals the answer.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reveals_final_answer: bool,
 }
@@ -126,16 +126,17 @@ pub enum Role {
 pub enum TurnKind {
     /// Student work on the problem, initial or retry.
     Attempt,
-    /// Student asks for the answer directly. Policy converts this into an L1
-    /// start: the next tutor turn must be a `hint` at level 1.
+    /// Student asks for the answer directly. Policy converts this into the
+    /// next rung of the ladder: the next tutor turn must be a `hint` at the
+    /// next level (L1 when no hint has been given yet).
     AnswerRequest,
     /// First tutor turn of a correction row: names what the attempt got
     /// right, then surfaces the misconception with a question. Never opens
     /// with the full solution.
     Diagnosis,
     /// One rung of the hint ladder: L1 nudge, L2 targeted diagnostic question,
-    /// L3 partial worked step, or L4 full worked solution. Levels strictly
-    /// increase across the dialogue.
+    /// L3 partial worked step, or L4 full worked solution. Levels climb
+    /// contiguously from L1, one rung per turn.
     Hint,
     /// Final tutor turn: confirms against the verified answer, states the fix
     /// rule in one line, sets one similar follow-up problem.
@@ -222,10 +223,17 @@ impl DialogueRow {
                 format!("{:?} is not a dotted [a-z0-9_] ID", self.topic),
             ));
         }
-        if self.system_prompt_version == 0 {
-            return Err(invalid("system_prompt_version", "must be at least 1"));
+        if self.system_prompt_version != TUTOR_POLICY_VERSION {
+            return Err(invalid(
+                "system_prompt_version",
+                format!(
+                    "expected {TUTOR_POLICY_VERSION}, got {}",
+                    self.system_prompt_version
+                ),
+            ));
         }
         self.validate_misconceptions()?;
+        self.validate_topic()?;
         self.validate_provenance()?;
         let levels = self.validate_turns()?;
         if levels != self.hint_levels_reached {
@@ -260,13 +268,38 @@ impl DialogueRow {
         }
     }
 
+    /// A correction row's `topic` must be one of its misconception's listed
+    /// taxonomy topics; a confirmation row names no misconception, so any
+    /// well-formed topic passes.
+    fn validate_topic(&self) -> Result<(), SchemaError> {
+        if self.row_type != RowType::Correction {
+            return Ok(());
+        }
+        // `validate_misconceptions` has already required exactly one id.
+        let misconception = self.misconceptions[0];
+        if !misconception.topics().contains(&self.topic.as_str()) {
+            return Err(invalid(
+                "topic",
+                format!(
+                    "{:?} is not a listed topic for {}",
+                    self.topic,
+                    misconception.as_str()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
     fn validate_provenance(&self) -> Result<(), SchemaError> {
         let provenance = &self.provenance;
-        if provenance.taxonomy_version != crate::TAXONOMY_VERSION {
+        // Rows recorded under any supported taxonomy version stay valid: an
+        // id never changes meaning, and deprecated ids remain parseable.
+        if provenance.taxonomy_version == 0 || provenance.taxonomy_version > crate::TAXONOMY_VERSION
+        {
             return Err(invalid(
                 "provenance.taxonomy_version",
                 format!(
-                    "expected {}, got {}",
+                    "expected a supported version 1..={}, got {}",
                     crate::TAXONOMY_VERSION,
                     provenance.taxonomy_version
                 ),
@@ -315,25 +348,22 @@ impl DialogueRow {
                 "a dialogue needs at least a system, a student, and a tutor turn",
             ));
         }
-        let last = turns.len() - 1;
-        let mut levels: Vec<u8> = Vec::new();
-        for (index, turn) in turns.iter().enumerate() {
-            self.validate_turn(index, turn, last)?;
-            if turn.kind == Some(TurnKind::Hint) {
-                // `validate_turn` has already bounded the level to 1..=4.
-                let level = turn.hint_level.unwrap_or(0);
-                if levels.last() >= Some(&level) {
-                    return Err(invalid(
-                        "turns",
-                        "hint levels must strictly increase, one level per turn",
-                    ));
-                }
-                levels.push(level);
-            }
-        }
         if turns[0].role != Role::System {
             return Err(invalid("turns", "first turn must be the system prompt"));
         }
+        Self::validate_turn_order(turns)?;
+        Self::validate_answer_requests(turns)?;
+        Self::validate_closing(turns)?;
+        self.validate_row_shape(turns)?;
+        let last = turns.len() - 1;
+        for (index, turn) in turns.iter().enumerate() {
+            Self::validate_turn(index, turn, last)?;
+        }
+        Self::collect_hint_levels(turns)
+    }
+
+    /// Student and tutor turns must strictly alternate after the system turn.
+    fn validate_turn_order(turns: &[Turn]) -> Result<(), SchemaError> {
         for (index, turn) in turns.iter().enumerate().skip(1) {
             let expected = if index % 2 == 1 {
                 Role::Student
@@ -347,17 +377,59 @@ impl DialogueRow {
                 ));
             }
         }
-        for pair in turns.windows(2) {
-            let [request, response] = pair else { continue };
-            if request.kind == Some(TurnKind::AnswerRequest)
-                && !(response.kind == Some(TurnKind::Hint) && response.hint_level == Some(1))
-            {
+        Ok(())
+    }
+
+    /// Ladder levels climb contiguously from L1, one rung per hint turn.
+    fn collect_hint_levels(turns: &[Turn]) -> Result<Vec<u8>, SchemaError> {
+        let mut levels: Vec<u8> = Vec::new();
+        for turn in turns {
+            if turn.kind != Some(TurnKind::Hint) {
+                continue;
+            }
+            // `validate_turn` has already bounded the level to 1..=MAX_HINT_LEVEL.
+            let level = turn.hint_level.unwrap_or(0);
+            let expected = levels.len() as u8 + 1;
+            if level != expected {
                 return Err(invalid(
                     "turns",
-                    "a direct answer request converts to an L1 hint, never to the answer",
+                    "hint levels must climb one rung at a time, starting at level 1",
+                ));
+            }
+            levels.push(level);
+        }
+        Ok(levels)
+    }
+
+    /// A direct answer request converts to the next rung of the ladder — L1
+    /// when no hint has been given yet — never to the answer.
+    fn validate_answer_requests(turns: &[Turn]) -> Result<(), SchemaError> {
+        for (index, turn) in turns.iter().enumerate() {
+            if turn.kind != Some(TurnKind::AnswerRequest) {
+                continue;
+            }
+            let expected = turns[..index]
+                .iter()
+                .filter(|earlier| earlier.kind == Some(TurnKind::Hint))
+                .count() as u8
+                + 1;
+            let converts = turns.get(index + 1).is_some_and(|response| {
+                response.kind == Some(TurnKind::Hint) && response.hint_level == Some(expected)
+            });
+            if !converts {
+                return Err(invalid(
+                    "turns",
+                    "a direct answer request converts to the next rung of the hint ladder, never to the answer",
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// The last turn is the tutor's closing turn, confirming the student's
+    /// final attempt against the verified answer.
+    fn validate_closing(turns: &[Turn]) -> Result<(), SchemaError> {
+        let last = turns.len() - 1;
         let closing = &turns[last];
         if closing.role != Role::Tutor || closing.kind != Some(TurnKind::Closing) {
             return Err(invalid(
@@ -371,23 +443,52 @@ impl DialogueRow {
                 "the closing turn must confirm the verified answer",
             ));
         }
-        if self.row_type == RowType::Correction && turns[2].kind != Some(TurnKind::Diagnosis) {
+        let before = &turns[last - 1];
+        if before.role != Role::Student || before.kind != Some(TurnKind::Attempt) {
             return Err(invalid(
                 "turns",
-                "a correction row's first tutor turn must be a diagnosis",
+                "the closing turn must follow a final student attempt",
             ));
         }
-        if self.row_type == RowType::Confirmation && turns.len() != 3 {
-            return Err(invalid(
-                "turns",
-                "a confirmation row is system + student attempt + tutor closing",
-            ));
-        }
-        Ok(levels)
+        Ok(())
     }
 
-    fn validate_turn(&self, index: usize, turn: &Turn, last: usize) -> Result<(), SchemaError> {
+    /// Row-type shape: a correction row whose first student turn is an
+    /// `attempt` opens with a diagnosis turn (an `answer_request` opening
+    /// converts to an L1 hint instead); confirmation rows are exactly
+    /// system + attempt + closing.
+    fn validate_row_shape(&self, turns: &[Turn]) -> Result<(), SchemaError> {
+        match self.row_type {
+            RowType::Correction
+                if turns[1].kind == Some(TurnKind::Attempt)
+                    && turns[2].kind != Some(TurnKind::Diagnosis) =>
+            {
+                Err(invalid(
+                    "turns",
+                    "a correction row's first tutor turn must be a diagnosis",
+                ))
+            }
+            RowType::Confirmation if turns.len() != 3 => Err(invalid(
+                "turns",
+                "a confirmation row is system + student attempt + tutor closing",
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    fn validate_turn(index: usize, turn: &Turn, last: usize) -> Result<(), SchemaError> {
         require_non_empty("turns.content", &turn.content)?;
+        Self::validate_kind(turn)?;
+        Self::validate_hint_level(turn)?;
+        Self::validate_reveal(index, turn, last)?;
+        if turn.kind == Some(TurnKind::Closing) && index != last {
+            return Err(invalid("turns", "only the final turn is a closing turn"));
+        }
+        Ok(())
+    }
+
+    /// The turn's `kind` must match its `role`.
+    fn validate_kind(turn: &Turn) -> Result<(), SchemaError> {
         let kind_ok = match turn.role {
             Role::System => turn.kind.is_none(),
             Role::Student => matches!(turn.kind, Some(TurnKind::Attempt | TurnKind::AnswerRequest)),
@@ -402,39 +503,41 @@ impl DialogueRow {
                 "system turns carry no kind; student turns are attempt or answer_request; tutor turns are diagnosis, hint, or closing",
             ));
         }
-        match turn.hint_level {
-            Some(level) if turn.kind == Some(TurnKind::Hint) => {
-                if !(1..=MAX_HINT_LEVEL).contains(&level) {
-                    return Err(invalid(
-                        "turns.hint_level",
-                        format!("hint level must be 1..={MAX_HINT_LEVEL}"),
-                    ));
-                }
-            }
-            Some(_) => {
-                return Err(invalid(
-                    "turns.hint_level",
-                    "only tutor hint turns carry a hint_level",
-                ));
-            }
-            None if turn.kind == Some(TurnKind::Hint) => {
-                return Err(invalid(
-                    "turns.hint_level",
-                    "hint turns must declare their ladder level",
-                ));
-            }
-            None => {}
+        Ok(())
+    }
+
+    /// `hint_level` is required on tutor hint turns, in range, absent elsewhere.
+    fn validate_hint_level(turn: &Turn) -> Result<(), SchemaError> {
+        let is_hint = turn.kind == Some(TurnKind::Hint);
+        match (turn.hint_level, is_hint) {
+            (Some(level), true) if !(1..=MAX_HINT_LEVEL).contains(&level) => Err(invalid(
+                "turns.hint_level",
+                format!("hint level must be 1..={MAX_HINT_LEVEL}"),
+            )),
+            (Some(_), false) => Err(invalid(
+                "turns.hint_level",
+                "only tutor hint turns carry a hint_level",
+            )),
+            (None, true) => Err(invalid(
+                "turns.hint_level",
+                "hint turns must declare their ladder level",
+            )),
+            _ => Ok(()),
         }
-        if index != last && turn.reveals_final_answer {
+    }
+
+    /// `reveals_final_answer` may be set only on an L4 worked solution or on
+    /// the closing turn.
+    fn validate_reveal(index: usize, turn: &Turn, last: usize) -> Result<(), SchemaError> {
+        if !turn.reveals_final_answer {
+            return Ok(());
+        }
+        let allowed = (index == last && turn.kind == Some(TurnKind::Closing))
+            || (turn.kind == Some(TurnKind::Hint) && turn.hint_level == Some(MAX_HINT_LEVEL));
+        if !allowed {
             return Err(invalid(
                 "turns.reveals_final_answer",
-                "the final answer may only appear on the final tutor turn",
-            ));
-        }
-        if turn.role != Role::Tutor && turn.reveals_final_answer {
-            return Err(invalid(
-                "turns.reveals_final_answer",
-                "only the tutor's closing turn reveals the final answer",
+                "the final answer may only appear on an L4 worked solution or the closing turn",
             ));
         }
         Ok(())
@@ -442,7 +545,7 @@ impl DialogueRow {
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), SchemaError> {
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Err(SchemaError::Invalid {
             field,
             reason: "must be non-empty".to_owned(),

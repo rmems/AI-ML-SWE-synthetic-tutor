@@ -251,6 +251,90 @@ impl MisconceptionId {
             Self::TrigUnitCircle => "trig.unit_circle",
         }
     }
+
+    /// Curriculum topics where this misconception can appear, from the
+    /// `topics` list of its `schemas/taxonomy.yaml` entry. The
+    /// `taxonomy_sync` test keeps this table in line with the file.
+    pub const fn topics(self) -> &'static [&'static str] {
+        match self {
+            Self::AlgebraDistributionError => &[
+                "algebra.distributive_property",
+                "algebra.polynomial_expansion",
+            ],
+            Self::AlgebraExponentRule => {
+                &["algebra.exponent_rules", "algebra.polynomial_operations"]
+            }
+            Self::AlgebraLikeTerms => &["algebra.combining_like_terms", "algebra.linear_equations"],
+            Self::AlgebraSignError => &["algebra.linear_equations", "algebra.multi_step_equations"],
+            Self::DerivativesChainRule => &[
+                "calculus.derivatives.chain_rule",
+                "calculus.derivatives.composite_functions",
+            ],
+            Self::DerivativesImplicitDifferentiation => &[
+                "calculus.derivatives.implicit_differentiation",
+                "calculus.derivatives.chain_rule",
+            ],
+            Self::DerivativesPowerRuleOvergeneralised => &[
+                "calculus.derivatives.exponential_derivatives",
+                "calculus.derivatives.power_rule",
+            ],
+            Self::DerivativesProductRule => &[
+                "calculus.derivatives.product_rule",
+                "calculus.derivatives.trigonometric_derivatives",
+            ],
+            Self::DerivativesQuotientRule => &[
+                "calculus.derivatives.quotient_rule",
+                "calculus.derivatives.rational_functions",
+            ],
+            Self::FunctionsCompositionOrder => {
+                &["functions.composition", "functions.function_notation"]
+            }
+            Self::FunctionsDomainRange => &[
+                "functions.domain",
+                "functions.range",
+                "functions.rational_functions",
+            ],
+            Self::FunctionsInverseNotReciprocal => {
+                &["functions.inverse_functions", "functions.function_notation"]
+            }
+            Self::IntegralsAntiderivativeExponent => {
+                &["integrals.power_rule", "integrals.basic_antiderivatives"]
+            }
+            Self::IntegralsConstantOfIntegration => &[
+                "integrals.indefinite_integrals",
+                "integrals.antiderivatives",
+            ],
+            Self::IntegralsSetupConfusion => &[
+                "integrals.definite_integrals",
+                "integrals.fundamental_theorem_of_calculus",
+            ],
+            Self::LimitsDivideByZeroForm => &[
+                "limits.indeterminate_forms",
+                "limits.limit_evaluation",
+                "algebra.rational_expressions",
+            ],
+            Self::LimitsInfinityIndeterminateForm => &[
+                "limits.indeterminate_forms",
+                "limits.limit_laws",
+                "limits.limits_at_infinity",
+            ],
+            Self::LimitsOneSidedLimit => &[
+                "limits.one_sided_limits",
+                "limits.limit_existence",
+                "functions.piecewise_functions",
+            ],
+            Self::TrigIdentityConfusion => &[
+                "trig.identities",
+                "trig.tangent",
+                "trig.pythagorean_identity",
+            ],
+            Self::TrigUnitCircle => &[
+                "trig.unit_circle",
+                "trig.trigonometric_functions",
+                "trig.special_angles",
+            ],
+        }
+    }
 }
 
 /// Why a value is not schema-valid.
@@ -287,7 +371,7 @@ fn invalid(field: &'static str, reason: impl Into<String>) -> SchemaError {
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), SchemaError> {
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Err(invalid(field, "must be non-empty"));
     }
     Ok(())

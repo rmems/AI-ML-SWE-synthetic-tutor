@@ -26,8 +26,9 @@ One row is one complete tutoring trajectory:
    - **L2** targeted question — the diagnostic question for this taxonomy id.
    - **L3** partial worked step — do the corrected step, the student does the
      next one.
-   - **L4** full worked solution — only after L1–L3 or an explicit student
-     request, and always followed by a check question.
+   - **L4** full worked solution — only after L1–L3, and always followed by
+     a check question. This is the one hint level that may state the verified
+     answer (`reveals_final_answer`).
 6. **student** — final attempt.
 7. **tutor** — *closing*: confirms against the verified answer, states the
    fix rule in one line, sets one similar follow-up problem.
@@ -35,8 +36,9 @@ One row is one complete tutoring trajectory:
 ## Rules
 
 - **Diagnose before telling.** The first tutor turn never contains the final
-  answer. A turn revealing the verified answer may only ever be the closing
-  turn; the validator rejects rows that reveal it earlier.
+  answer. A turn revealing the verified answer may only ever be an L4 worked
+  solution or the closing turn; the validator rejects rows that reveal it
+  anywhere else.
 - **One misconception per dialogue.** Exactly one primary taxonomy id per
   correction row. A second error is a new row, not a longer row; the
   validator rejects more than one primary misconception id.
@@ -52,9 +54,10 @@ One row is one complete tutoring trajectory:
   (locked 2026-11-20).
 - **Refusal / homework boundary.** The tutor will work a problem *with* the
   student but never emits a bare final answer with no working. A direct
-  answer request converts into an L1 start: the next tutor turn is an L1
-  nudge, not the answer (locked 2026-11-20). Encoded in the system prompt,
-  rule 6.
+  answer request converts into the next rung of the hint ladder — an L1
+  nudge when no hint has been given yet — never the answer (locked
+  2026-11-20). A request opening the dialogue converts to an L1 start and
+  the row needs no diagnosis turn. Encoded in the system prompt, rule 6.
 - **Provenance is required.** Every row records `provenance.source`
   (`hand_written` for gold exemplars, `generated` for pipeline rows with a
   named, versioned generator) and the taxonomy version its labels came from.
@@ -64,16 +67,23 @@ One row is one complete tutoring trajectory:
 
 `tutor-validate` (and `DialogueRow::validate`) reject a row when:
 
-- a `reveals_final_answer` flag appears on any turn before the final tutor
-  turn,
+- a `reveals_final_answer` flag appears on any turn other than an L4 hint
+  or the closing turn,
 - `misconceptions` holds more than one primary id,
-- `provenance` is absent,
-- the turn shape is wrong (system first, strict student/tutor alternation,
-  tutor `closing` last; correction rows open with a `diagnosis` tutor turn),
-- hint levels are not strictly increasing single levels in `1..=4`, or
+- `provenance` is absent, or its taxonomy version is 0 or newer than the
+  taxonomy the validator knows (older supported versions stay valid),
+- `system_prompt_version` is not the stored prompt's version,
+- a correction row's `topic` is not among its misconception's taxonomy
+  `topics`,
+- the turn shape is wrong: system first, strict student/tutor alternation,
+  a `closing` only on the last turn, the closing preceded by a final
+  student `attempt`, and a correction row opening (after an `attempt`) with
+  a `diagnosis` tutor turn,
+- hint levels do not climb contiguously from L1 in `1..=4`, or
   `hint_levels_reached` disagrees with the hint turns,
-- a student `answer_request` turn is not followed by a hint —
-  `misconceptions`/`row_type` disagree, or a `gold` row is not
+- a student `answer_request` turn is not followed by a hint at the next
+  ladder level,
+- `misconceptions`/`row_type` disagree, or a `gold` row is not
   `hand_written`.
 
 ## Derived preference data (format v1, generated with the pilot)
@@ -81,7 +91,10 @@ One row is one complete tutoring trajectory:
 Each correction row yields one preference pair without regeneration:
 
 - **context** — the `system` turn and the student's initial `attempt` turn.
-- **chosen** — the row's tutor turns (`diagnosis`, `hint`*, `closing`).
+- **chosen** — the row's turns after the context, student and tutor turns
+  interleaved (`attempt`/`answer_request`, `diagnosis`, `hint`*,
+  `closing`): the tutor's hints stay anchored to the student's own retries
+  instead of reading as a monologue.
 - **rejected** — a single tutor turn answering the same initial attempt with
   the full worked solution and final answer, no diagnosis and no ladder
   (an "answer dump").
@@ -95,7 +108,7 @@ Pair row (informal; formalized when the pilot generates them):
   "row_id": "<source correction row_id>",
   "problem_id": "<problem_id>",
   "context": ["<system turn>", "<student attempt turn>"],
-  "chosen": ["<tutor turns of the row>"],
+  "chosen": ["<turns of the row after the context>"],
   "rejected": ["<answer-dump tutor turn>"]
 }
 ```
@@ -107,6 +120,9 @@ row. Generation is deferred to the pilot (locked 2026-11-20).
 ## Versioning
 
 - `version` here and `system_prompt_version` on rows move together: a new
-  prompt file `prompts/tutor-system-v<N>.txt` per policy version.
-- Rows validated under an older policy version remain parseable; the
-  validator checks the current contract.
+  prompt file `prompts/tutor-system-v<N>.txt` per policy version. Rows must
+  declare the current version.
+- `provenance.taxonomy_version` accepts any supported version
+  `1..=TAXONOMY_VERSION`: an id never changes meaning and deprecated ids
+  stay parseable, so rows labelled under an older taxonomy remain valid
+  without a migration.

@@ -238,7 +238,7 @@
           "description": "Turn's function within the policy shape. Required on `student` and\n`tutor` turns, absent on the `system` turn."
         },
         "reveals_final_answer": {
-          "description": "Whether the turn states the verified final answer. May be `true` only\non the last turn (the tutor `closing` turn): the first tutor turn never\ncontains the final answer.",
+          "description": "Whether the turn states the verified final answer. May be `true` only\non an L4 worked-solution `hint` or on the last turn (the tutor\n`closing` turn): no other turn reveals the answer.",
           "type": "boolean"
         },
         "role": {
@@ -262,7 +262,7 @@
         },
         {
           "const": "answer_request",
-          "description": "Student asks for the answer directly. Policy converts this into an L1\nstart: the next tutor turn must be a `hint` at level 1.",
+          "description": "Student asks for the answer directly. Policy converts this into the\nnext rung of the ladder: the next tutor turn must be a `hint` at the\nnext level (L1 when no hint has been given yet).",
           "type": "string"
         },
         {
@@ -272,7 +272,7 @@
         },
         {
           "const": "hint",
-          "description": "One rung of the hint ladder: L1 nudge, L2 targeted diagnostic question,\nL3 partial worked step, or L4 full worked solution. Levels strictly\nincrease across the dialogue.",
+          "description": "One rung of the hint ladder: L1 nudge, L2 targeted diagnostic question,\nL3 partial worked step, or L4 full worked solution. Levels climb\ncontiguously from L1, one rung per turn.",
           "type": "string"
         },
         {

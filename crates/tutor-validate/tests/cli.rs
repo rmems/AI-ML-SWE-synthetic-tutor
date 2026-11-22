@@ -33,8 +33,18 @@ fn broken_row_fails() {
     let mut row: serde_json::Value = serde_json::from_str(GOLD).expect("gold parses");
     row["turns"][2]["reveals_final_answer"] = serde_json::json!(true);
     row["misconceptions"] = serde_json::json!(["derivatives.chain_rule", "algebra.sign_error"]);
-    let path = std::env::temp_dir().join("tutor-validate-broken-row.json");
-    std::fs::File::create(&path)
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!(
+        "tutor-validate-broken-row-{}-{nanos}.json",
+        std::process::id()
+    ));
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
         .expect("create temp row")
         .write_all(row.to_string().as_bytes())
         .expect("write temp row");

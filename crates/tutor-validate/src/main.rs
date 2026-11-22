@@ -7,11 +7,15 @@
 //! ladder, single primary misconception, provenance, no early final answer).
 //! Exit code is 0 only when every file passes.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
 use tutor_schema::DialogueRow;
+
+/// Largest row file the CLI reads: bound memory use on bad input.
+const MAX_ROW_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Validate tutoring dialogue rows.
 #[derive(Parser)]
@@ -33,8 +37,9 @@ fn main() -> ExitCode {
         }
     };
     let mut failures = 0u32;
+    let mut row_ids: HashSet<String> = HashSet::new();
     for file in &cli.files {
-        match validate_file(&validator, file) {
+        match validate_file(&validator, file, &mut row_ids) {
             Ok(()) => println!("{}: valid", file.display()),
             Err(reasons) => {
                 failures += 1;
@@ -53,9 +58,21 @@ fn main() -> ExitCode {
     }
 }
 
-fn validate_file(validator: &jsonschema::Validator, file: &PathBuf) -> Result<(), Vec<String>> {
-    let text = match std::fs::read_to_string(file) {
-        Ok(text) => text,
+fn validate_file(
+    validator: &jsonschema::Validator,
+    file: &PathBuf,
+    row_ids: &mut HashSet<String>,
+) -> Result<(), Vec<String>> {
+    let text = match std::fs::metadata(file) {
+        Ok(metadata) if metadata.len() > MAX_ROW_BYTES => {
+            return Err(vec![format!(
+                "file exceeds {MAX_ROW_BYTES} bytes; rows are single dialogue records"
+            )]);
+        }
+        Ok(_) => match std::fs::read_to_string(file) {
+            Ok(text) => text,
+            Err(error) => return Err(vec![format!("cannot read file: {error}")]),
+        },
         Err(error) => return Err(vec![format!("cannot read file: {error}")]),
     };
     let value: serde_json::Value = match serde_json::from_str(&text) {
@@ -69,8 +86,11 @@ fn validate_file(validator: &jsonschema::Validator, file: &PathBuf) -> Result<()
     if !errors.is_empty() {
         return Err(errors);
     }
-    match DialogueRow::from_value(value) {
-        Ok(_) => Ok(()),
+    // Parse the raw text, not the value: `serde_json::Value` silently keeps
+    // only the last of duplicate fields.
+    match DialogueRow::from_json(&text) {
+        Ok(row) if row_ids.insert(row.row_id.clone()) => Ok(()),
+        Ok(row) => Err(vec![format!("duplicate row_id {:?}", row.row_id)]),
         Err(error) => Err(vec![format!("{} ({})", error, error.code())]),
     }
 }

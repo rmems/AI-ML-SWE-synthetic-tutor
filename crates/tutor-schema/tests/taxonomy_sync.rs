@@ -108,21 +108,41 @@ fn every_entry_has_required_fields() {
     }
 }
 
+/// The `topics:` list of an entry block.
+fn entry_topics(block: &str) -> Vec<&str> {
+    block
+        .split("    topics:")
+        .nth(1)
+        .expect("topics section")
+        .lines()
+        .map(|line| line.trim())
+        .skip_while(|line| line.is_empty())
+        .take_while(|line| line.starts_with("- "))
+        .map(|line| line.trim_start_matches("- ").trim())
+        .collect()
+}
+
 #[test]
 fn every_entry_lists_two_topics() {
     for (id, block) in entries() {
-        let topics = block
-            .split("    topics:")
-            .nth(1)
-            .expect("topics section")
-            .lines()
-            .skip_while(|line| line.trim().is_empty())
-            .take_while(|line| {
-                let trimmed = line.trim_start();
-                trimmed.starts_with("- ") && !trimmed.starts_with("- id:")
-            })
-            .count();
-        assert!(topics >= 2, "{id} lists fewer than 2 topics");
+        assert!(
+            entry_topics(&block).len() >= 2,
+            "{id} lists fewer than 2 topics"
+        );
+    }
+}
+
+#[test]
+fn misconception_id_topics_match_yaml() {
+    for (id, block) in entries() {
+        let yaml_topics = entry_topics(&block);
+        let rust: Vec<&str> = MisconceptionId::ALL
+            .iter()
+            .find(|variant| variant.as_str() == id)
+            .expect("id has a Rust variant")
+            .topics()
+            .to_vec();
+        assert_eq!(rust, yaml_topics, "topics() out of sync for {id}");
     }
 }
 
