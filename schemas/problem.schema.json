@@ -5,7 +5,7 @@
   "description": "One generated problem with its answer and generator provenance. A problem without a verification block is a candidate; only verified problems may be used in dataset rows. Mirrors tutor_schema::Problem.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "problem_id", "topic", "generator", "statement", "parameters", "answer"],
+  "required": ["schema_version", "problem_id", "topic", "generator", "statement", "parameters", "difficulty", "answer", "steps", "misconception_ids"],
   "properties": {
     "schema_version": { "const": 1 },
     "problem_id": { "type": "string", "minLength": 1 },
@@ -17,7 +17,22 @@
     "generator": { "$ref": "#/$defs/generator" },
     "statement": { "type": "string", "minLength": 1 },
     "parameters": { "$ref": "#/$defs/parameters" },
+    "difficulty": { "$ref": "#/$defs/difficulty" },
     "answer": { "$ref": "#/$defs/answer" },
+    "steps": {
+      "description": "Worked solution steps, machine-replayable: a verifier recomputes each step's output from its inputs and checks that every input traces to a declared parameter or an earlier step's output. The final step's value is the claimed answer.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": { "$ref": "#/$defs/step" }
+    },
+    "misconception_ids": {
+      "description": "Taxonomy IDs (from schemas/taxonomy.yaml) of the misconceptions this problem can carry.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "type": "string", "pattern": "^[a-z0-9_]+\\.[a-z0-9_]+$" }
+    },
     "verification": { "$ref": "#/$defs/verification" }
   },
   "$defs": {
@@ -33,6 +48,24 @@
         "seed": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
       }
     },
+    "difficulty": {
+      "description": "Ranges the parameters were drawn from; max_degree bounds each drawn polynomial's degree.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_degree", "coefficient_bound", "point_bound"],
+      "properties": {
+        "max_degree": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "coefficient_bound": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "point_bound": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+      }
+    },
+    "coefficients": {
+      "description": "Integer coefficients in ascending order of power; the last (leading) one must be nonzero.",
+      "type": "array",
+      "items": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+      "minItems": 1,
+      "maxItems": 16
+    },
     "parameters": {
       "oneOf": [
         {
@@ -41,13 +74,42 @@
           "required": ["kind", "coefficients", "point"],
           "properties": {
             "kind": { "const": "polynomial_derivative_at_point" },
-            "coefficients": {
-              "description": "Integer coefficients in ascending order of power; the last (leading) one must be nonzero.",
-              "type": "array",
-              "items": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
-              "minItems": 1,
-              "maxItems": 16
-            },
+            "coefficients": { "$ref": "#/$defs/coefficients" },
+            "point": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "a", "m", "b", "n", "point"],
+          "properties": {
+            "kind": { "const": "binomial_derivative_at_point" },
+            "a": { "description": "Coefficient of the x^m term; nonzero.", "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+            "m": { "description": "Leading exponent; must exceed n and be below 16.", "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "b": { "description": "Coefficient of the x^n term; nonzero.", "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+            "n": { "description": "Lower exponent.", "type": "integer", "minimum": 0, "maximum": 4294967295 },
+            "point": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "p", "q", "point"],
+          "properties": {
+            "kind": { "const": "product_rule_at_point" },
+            "p": { "$ref": "#/$defs/coefficients" },
+            "q": { "$ref": "#/$defs/coefficients" },
+            "point": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "outer", "inner", "point"],
+          "properties": {
+            "kind": { "const": "chain_rule_at_point" },
+            "outer": { "$ref": "#/$defs/coefficients" },
+            "inner": { "$ref": "#/$defs/coefficients" },
             "point": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
           }
         }
@@ -61,6 +123,61 @@
           "required": ["kind", "value"],
           "properties": {
             "kind": { "const": "integer" },
+            "value": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
+          }
+        }
+      ]
+    },
+    "step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "input", "output"],
+          "properties": {
+            "kind": { "const": "differentiate_polynomial" },
+            "input": { "$ref": "#/$defs/coefficients" },
+            "output": { "$ref": "#/$defs/coefficients" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "coefficients", "point", "value"],
+          "properties": {
+            "kind": { "const": "evaluate_polynomial" },
+            "coefficients": { "$ref": "#/$defs/coefficients" },
+            "point": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+            "value": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "factors", "value"],
+          "properties": {
+            "kind": { "const": "multiply" },
+            "factors": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+              "minItems": 2,
+              "maxItems": 16
+            },
+            "value": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "addends", "value"],
+          "properties": {
+            "kind": { "const": "add" },
+            "addends": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 },
+              "minItems": 2,
+              "maxItems": 16
+            },
             "value": { "type": "integer", "minimum": -9223372036854775808, "maximum": 9223372036854775807 }
           }
         }

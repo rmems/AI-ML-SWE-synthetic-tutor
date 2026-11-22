@@ -8,12 +8,13 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 thiserror.workspace = true
 tutor-schema.workspace = true
+tutor-wire.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
-tutor-wire.workspace = true
 
 [lints]
 workspace = true

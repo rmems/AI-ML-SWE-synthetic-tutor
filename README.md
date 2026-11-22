@@ -12,9 +12,10 @@ Topics: synthetic data · post-training · distillation · tutor
 
 > **Status: pivot in progress** under the
 > [pivot epic (#4)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/4).
-> The repo layout, Rust workspace, Julia math worker, ZMQ bridge, one seeded
-> generator (`polynomial_derivative_at_point`), and independent answer
-> verification exist ([#5](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/5)).
+> The repo layout, Rust workspace, Julia math worker, ZMQ bridge, four seeded
+> derivative generators (power/product/chain rule, one Rust-native), and the
+> independent verification pipeline exist
+> ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)).
 > Student attempts, tutor dialogues, QA, splits, and export do not exist yet;
 > anything not yet in the repo says *planned*. The pre-pivot Julia
 > playground lives in [`legacy/`](legacy/README.md).
@@ -80,8 +81,8 @@ Every batch leaves a run-log manifest
 
 | Role | Choice |
 |------|--------|
-| Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace (`crates/`). Schema types, the ZMQ client, and verification exist; generators beyond the pilot, the student simulator, assembly, and export are *planned*. |
-| Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. The worker is `TutorMath` in `math-julia/` (protocol `tutor-math/1`); more generators are *planned* in [#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18). |
+| Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace (`crates/`). Schema types, the ZMQ client, the `tutor-generate` generator registry + pipeline, and `tutor-verify` verification exist; the student simulator, assembly, and export are *planned*. |
+| Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. The worker is `TutorMath` in `math-julia/` (protocol `tutor-math/1`, ops `ping` / `generate_problem` / `verify_answer`); it serves the polynomial, product-rule, and chain-rule generators plus the Julia-side verifier. |
 | Teachers | **DeepSeek V4.1 Flash** and **Nemotron 3** (exact variant pinned per use). They vary dialogue surface and critique drafts; they never decide a correct answer — verification does. |
 | Python | Not a pipeline language here. It returns later as a *target* language students are tutored in. |
 
@@ -99,13 +100,13 @@ it does not rebuild a general-purpose factory.
 
 ## How a row is verified
 
-This is the policy the pipeline enforces; `crates/tutor-verify` implements it for the pilot generator, and the rest is *planned* in [#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18). No unverified answer ships. Problem generators emit a problem and its answer
+This is the policy the pipeline enforces; `crates/tutor-verify` implements it for every registered generator ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)). No unverified answer ships. Problem generators emit a problem and its answer
 together with a replay seed; a separate verification pass then checks that
-answer by an independent method (across the Rust / Julia ZMQ boundary for
-math-heavy problems, and by compiling and running code for code-bearing
-families) and records the method and pass/fail result on the row. This runs
-after the tutor dialogue is drafted, as step 5 of the loop above; a row that
-fails or skips verification is dropped before QA and never reaches a split. Details:
+answer by an independent method — always on the opposite side of the Rust /
+Julia ZMQ boundary from the generator, so the check is never the generator
+grading itself — and records the method on the verified row. Problems that
+fail are rejected with a reason code into `rejected/` and never ship.
+Details:
 [problem generators + verification pipeline (#18)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18).
 
 ---

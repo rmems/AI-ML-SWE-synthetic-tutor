@@ -50,6 +50,33 @@ pub enum Op {
         /// Seed in `0..=MAX_SEED`.
         seed: u64,
     },
+    /// Independently check a problem's answer and replay its worked steps;
+    /// returns a [`Verdict`]. Used for Rust-generated problems so the check
+    /// runs on the other side of the Rust/Julia boundary from the generator.
+    VerifyAnswer {
+        /// The full candidate problem (in `problem.schema.json` shape).
+        problem: Box<Problem>,
+    },
+}
+
+/// The worker's verdict on a `verify_answer` request.
+///
+/// `verified` is true only when the worker recomputed the answer from the
+/// parameters, replayed every worked step, and found no disagreement. On
+/// failure `reason` carries a stable code (`answer_mismatch`, `step_replay`,
+/// `overflow`, `unknown_parameter_kind`) and `expected` the recomputed answer
+/// when one could be computed.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Verdict {
+    /// Whether the answer and steps survived independent checking.
+    pub verified: bool,
+    /// Failure reason code when `verified` is false; null otherwise.
+    pub reason: Option<String>,
+    /// Human-readable detail (empty when verified).
+    pub detail: String,
+    /// The answer the worker computed independently, when computable.
+    pub expected: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -162,17 +189,25 @@ pub fn encode_request(request_id: &str, op: &Op) -> Result<String, WireError> {
             "request_id must be non-empty".into(),
         ));
     }
-    if let Op::GenerateProblem { generator, seed } = op {
-        if generator.is_empty() {
-            return Err(WireError::InvalidRequest(
-                "generator must be non-empty".into(),
-            ));
+    match op {
+        Op::GenerateProblem { generator, seed } => {
+            if generator.is_empty() {
+                return Err(WireError::InvalidRequest(
+                    "generator must be non-empty".into(),
+                ));
+            }
+            if *seed > MAX_SEED {
+                return Err(WireError::InvalidRequest(format!(
+                    "seed {seed} exceeds {MAX_SEED}"
+                )));
+            }
         }
-        if *seed > MAX_SEED {
-            return Err(WireError::InvalidRequest(format!(
-                "seed {seed} exceeds {MAX_SEED}"
-            )));
+        Op::VerifyAnswer { problem } => {
+            if let Err(err) = problem.validate() {
+                return Err(WireError::InvalidRequest(err.to_string()));
+            }
         }
+        Op::Ping => {}
     }
     serde_json::to_string(&RequestEnvelope {
         protocol: PROTOCOL,
@@ -290,6 +325,17 @@ impl MathClient {
             ));
         }
         Ok(problem)
+    }
+
+    /// Ask the worker to independently verify `problem`'s answer and steps.
+    ///
+    /// The problem must already be schema-valid and must not carry a
+    /// verification block — the worker checks unverified candidates only.
+    pub fn verify_answer(&mut self, problem: &Problem) -> Result<Verdict, WireError> {
+        let result = self.call(&Op::VerifyAnswer {
+            problem: Box::new(problem.clone()),
+        })?;
+        serde_json::from_value(result).map_err(|err| WireError::MalformedReply(err.to_string()))
     }
 
     /// Send one request and wait for its reply.

@@ -59,7 +59,8 @@ request(fields...) = JSON.json(Dict("protocol" => PROTOCOL, "request_id" => "t-1
         @test ping["status"] == "ok"
         @test ping["request_id"] == "t-1"
         @test ping["protocol"] == PROTOCOL
-        @test ping["result"]["generators"] == ["polynomial_derivative_at_point"]
+        @test ping["result"]["generators"] ==
+              ["chain_rule_at_point", "polynomial_derivative_at_point", "product_rule_at_point"]
         @test ping["result"]["julia_version"] == string(VERSION)
 
         ok = reply(request("op" => "generate_problem", "generator" => "polynomial_derivative_at_point", "seed" => 7))
@@ -87,6 +88,78 @@ request(fields...) = JSON.json(Dict("protocol" => PROTOCOL, "request_id" => "t-1
               "malformed_request"
         @test reply(gen(-1))["request_id"] == "t-1"
         @test code(" "^(MAX_REQUEST_BYTES + 1)) == "request_too_large"
+    end
+
+    @testset "product_rule_at_point and chain_rule_at_point" begin
+        for seed in 0:100
+            problem = product_rule_at_point(seed)
+            params = problem.parameters
+            @test params.kind == "product_rule_at_point"
+            @test -5 <= params.point <= 5
+            x = params.point
+            @test problem.answer.value ==
+                  derivative_at(params.p, x) * polynomial_at(params.q, x) +
+                  polynomial_at(params.p, x) * derivative_at(params.q, x)
+            @test length(problem.steps) == 9
+            @test problem.misconception_ids ==
+                  ["derivatives.product_rule", "algebra.sign_error"]
+
+            problem = chain_rule_at_point(seed)
+            params = problem.parameters
+            @test params.kind == "chain_rule_at_point"
+            u = polynomial_at(params.inner, params.point)
+            @test problem.answer.value ==
+                  polynomial_at(derivative_coefficients(params.outer), u) *
+                  derivative_at(params.inner, params.point)
+            @test length(problem.steps) == 6
+            @test problem.misconception_ids ==
+                  ["derivatives.chain_rule", "algebra.sign_error"]
+        end
+        @test JSON.json(product_rule_at_point(9)) == JSON.json(product_rule_at_point(9))
+        @test JSON.json(chain_rule_at_point(9)) == JSON.json(chain_rule_at_point(9))
+        @test_throws DomainError product_rule_at_point(-1)
+        @test_throws DomainError chain_rule_at_point(-1)
+    end
+
+    @testset "verify_answer" begin
+        # Every generator's own output must pass the Julia verifier.
+        for seed in 0:100
+            for generator in (polynomial_derivative_at_point, product_rule_at_point, chain_rule_at_point)
+                verdict = verify_answer(JSON.parse(JSON.json(generator(seed))))
+                @test verdict.verified
+                @test verdict.reason === nothing
+            end
+        end
+
+        # A wrong answer is rejected, loudly, with a reason code.
+        problem = JSON.parse(JSON.json(product_rule_at_point(5)))
+        problem["answer"]["value"] += 1
+        verdict = verify_answer(problem)
+        @test !verdict.verified
+        @test verdict.reason == "verify_answer_mismatch"
+        @test verdict.expected !== nothing
+
+        # A tampered step is rejected.
+        problem = JSON.parse(JSON.json(product_rule_at_point(5)))
+        problem["steps"][end]["value"] += 1
+        @test verify_answer(problem).reason == "verify_step_replay"
+
+        # A fabricated step input is rejected.
+        problem = JSON.parse(JSON.json(product_rule_at_point(5)))
+        problem["steps"][1]["input"] = [99, 1]
+        @test verify_answer(problem).reason == "verify_step_replay"
+
+        # An unknown parameter kind cannot be verified at all.
+        problem = JSON.parse(JSON.json(product_rule_at_point(5)))
+        problem["parameters"]["kind"] = "exotic"
+        @test verify_answer(problem).reason == "verify_unknown_parameter_kind"
+
+        # Over the wire.
+        good = reply(request("op" => "verify_answer", "problem" => JSON.parse(JSON.json(chain_rule_at_point(3)))))
+        @test good["status"] == "ok"
+        @test good["result"]["verified"] == true
+        bad = reply(request("op" => "verify_answer", "problem" => 5))
+        @test bad["error"]["code"] == "malformed_request"
     end
 
     @testset "REP worker over ZMQ" begin
