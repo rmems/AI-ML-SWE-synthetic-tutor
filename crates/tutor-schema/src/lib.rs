@@ -408,6 +408,24 @@ fn check_coefficients(field: &str, coefficients: &[i64]) -> Result<(), SchemaErr
     Ok(())
 }
 
+/// Same as [`check_coefficients`] but permits the all-zero vector: a worked
+/// step may evaluate the zero polynomial (the derivative of a constant).
+fn check_step_coefficients(field: &str, coefficients: &[i64]) -> Result<(), SchemaError> {
+    if coefficients.is_empty() || coefficients.len() > MAX_COEFFICIENTS {
+        return Err(SchemaError::Invalid {
+            field: "parameters",
+            reason: format!("{field} must have 1..={MAX_COEFFICIENTS} entries"),
+        });
+    }
+    if coefficients.last() == Some(&0) && coefficients.iter().any(|c| *c != 0) {
+        return Err(SchemaError::Invalid {
+            field: "parameters",
+            reason: format!("{field} leading coefficient must be nonzero"),
+        });
+    }
+    Ok(())
+}
+
 /// Whether `topic` is a dotted ID of `[a-z0-9_]+` segments.
 pub fn is_valid_topic(topic: &str) -> bool {
     !topic.is_empty()
@@ -465,39 +483,7 @@ impl Problem {
             ));
         }
         require_non_empty("statement", &self.statement)?;
-        match &self.parameters {
-            Parameters::PolynomialDerivativeAtPoint { coefficients, .. } => {
-                check_coefficients("parameters.coefficients", coefficients)?;
-            }
-            Parameters::BinomialDerivativeAtPoint { a, m, b, n, .. } => {
-                if *a == 0 || *b == 0 {
-                    return Err(invalid(
-                        "parameters",
-                        "binomial coefficients must be nonzero",
-                    ));
-                }
-                if m <= n {
-                    return Err(invalid(
-                        "parameters",
-                        format!("leading exponent {m} must exceed the lower exponent {n}"),
-                    ));
-                }
-                if *m as usize >= MAX_COEFFICIENTS {
-                    return Err(invalid(
-                        "parameters.m",
-                        format!("exponent must be below {MAX_COEFFICIENTS}"),
-                    ));
-                }
-            }
-            Parameters::ProductRuleAtPoint { p, q, .. } => {
-                check_coefficients("parameters.p", p)?;
-                check_coefficients("parameters.q", q)?;
-            }
-            Parameters::ChainRuleAtPoint { outer, inner, .. } => {
-                check_coefficients("parameters.outer", outer)?;
-                check_coefficients("parameters.inner", inner)?;
-            }
-        }
+        self.validate_parameters()?;
         if self.difficulty.max_degree == 0
             || self.difficulty.coefficient_bound == 0
             || self.difficulty.point_bound == 0
@@ -507,44 +493,8 @@ impl Problem {
                 "max_degree, coefficient_bound and point_bound must be positive",
             ));
         }
-        if self.steps.is_empty() || self.steps.len() > MAX_STEPS {
-            return Err(invalid(
-                "steps",
-                format!("must have 1..={MAX_STEPS} entries"),
-            ));
-        }
-        for (i, step) in self.steps.iter().enumerate() {
-            match step {
-                Step::DifferentiatePolynomial { input, output } => {
-                    check_coefficients(&format!("steps[{i}].input"), input)?;
-                    if output.is_empty() || output.len() > MAX_COEFFICIENTS {
-                        return Err(invalid(
-                            "steps",
-                            format!("steps[{i}].output must have 1..={MAX_COEFFICIENTS} entries"),
-                        ));
-                    }
-                }
-                Step::EvaluatePolynomial { coefficients, .. } => {
-                    check_coefficients(&format!("steps[{i}].coefficients"), coefficients)?;
-                }
-                Step::Multiply { factors, .. } => {
-                    if factors.len() < 2 || factors.len() > MAX_COEFFICIENTS {
-                        return Err(invalid(
-                            "steps",
-                            format!("steps[{i}].factors must have 2..={MAX_COEFFICIENTS} entries"),
-                        ));
-                    }
-                }
-                Step::Add { addends, .. } => {
-                    if addends.len() < 2 || addends.len() > MAX_COEFFICIENTS {
-                        return Err(invalid(
-                            "steps",
-                            format!("steps[{i}].addends must have 2..={MAX_COEFFICIENTS} entries"),
-                        ));
-                    }
-                }
-            }
-        }
+        self.validate_difficulty_bounds()?;
+        self.validate_steps()?;
         if self.misconception_ids.is_empty() || self.misconception_ids.len() > MAX_MISCONCEPTION_IDS
         {
             return Err(invalid(
@@ -562,4 +512,184 @@ impl Problem {
         }
         Ok(())
     }
+
+    fn validate_parameters(&self) -> Result<(), SchemaError> {
+        match &self.parameters {
+            Parameters::PolynomialDerivativeAtPoint { coefficients, .. } => {
+                check_coefficients("parameters.coefficients", coefficients)
+            }
+            Parameters::BinomialDerivativeAtPoint { a, m, b, n, .. } => {
+                validate_binomial(*a, *m, *b, *n)
+            }
+            Parameters::ProductRuleAtPoint { p, q, .. } => {
+                check_coefficients("parameters.p", p)?;
+                check_coefficients("parameters.q", q)
+            }
+            Parameters::ChainRuleAtPoint { outer, inner, .. } => {
+                check_coefficients("parameters.outer", outer)?;
+                check_coefficients("parameters.inner", inner)
+            }
+        }
+    }
+
+    /// Parameters must fit inside the `difficulty` bounds they declare.
+    fn validate_difficulty_bounds(&self) -> Result<(), SchemaError> {
+        let d = &self.difficulty;
+        let check_poly = |field: &str, coefficients: &[i64]| -> Result<(), SchemaError> {
+            if coefficients.len().saturating_sub(1) > d.max_degree as usize {
+                return Err(invalid(
+                    "parameters",
+                    format!(
+                        "{field} degree exceeds difficulty.max_degree {}",
+                        d.max_degree
+                    ),
+                ));
+            }
+            for c in coefficients {
+                if c.unsigned_abs() > u64::from(d.coefficient_bound) {
+                    return Err(invalid(
+                        "parameters",
+                        format!(
+                            "{field} coefficient {c} exceeds difficulty.coefficient_bound {}",
+                            d.coefficient_bound
+                        ),
+                    ));
+                }
+            }
+            Ok(())
+        };
+        let check_point = |point: i64| -> Result<(), SchemaError> {
+            if point.unsigned_abs() > u64::from(d.point_bound) {
+                return Err(invalid(
+                    "parameters",
+                    format!(
+                        "point {point} exceeds difficulty.point_bound {}",
+                        d.point_bound
+                    ),
+                ));
+            }
+            Ok(())
+        };
+        match &self.parameters {
+            Parameters::PolynomialDerivativeAtPoint {
+                coefficients,
+                point,
+            } => {
+                check_poly("parameters.coefficients", coefficients)?;
+                check_point(*point)
+            }
+            Parameters::BinomialDerivativeAtPoint {
+                a,
+                m,
+                b,
+                n: _,
+                point,
+            } => {
+                if *m > d.max_degree {
+                    return Err(invalid(
+                        "parameters",
+                        format!(
+                            "exponent m={m} exceeds difficulty.max_degree {}",
+                            d.max_degree
+                        ),
+                    ));
+                }
+                for (name, c) in [("a", a), ("b", b)] {
+                    if c.unsigned_abs() > u64::from(d.coefficient_bound) {
+                        return Err(invalid(
+                            "parameters",
+                            format!(
+                                "{name}={c} exceeds difficulty.coefficient_bound {}",
+                                d.coefficient_bound
+                            ),
+                        ));
+                    }
+                }
+                check_point(*point)
+            }
+            Parameters::ProductRuleAtPoint { p, q, point } => {
+                check_poly("parameters.p", p)?;
+                check_poly("parameters.q", q)?;
+                check_point(*point)
+            }
+            Parameters::ChainRuleAtPoint {
+                outer,
+                inner,
+                point,
+            } => {
+                check_poly("parameters.outer", outer)?;
+                check_poly("parameters.inner", inner)?;
+                check_point(*point)
+            }
+        }
+    }
+
+    fn validate_steps(&self) -> Result<(), SchemaError> {
+        if self.steps.is_empty() || self.steps.len() > MAX_STEPS {
+            return Err(invalid(
+                "steps",
+                format!("must have 1..={MAX_STEPS} entries"),
+            ));
+        }
+        for (i, step) in self.steps.iter().enumerate() {
+            validate_step(i, step)?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_binomial(a: i64, m: u32, b: i64, n: u32) -> Result<(), SchemaError> {
+    if a == 0 || b == 0 {
+        return Err(invalid(
+            "parameters",
+            "binomial coefficients must be nonzero",
+        ));
+    }
+    if m <= n {
+        return Err(invalid(
+            "parameters",
+            format!("leading exponent {m} must exceed the lower exponent {n}"),
+        ));
+    }
+    if m as usize >= MAX_COEFFICIENTS {
+        return Err(invalid(
+            "parameters.m",
+            format!("exponent must be below {MAX_COEFFICIENTS}"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_step(i: usize, step: &Step) -> Result<(), SchemaError> {
+    match step {
+        Step::DifferentiatePolynomial { input, output } => {
+            check_coefficients(&format!("steps[{i}].input"), input)?;
+            if output.is_empty() || output.len() > MAX_COEFFICIENTS {
+                return Err(invalid(
+                    "steps",
+                    format!("steps[{i}].output must have 1..={MAX_COEFFICIENTS} entries"),
+                ));
+            }
+        }
+        Step::EvaluatePolynomial { coefficients, .. } => {
+            check_step_coefficients(&format!("steps[{i}].coefficients"), coefficients)?;
+        }
+        Step::Multiply { factors, .. } => {
+            if !(2..=MAX_COEFFICIENTS).contains(&factors.len()) {
+                return Err(invalid(
+                    "steps",
+                    format!("steps[{i}].factors must have 2..={MAX_COEFFICIENTS} entries"),
+                ));
+            }
+        }
+        Step::Add { addends, .. } => {
+            if !(2..=MAX_COEFFICIENTS).contains(&addends.len()) {
+                return Err(invalid(
+                    "steps",
+                    format!("steps[{i}].addends must have 2..={MAX_COEFFICIENTS} entries"),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
