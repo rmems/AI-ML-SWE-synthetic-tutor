@@ -5,8 +5,16 @@
 //! value that passes [`Problem::from_json`] is schema-valid. A test in
 //! `tests/schema_sync.rs` keeps these types and the JSON Schema file in line.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+mod dialogue;
+
+pub use dialogue::{
+    DIALOGUE_SCHEMA_VERSION, DialogueProvenance, DialogueRow, MAX_HINT_LEVEL, NamedVersion, Role,
+    RowSource, RowType, TUTOR_POLICY_VERSION, Turn, TurnKind, dialogue_json_schema,
+};
 
 /// Current `schema_version` of [`Problem`].
 pub const PROBLEM_SCHEMA_VERSION: u32 = 1;
@@ -127,7 +135,9 @@ pub struct Verification {
 /// dataset row's primary misconception label validates against the same list the
 /// simulator, families, and eval read. IDs are permanent once published: a renamed
 /// or split entry gets a new variant and the old one stays parseable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub enum MisconceptionId {
     /// `algebra.distribution_error`.
     #[serde(rename = "algebra.distribution_error")]

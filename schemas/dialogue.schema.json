@@ -1,29 +1,365 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/rmems/AI-ML-SWE-synthetic-tutor/schemas/dialogue.schema.json",
-  "title": "Dialogue (stub)",
-  "description": "STUB. One tutoring dialogue row. Issue #13 replaces this with the full schema (hint levels, misconception label, provenance, gold examples). Only the chat shape is fixed here.",
-  "type": "object",
-  "required": ["schema_version", "problem_id", "messages"],
-  "properties": {
-    "schema_version": { "const": 0 },
-    "problem_id": {
-      "description": "problem_id of the verified problem this dialogue is grounded in.",
-      "type": "string",
-      "minLength": 1
-    },
-    "messages": {
-      "type": "array",
-      "minItems": 2,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["role", "content"],
-        "properties": {
-          "role": { "enum": ["system", "user", "assistant"] },
-          "content": { "type": "string", "minLength": 1 }
+  "$defs": {
+    "DialogueProvenance": {
+      "additionalProperties": false,
+      "description": "Who produced the row and under which versions of the policy and taxonomy.",
+      "properties": {
+        "generator": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/NamedVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Generator identity for `generated` rows. Absent on `hand_written` rows."
+        },
+        "source": {
+          "$ref": "#/$defs/RowSource",
+          "description": "Hand-written gold exemplar or pipeline-generated."
+        },
+        "taxonomy_version": {
+          "description": "`version` of `schemas/taxonomy.yaml` the `misconceptions` labels were\ntaken from. Currently [`crate::TAXONOMY_VERSION`].",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
         }
-      }
+      },
+      "required": [
+        "source",
+        "taxonomy_version"
+      ],
+      "type": "object"
+    },
+    "MisconceptionId": {
+      "description": "Stable misconception taxonomy ID, e.g. `derivatives.chain_rule`.\n\nSerialized as the dotted ID string used in `schemas/taxonomy.yaml`, so a\ndataset row's primary misconception label validates against the same list the\nsimulator, families, and eval read. IDs are permanent once published: a renamed\nor split entry gets a new variant and the old one stays parseable.",
+      "oneOf": [
+        {
+          "const": "algebra.distribution_error",
+          "description": "`algebra.distribution_error`.",
+          "type": "string"
+        },
+        {
+          "const": "algebra.exponent_rule",
+          "description": "`algebra.exponent_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "algebra.like_terms",
+          "description": "`algebra.like_terms`.",
+          "type": "string"
+        },
+        {
+          "const": "algebra.sign_error",
+          "description": "`algebra.sign_error`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.chain_rule",
+          "description": "`derivatives.chain_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.implicit_differentiation",
+          "description": "`derivatives.implicit_differentiation`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.power_rule_overgeneralised",
+          "description": "`derivatives.power_rule_overgeneralised`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.product_rule",
+          "description": "`derivatives.product_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.quotient_rule",
+          "description": "`derivatives.quotient_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "functions.composition_order",
+          "description": "`functions.composition_order`.",
+          "type": "string"
+        },
+        {
+          "const": "functions.domain_range",
+          "description": "`functions.domain_range`.",
+          "type": "string"
+        },
+        {
+          "const": "functions.inverse_not_reciprocal",
+          "description": "`functions.inverse_not_reciprocal`.",
+          "type": "string"
+        },
+        {
+          "const": "integrals.antiderivative_exponent",
+          "description": "`integrals.antiderivative_exponent`.",
+          "type": "string"
+        },
+        {
+          "const": "integrals.constant_of_integration",
+          "description": "`integrals.constant_of_integration`.",
+          "type": "string"
+        },
+        {
+          "const": "integrals.setup_confusion",
+          "description": "`integrals.setup_confusion`.",
+          "type": "string"
+        },
+        {
+          "const": "limits.divide_by_zero_form",
+          "description": "`limits.divide_by_zero_form`.",
+          "type": "string"
+        },
+        {
+          "const": "limits.infinity_indeterminate_form",
+          "description": "`limits.infinity_indeterminate_form`.",
+          "type": "string"
+        },
+        {
+          "const": "limits.one_sided_limit",
+          "description": "`limits.one_sided_limit`.",
+          "type": "string"
+        },
+        {
+          "const": "trig.identity_confusion",
+          "description": "`trig.identity_confusion`.",
+          "type": "string"
+        },
+        {
+          "const": "trig.unit_circle",
+          "description": "`trig.unit_circle`.",
+          "type": "string"
+        }
+      ]
+    },
+    "NamedVersion": {
+      "additionalProperties": false,
+      "description": "A named, versioned producer (e.g. a dialogue generator).",
+      "properties": {
+        "name": {
+          "description": "Producer name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Producer version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "description": "Who speaks in a [`Turn`].",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "The versioned tutor policy prompt; exactly one, always first.",
+          "type": "string"
+        },
+        {
+          "const": "student",
+          "description": "The learner: presents the problem and attempts, responds to hints.",
+          "type": "string"
+        },
+        {
+          "const": "tutor",
+          "description": "The tutor: diagnoses, hints one level at a time, closes with\nconfirmation, the fix rule, and a follow-up.",
+          "type": "string"
+        }
+      ]
+    },
+    "RowSource": {
+      "description": "Whether a row was written by hand or produced by the pipeline.",
+      "oneOf": [
+        {
+          "const": "hand_written",
+          "description": "A hand-written exemplar; required for `gold` rows.",
+          "type": "string"
+        },
+        {
+          "const": "generated",
+          "description": "Produced by the generation pipeline; must carry `generator`.",
+          "type": "string"
+        }
+      ]
+    },
+    "RowType": {
+      "description": "The two first-class row types.",
+      "oneOf": [
+        {
+          "const": "correction",
+          "description": "Student's first attempt was wrong: diagnose, ladder hints, confirm the\nfix. Target share of the pilot mix: 80%.",
+          "type": "string"
+        },
+        {
+          "const": "confirmation",
+          "description": "Student's first attempt was correct: confirm and extend with a harder\nvariant. Target share of the pilot mix: 20%.",
+          "type": "string"
+        }
+      ]
+    },
+    "Turn": {
+      "additionalProperties": false,
+      "description": "One turn of the dialogue.",
+      "properties": {
+        "content": {
+          "description": "What they say. For tutor `hint` turns, exactly one ladder level of\nhelp — never more.",
+          "type": "string"
+        },
+        "hint_level": {
+          "description": "Ladder level, 1–4. Required on `tutor` `hint` turns, absent elsewhere.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Turn's function within the policy shape. Required on `student` and\n`tutor` turns, absent on the `system` turn."
+        },
+        "reveals_final_answer": {
+          "description": "Whether the turn states the verified final answer. May be `true` only\non the last turn (the tutor `closing` turn): the first tutor turn never\ncontains the final answer.",
+          "type": "boolean"
+        },
+        "role": {
+          "$ref": "#/$defs/Role",
+          "description": "Who speaks."
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "TurnKind": {
+      "description": "A turn's function in the policy shape.\n\n`Attempt` and `AnswerRequest` belong to `student` turns; `Diagnosis`,\n`Hint`, and `Closing` belong to `tutor` turns.",
+      "oneOf": [
+        {
+          "const": "attempt",
+          "description": "Student work on the problem, initial or retry.",
+          "type": "string"
+        },
+        {
+          "const": "answer_request",
+          "description": "Student asks for the answer directly. Policy converts this into an L1\nstart: the next tutor turn must be a `hint` at level 1.",
+          "type": "string"
+        },
+        {
+          "const": "diagnosis",
+          "description": "First tutor turn of a correction row: names what the attempt got\nright, then surfaces the misconception with a question. Never opens\nwith the full solution.",
+          "type": "string"
+        },
+        {
+          "const": "hint",
+          "description": "One rung of the hint ladder: L1 nudge, L2 targeted diagnostic question,\nL3 partial worked step, or L4 full worked solution. Levels strictly\nincrease across the dialogue.",
+          "type": "string"
+        },
+        {
+          "const": "closing",
+          "description": "Final tutor turn: confirms against the verified answer, states the fix\nrule in one line, sets one similar follow-up problem.",
+          "type": "string"
+        }
+      ]
     }
-  }
+  },
+  "$id": "https://github.com/rmems/AI-ML-SWE-synthetic-tutor/schemas/dialogue.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One tutoring dialogue row (schema_version 1). Mirrors tutor_schema::DialogueRow; regenerate with `cargo run -p tutor-schema --example print_dialogue_schema`. The schema expresses shape; crates/tutor-schema and crates/tutor-validate enforce the turn-level policy constraints.",
+  "properties": {
+    "gold": {
+      "description": "`true` only for hand-written exemplar rows under `datasets/gold/`.",
+      "type": "boolean"
+    },
+    "hint_levels_reached": {
+      "description": "Hint levels the ladder reached, ascending; e.g. `[1, 2]` when the\ndialogue used an L1 nudge and an L2 diagnostic question. Empty when no\nhint turn was needed.",
+      "items": {
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "misconceptions": {
+      "description": "Primary misconception IDs from `schemas/taxonomy.yaml`: exactly one for\na correction row, empty for a confirmation row. Plural so the validator\ncan flag rows that try to label more than one primary misconception.",
+      "items": {
+        "$ref": "#/$defs/MisconceptionId"
+      },
+      "type": "array"
+    },
+    "problem_id": {
+      "description": "`problem_id` of the verified problem this dialogue is grounded in.",
+      "type": "string"
+    },
+    "provenance": {
+      "$ref": "#/$defs/DialogueProvenance",
+      "description": "Who produced the row and under which policy/taxonomy versions.\nRequired on every row."
+    },
+    "row_id": {
+      "description": "Stable row ID, unique within the dataset family.",
+      "type": "string"
+    },
+    "row_type": {
+      "$ref": "#/$defs/RowType",
+      "description": "Whether the row corrects a wrong attempt or confirms a correct one."
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "system_prompt_version": {
+      "description": "Version of the tutor system prompt used as the `system` turn content.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "topic": {
+      "description": "Dotted curriculum topic ID.",
+      "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$",
+      "type": "string"
+    },
+    "turns": {
+      "description": "The conversation: one `system` turn, then strictly alternating\n`student`/`tutor` turns ending on a `tutor` `closing` turn.",
+      "items": {
+        "$ref": "#/$defs/Turn"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "row_id",
+    "row_type",
+    "problem_id",
+    "topic",
+    "system_prompt_version",
+    "misconceptions",
+    "hint_levels_reached",
+    "turns",
+    "provenance",
+    "gold"
+  ],
+  "title": "DialogueRow",
+  "type": "object"
 }

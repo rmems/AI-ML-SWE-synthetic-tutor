@@ -13,6 +13,9 @@ repository = "https://github.com/rmems/AI-ML-SWE-synthetic-tutor"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+schemars = "1"
+clap = { version = "4", features = ["derive"] }
+jsonschema = "0.37"
 tutor-schema = { path = "crates/tutor-schema" }
 tutor-verify = { path = "crates/tutor-verify" }
 tutor-wire = { path = "crates/tutor-wire" }
