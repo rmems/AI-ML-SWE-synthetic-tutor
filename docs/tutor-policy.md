@@ -93,10 +93,8 @@ Each correction row yields one preference pair without regeneration:
 - **context** — the `system` turn and the student's opening turn: their
   initial `attempt`, or their `answer_request` when the row opens with a
   direct request (the pair is then against answering it outright).
-- **chosen** — the row's turns after the context, student and tutor turns
-  interleaved (`attempt`/`answer_request`, `diagnosis`, `hint`*,
-  `closing`): the tutor's hints stay anchored to the student's own retries
-  instead of reading as a monologue.
+- **chosen** — the row's post-context tutor turns: `diagnosis`, the `hint`
+  ladder, and `closing` — the hint-ladder response to the same attempt.
 - **rejected** — a single tutor turn answering the same initial attempt with
   the full worked solution and final answer, no diagnosis and no ladder
   (an "answer dump").
