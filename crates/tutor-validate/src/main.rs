@@ -8,6 +8,7 @@
 //! Exit code is 0 only when every file passes.
 
 use std::collections::HashSet;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -37,7 +38,10 @@ fn main() -> ExitCode {
         }
     };
     let mut failures = 0u32;
-    let mut row_ids: HashSet<String> = HashSet::new();
+    // Row IDs are only unique within a dataset family; rows carry no family
+    // field, so key on the (row_id, problem_id) pair — a cross-family reuse
+    // of an id always grounds a different problem.
+    let mut row_ids: HashSet<(String, String)> = HashSet::new();
     for file in &cli.files {
         match validate_file(&validator, file, &mut row_ids) {
             Ok(()) => println!("{}: valid", file.display()),
@@ -61,18 +65,23 @@ fn main() -> ExitCode {
 fn validate_file(
     validator: &jsonschema::Validator,
     file: &PathBuf,
-    row_ids: &mut HashSet<String>,
+    row_ids: &mut HashSet<(String, String)>,
 ) -> Result<(), Vec<String>> {
-    let text = match std::fs::metadata(file) {
-        Ok(metadata) if metadata.len() > MAX_ROW_BYTES => {
-            return Err(vec![format!(
-                "file exceeds {MAX_ROW_BYTES} bytes; rows are single dialogue records"
-            )]);
+    // Bounded read: metadata reports zero bytes for pipes, so cap the stream
+    // itself instead of checking the file size first.
+    let text = match std::fs::File::open(file) {
+        Ok(handle) => {
+            let mut text = String::new();
+            match std::io::Read::take(handle, MAX_ROW_BYTES + 1).read_to_string(&mut text) {
+                Ok(_) if text.len() as u64 > MAX_ROW_BYTES => {
+                    return Err(vec![format!(
+                        "file exceeds {MAX_ROW_BYTES} bytes; rows are single dialogue records"
+                    )]);
+                }
+                Ok(_) => text,
+                Err(error) => return Err(vec![format!("cannot read file: {error}")]),
+            }
         }
-        Ok(_) => match std::fs::read_to_string(file) {
-            Ok(text) => text,
-            Err(error) => return Err(vec![format!("cannot read file: {error}")]),
-        },
         Err(error) => return Err(vec![format!("cannot read file: {error}")]),
     };
     let value: serde_json::Value = match serde_json::from_str(&text) {
@@ -89,7 +98,7 @@ fn validate_file(
     // Parse the raw text, not the value: `serde_json::Value` silently keeps
     // only the last of duplicate fields.
     match DialogueRow::from_json(&text) {
-        Ok(row) if row_ids.insert(row.row_id.clone()) => Ok(()),
+        Ok(row) if row_ids.insert((row.row_id.clone(), row.problem_id.clone())) => Ok(()),
         Ok(row) => Err(vec![format!("duplicate row_id {:?}", row.row_id)]),
         Err(error) => Err(vec![format!("{} ({})", error, error.code())]),
     }

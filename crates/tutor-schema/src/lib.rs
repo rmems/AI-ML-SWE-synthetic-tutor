@@ -255,87 +255,87 @@ impl MisconceptionId {
     /// Curriculum topics where this misconception can appear, from the
     /// `topics` list of its `schemas/taxonomy.yaml` entry. The
     /// `taxonomy_sync` test keeps this table in line with the file.
-    pub const fn topics(self) -> &'static [&'static str] {
-        match self {
-            Self::AlgebraDistributionError => &[
-                "algebra.distributive_property",
-                "algebra.polynomial_expansion",
-            ],
-            Self::AlgebraExponentRule => {
-                &["algebra.exponent_rules", "algebra.polynomial_operations"]
-            }
-            Self::AlgebraLikeTerms => &["algebra.combining_like_terms", "algebra.linear_equations"],
-            Self::AlgebraSignError => &["algebra.linear_equations", "algebra.multi_step_equations"],
-            Self::DerivativesChainRule => &[
-                "calculus.derivatives.chain_rule",
-                "calculus.derivatives.composite_functions",
-            ],
-            Self::DerivativesImplicitDifferentiation => &[
-                "calculus.derivatives.implicit_differentiation",
-                "calculus.derivatives.chain_rule",
-            ],
-            Self::DerivativesPowerRuleOvergeneralised => &[
-                "calculus.derivatives.exponential_derivatives",
-                "calculus.derivatives.power_rule",
-            ],
-            Self::DerivativesProductRule => &[
-                "calculus.derivatives.product_rule",
-                "calculus.derivatives.trigonometric_derivatives",
-            ],
-            Self::DerivativesQuotientRule => &[
-                "calculus.derivatives.quotient_rule",
-                "calculus.derivatives.rational_functions",
-            ],
-            Self::FunctionsCompositionOrder => {
-                &["functions.composition", "functions.function_notation"]
-            }
-            Self::FunctionsDomainRange => &[
-                "functions.domain",
-                "functions.range",
-                "functions.rational_functions",
-            ],
-            Self::FunctionsInverseNotReciprocal => {
-                &["functions.inverse_functions", "functions.function_notation"]
-            }
-            Self::IntegralsAntiderivativeExponent => {
-                &["integrals.power_rule", "integrals.basic_antiderivatives"]
-            }
-            Self::IntegralsConstantOfIntegration => &[
-                "integrals.indefinite_integrals",
-                "integrals.antiderivatives",
-            ],
-            Self::IntegralsSetupConfusion => &[
-                "integrals.definite_integrals",
-                "integrals.fundamental_theorem_of_calculus",
-            ],
-            Self::LimitsDivideByZeroForm => &[
-                "limits.indeterminate_forms",
-                "limits.limit_evaluation",
-                "algebra.rational_expressions",
-            ],
-            Self::LimitsInfinityIndeterminateForm => &[
-                "limits.indeterminate_forms",
-                "limits.limit_laws",
-                "limits.limits_at_infinity",
-            ],
-            Self::LimitsOneSidedLimit => &[
-                "limits.one_sided_limits",
-                "limits.limit_existence",
-                "functions.piecewise_functions",
-            ],
-            Self::TrigIdentityConfusion => &[
-                "trig.identities",
-                "trig.tangent",
-                "trig.pythagorean_identity",
-            ],
-            Self::TrigUnitCircle => &[
-                "trig.unit_circle",
-                "trig.trigonometric_functions",
-                "trig.special_angles",
-            ],
-        }
+    pub fn topics(self) -> &'static [&'static str] {
+        let index = Self::ALL
+            .iter()
+            .position(|id| *id == self)
+            .expect("every variant is in ALL");
+        TOPICS[index]
     }
 }
+
+/// Topics per [`MisconceptionId`], in [`MisconceptionId::ALL`] order, copied
+/// from `schemas/taxonomy.yaml`.
+const TOPICS: [&[&str]; 20] = [
+    &[
+        "algebra.distributive_property",
+        "algebra.polynomial_expansion",
+    ],
+    &["algebra.exponent_rules", "algebra.polynomial_operations"],
+    &["algebra.combining_like_terms", "algebra.linear_equations"],
+    &["algebra.linear_equations", "algebra.multi_step_equations"],
+    &[
+        "calculus.derivatives.chain_rule",
+        "calculus.derivatives.composite_functions",
+    ],
+    &[
+        "calculus.derivatives.implicit_differentiation",
+        "calculus.derivatives.chain_rule",
+    ],
+    &[
+        "calculus.derivatives.exponential_derivatives",
+        "calculus.derivatives.power_rule",
+    ],
+    &[
+        "calculus.derivatives.product_rule",
+        "calculus.derivatives.trigonometric_derivatives",
+    ],
+    &[
+        "calculus.derivatives.quotient_rule",
+        "calculus.derivatives.rational_functions",
+    ],
+    &["functions.composition", "functions.function_notation"],
+    &[
+        "functions.domain",
+        "functions.range",
+        "functions.rational_functions",
+    ],
+    &["functions.inverse_functions", "functions.function_notation"],
+    &["integrals.power_rule", "integrals.basic_antiderivatives"],
+    &[
+        "integrals.indefinite_integrals",
+        "integrals.antiderivatives",
+    ],
+    &[
+        "integrals.definite_integrals",
+        "integrals.fundamental_theorem_of_calculus",
+    ],
+    &[
+        "limits.indeterminate_forms",
+        "limits.limit_evaluation",
+        "algebra.rational_expressions",
+    ],
+    &[
+        "limits.indeterminate_forms",
+        "limits.limit_laws",
+        "limits.limits_at_infinity",
+    ],
+    &[
+        "limits.one_sided_limits",
+        "limits.limit_existence",
+        "functions.piecewise_functions",
+    ],
+    &[
+        "trig.identities",
+        "trig.tangent",
+        "trig.pythagorean_identity",
+    ],
+    &[
+        "trig.unit_circle",
+        "trig.trigonometric_functions",
+        "trig.special_angles",
+    ],
+];
 
 /// Why a value is not schema-valid.
 #[derive(Debug, Error)]

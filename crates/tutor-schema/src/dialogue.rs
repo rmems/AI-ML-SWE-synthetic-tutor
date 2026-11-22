@@ -411,10 +411,11 @@ impl DialogueRow {
             let expected = turns[..index]
                 .iter()
                 .filter(|earlier| earlier.kind == Some(TurnKind::Hint))
-                .count() as u8
+                .count()
                 + 1;
             let converts = turns.get(index + 1).is_some_and(|response| {
-                response.kind == Some(TurnKind::Hint) && response.hint_level == Some(expected)
+                response.kind == Some(TurnKind::Hint)
+                    && u8::try_from(expected).ok() == response.hint_level
             });
             if !converts {
                 return Err(invalid(

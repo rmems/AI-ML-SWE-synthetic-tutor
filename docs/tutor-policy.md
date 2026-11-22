@@ -90,7 +90,9 @@ One row is one complete tutoring trajectory:
 
 Each correction row yields one preference pair without regeneration:
 
-- **context** — the `system` turn and the student's initial `attempt` turn.
+- **context** — the `system` turn and the student's opening turn: their
+  initial `attempt`, or their `answer_request` when the row opens with a
+  direct request (the pair is then against answering it outright).
 - **chosen** — the row's turns after the context, student and tutor turns
   interleaved (`attempt`/`answer_request`, `diagnosis`, `hint`*,
   `closing`): the tutor's hints stay anchored to the student's own retries
