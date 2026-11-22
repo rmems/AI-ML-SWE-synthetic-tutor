@@ -80,7 +80,7 @@ pub const GENERATORS: &[GeneratorSpec] = &[
             MisconceptionId::DerivativesPowerRuleOvergeneralised,
             MisconceptionId::AlgebraSignError,
         ],
-        split: "Julia math (polynomial rendering + derivative) in math-julia/src/generators.jl; Rust drives it over ZMQ generate_problem (endpoint TUTOR_MATH_ENDPOINT).",
+        split: "Julia math (polynomial rendering + derivative) in math-julia/src/generators.jl; Rust drives it over ZMQ generate_problem at tcp://127.0.0.1:5557 (default; --endpoint/TUTOR_MATH_ENDPOINT overrides).",
     },
     GeneratorSpec {
         name: "binomial_derivative_at_point",
@@ -96,7 +96,7 @@ pub const GENERATORS: &[GeneratorSpec] = &[
             MisconceptionId::DerivativesPowerRuleOvergeneralised,
             MisconceptionId::AlgebraSignError,
         ],
-        split: "Pure Rust: rand_pcg draw + checked integer power-rule math in tutor-generate; verified by Julia over ZMQ verify_answer.",
+        split: "Pure Rust: rand_pcg draw + checked integer power-rule math in tutor-generate; verified by Julia over ZMQ verify_answer at tcp://127.0.0.1:5557 (default; --endpoint/TUTOR_MATH_ENDPOINT overrides).",
     },
     GeneratorSpec {
         name: "product_rule_at_point",
@@ -112,7 +112,7 @@ pub const GENERATORS: &[GeneratorSpec] = &[
             MisconceptionId::DerivativesProductRule,
             MisconceptionId::AlgebraSignError,
         ],
-        split: "Julia math (two polynomial draws + symbolic differentiation of each factor) in math-julia/src/generators.jl; Rust drives it over ZMQ generate_problem.",
+        split: "Julia math (two polynomial draws + symbolic differentiation of each factor) in math-julia/src/generators.jl; Rust drives it over ZMQ generate_problem at tcp://127.0.0.1:5557 (default; --endpoint/TUTOR_MATH_ENDPOINT overrides).",
     },
     GeneratorSpec {
         name: "chain_rule_at_point",
@@ -128,7 +128,7 @@ pub const GENERATORS: &[GeneratorSpec] = &[
             MisconceptionId::DerivativesChainRule,
             MisconceptionId::AlgebraSignError,
         ],
-        split: "Julia math (outer/inner draws, inner evaluation, symbolic differentiation) in math-julia/src/generators.jl; Rust drives it over ZMQ generate_problem.",
+        split: "Julia math (outer/inner draws, inner evaluation, symbolic differentiation) in math-julia/src/generators.jl; Rust drives it over ZMQ generate_problem at tcp://127.0.0.1:5557 (default; --endpoint/TUTOR_MATH_ENDPOINT overrides).",
     },
 ];
 
@@ -531,7 +531,13 @@ fn emit_outputs(
 
 /// Write `rows` to a temporary sibling of `path`, then rename it into place.
 fn stage_jsonl(path: &Path, rows: impl Iterator<Item = serde_json::Value>) -> std::io::Result<()> {
-    let tmp = path.with_extension("jsonl.tmp");
+    // A staging path unique to this run, so concurrent runs sharing an
+    // output directory never delete each other's in-flight file.
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = path.with_extension(format!("jsonl.tmp.{}.{nonce:x}", std::process::id()));
     write_jsonl(&tmp, rows)?;
     publish(&tmp, path)
 }
