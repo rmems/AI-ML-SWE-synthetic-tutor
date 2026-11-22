@@ -26,3 +26,4 @@ math-julia/Manifest.toml
 !/datasets/*/README.md
 # Hand-written gold exemplar rows are committed
 !/datasets/gold/*.json
+rustup-init.exe
