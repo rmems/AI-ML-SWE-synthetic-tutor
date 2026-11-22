@@ -160,6 +160,17 @@ request(fields...) = JSON.json(Dict("protocol" => PROTOCOL, "request_id" => "t-1
         @test good["result"]["verified"] == true
         bad = reply(request("op" => "verify_answer", "problem" => 5))
         @test bad["error"]["code"] == "malformed_request"
+
+        # A request-controlled huge exponent hits the dense-binomial bound:
+        # without it, `m + 1` dense coefficients is a memory-exhaustion attack.
+        huge = JSON.parse(JSON.json(product_rule_at_point(5)))
+        huge["parameters"] = Dict(
+            "kind" => "binomial_derivative_at_point",
+            "a" => 1, "m" => 1_000_000, "b" => 1, "n" => 1, "point" => 0,
+        )
+        verdict = verify_answer(huge)
+        @test !verdict.verified
+        @test verdict.reason == "malformed_problem"
     end
 
     @testset "REP worker over ZMQ" begin

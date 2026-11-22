@@ -121,8 +121,9 @@ fn julia_verify_answer_round_trip() {
     let rejection = tutor_verify::verify_remote(&huge, &mut client).unwrap_err();
     assert_eq!(rejection.code, ReasonCode::SchemaInvalid);
 
-    // Sent straight over the wire — past verify_remote's Rust-side gate — the
-    // worker's own dense_binomial bound still refuses the exponent.
+    // A raw wire call fails closed too: the client validates before sending.
+    // The worker's own dense_binomial bound is exercised in math-julia's
+    // runtests.jl (only non-tutor-wire clients can reach it).
     let direct = client.verify_answer(&huge).unwrap_err();
     assert!(
         direct.to_string().contains("exponent must be below"),

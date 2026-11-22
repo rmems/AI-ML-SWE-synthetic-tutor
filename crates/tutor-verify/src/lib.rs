@@ -692,7 +692,7 @@ mod tests {
     }
 
     #[test]
-    fn product_and_chain_recompute() {
+    fn product_rule_recompute() {
         let mut p = problem(vec![5, -2, 3], 2, 10);
         // f = p·q with p = [1, 2] (2x+1), q = [3, 1] (x+3), point 2:
         // p'=2, q'=1 → f'(2) = 2·5 + 5·1 = 15.
@@ -745,7 +745,11 @@ mod tests {
             },
         ];
         assert!(verify(&p).is_ok());
+    }
 
+    #[test]
+    fn chain_rule_recompute() {
+        let mut p = problem(vec![5, -2, 3], 2, 10);
         // f = outer∘inner, outer = u^2 ([0,0,1]), inner = x+1 ([1,1]), point 2:
         // inner(2)=3, outer'(u)=2u → 6, inner'=1 → f'(2) = 6.
         p.parameters = Parameters::ChainRuleAtPoint {
@@ -785,7 +789,7 @@ mod tests {
         ];
         assert!(verify(&p).is_ok());
 
-        // Wrong product-rule answer (the classic f'·g' error = 2).
+        // Wrong chain-rule answer (the classic f'·g' error shape = 2).
         p.answer = Answer::Integer { value: 2 };
         assert_eq!(verify(&p).unwrap_err().code, ReasonCode::AnswerMismatch);
     }
