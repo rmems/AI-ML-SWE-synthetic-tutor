@@ -1,0 +1,17 @@
+[package]
+name = "tutor-validate"
+description = "CLI that validates tutoring dialogue rows against dialogue.schema.json and the policy constraints."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+tutor-schema.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+jsonschema.workspace = true
+
+[lints]
+workspace = true

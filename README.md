@@ -36,8 +36,10 @@ Each dataset row is one tutoring dialogue in a standard chat format:
 - full provenance: generator, teacher (if any), verification result,
   curriculum topic, and rights status
 
-A full gold example row will be shown here once the dialogue schema issue
-(#13) lands its gold examples.
+Gold example rows live in [`datasets/gold/`](datasets/gold/README.md); the
+row contract is [`schemas/dialogue.schema.json`](schemas/dialogue.schema.json)
+generated from `tutor_schema::DialogueRow`, and the pedagogy is
+[`docs/tutor-policy.md`](docs/tutor-policy.md).
 
 ---
 
@@ -146,15 +148,17 @@ proven.
 ```
 Cargo.toml, Cargo.lock, rust-toolchain.toml   Rust workspace (Rust 1.99.1, edition 2024)
 crates/
-  tutor-schema/     problem row types + validation (mirrors schemas/problem.schema.json)
+  tutor-schema/     problem + dialogue row types and validation (mirrors schemas/)
+  tutor-validate/   dialogue row validator CLI (JSON schema + policy checks)
   tutor-wire/       ZMQ REQ client for the Julia worker (tutor-math/1 JSON envelope)
   tutor-verify/     independent answer verification + Rust<->Julia bridge proof test
   tutor-generate/   placeholder: generators, student simulator (#18, #19)
   tutor-teachers/   placeholder: teacher model clients (#17)
   tutor-build/      placeholder: dedup, splits, Hugging Face export (#8, #21)
 math-julia/         TutorMath: seeded problem generators + ZMQ REP worker
-schemas/            problem.schema.json, dialogue.schema.json (stub), taxonomy.yaml (stub)
-docs/               mission, tutor policy, rights (stubs owned by their issues)
+schemas/            problem.schema.json, dialogue.schema.json (generated), taxonomy.yaml
+docs/               mission, tutor policy (v1), rights
+prompts/            versioned tutor system prompts
 curriculum/         coverage matrix (#16)
 datasets/           one folder per dataset family; generated rows are gitignored
 evals/              heldout/ items and grading rubric
