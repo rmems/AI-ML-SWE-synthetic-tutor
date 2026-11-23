@@ -3,6 +3,7 @@
 # Request:  {"protocol": "tutor-math/1", "request_id": "<string>", "op": "ping"}
 #           {"protocol": "tutor-math/1", "request_id": "<string>", "op": "generate_problem",
 #            "generator": "<name>", "seed": <0..2^53-1>}
+#           {"protocol", "request_id", "op": "verify_answer", "problem": {...}}
 # Reply:    {"protocol", "request_id", "status": "ok", "result": {...}}
 #           {"protocol", "request_id", "status": "error", "error": {"code", "message"}}
 #
@@ -29,6 +30,7 @@ end
 
 const PING_KEYS = Set(["protocol", "request_id", "op"])
 const GENERATE_KEYS = Set(["protocol", "request_id", "op", "generator", "seed"])
+const VERIFY_KEYS = Set(["protocol", "request_id", "op", "problem"])
 
 function check_keys(request::AbstractDict, allowed::Set{String})
     extra = sort([String(k) for k in keys(request) if !(String(k) in allowed)])
@@ -72,6 +74,12 @@ function dispatch(request::AbstractDict)
         (seed isa Integer && !(seed isa Bool) && 0 <= seed <= MAX_SEED) ||
             throw(RequestError("invalid_seed", "seed must be an integer in 0:$(MAX_SEED)"))
         return generator(seed)
+    elseif op == "verify_answer"
+        check_keys(request, VERIFY_KEYS)
+        problem = request["problem"]
+        problem isa AbstractDict ||
+            throw(RequestError("malformed_request", "problem must be a JSON object"))
+        return verify_answer(problem)
     else
         throw(RequestError("unknown_op", "unsupported op $(repr(op))"))
     end

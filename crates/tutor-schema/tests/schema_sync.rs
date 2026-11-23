@@ -60,7 +60,7 @@ fn top_level_fields_match_schema() {
 }
 
 #[test]
-fn nested_fields_match_schema() {
+fn nested_object_fields_match_schema() {
     let schema = schema();
     let defs = &schema["$defs"];
     let value = fixture();
@@ -76,6 +76,31 @@ fn nested_fields_match_schema() {
         strings(&defs["verification"]["required"]),
         keys(&defs["verification"]["properties"])
     );
+    assert_eq!(
+        keys(&defs["difficulty"]["properties"]),
+        keys(&value["difficulty"])
+    );
+    assert_eq!(
+        strings(&defs["difficulty"]["required"]),
+        keys(&value["difficulty"])
+    );
+    assert_eq!(
+        keys(&defs["step"]["oneOf"][0]["properties"]),
+        keys(&value["steps"][0])
+    );
+    assert_eq!(
+        keys(&defs["step"]["oneOf"][1]["properties"]),
+        keys(&value["steps"][1])
+    );
+    let answer = &defs["answer"]["oneOf"][0];
+    assert_eq!(keys(&answer["properties"]), keys(&value["answer"]));
+}
+
+#[test]
+fn nested_enum_shapes_match_schema() {
+    let schema = schema();
+    let defs = &schema["$defs"];
+    let value = fixture();
     let parameters = &defs["parameters"]["oneOf"][0];
     assert_eq!(keys(&parameters["properties"]), keys(&value["parameters"]));
     assert_eq!(
@@ -83,11 +108,23 @@ fn nested_fields_match_schema() {
         value["parameters"]["kind"]
     );
     assert_eq!(
-        parameters["properties"]["coefficients"]["maxItems"],
+        parameters["properties"]["coefficients"]["$ref"],
+        json!("#/$defs/coefficients")
+    );
+    assert_eq!(
+        defs["coefficients"]["maxItems"],
         json!(tutor_schema::MAX_COEFFICIENTS)
     );
-    let answer = &defs["answer"]["oneOf"][0];
-    assert_eq!(keys(&answer["properties"]), keys(&value["answer"]));
+    assert_eq!(defs["parameters"]["oneOf"].as_array().unwrap().len(), 4);
+    assert_eq!(defs["step"]["oneOf"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        schema["properties"]["steps"]["maxItems"],
+        json!(tutor_schema::MAX_STEPS)
+    );
+    assert_eq!(
+        schema["properties"]["misconception_ids"]["maxItems"],
+        json!(tutor_schema::MAX_MISCONCEPTION_IDS)
+    );
     assert_eq!(
         defs["generator"]["properties"]["seed"]["maximum"],
         json!(MAX_SEED)
@@ -129,6 +166,31 @@ fn unknown_and_missing_fields_are_rejected() {
         "schema_shape"
     );
     assert_eq!(
+        reject(|v| v["steps"][0]["kind"] = json!("nope")).code(),
+        "schema_shape"
+    );
+    assert_eq!(
+        reject(|v| {
+            v.as_object_mut().unwrap().remove("difficulty");
+        })
+        .code(),
+        "schema_shape"
+    );
+    assert_eq!(
+        reject(|v| {
+            v.as_object_mut().unwrap().remove("steps");
+        })
+        .code(),
+        "schema_shape"
+    );
+    assert_eq!(
+        reject(|v| {
+            v.as_object_mut().unwrap().remove("misconception_ids");
+        })
+        .code(),
+        "schema_shape"
+    );
+    assert_eq!(
         reject(|v| v["generator"]["language"] = json!("python")).code(),
         "schema_shape"
     );
@@ -166,7 +228,20 @@ fn constraint_violations_are_rejected() {
         Box::new(|v| {
             v["verification"] = json!({"method": "", "verifier": "v", "verifier_version": "1"})
         }),
+        Box::new(|v| v["difficulty"]["max_degree"] = json!(0)),
+        Box::new(|v| v["difficulty"]["coefficient_bound"] = json!(0)),
+        Box::new(|v| v["difficulty"]["point_bound"] = json!(0)),
+        Box::new(|v| v["steps"] = json!([])),
+        Box::new(|v| v["steps"][0]["input"] = json!([])),
+        Box::new(|v| v["steps"][1]["coefficients"] = json!([1, 2, 0])),
+        Box::new(|v| v["misconception_ids"] = json!([])),
+        Box::new(|v| v["misconception_ids"] = json!(vec!["derivatives.chain_rule"; 9])),
     ];
+    // Valid shape but unknown taxonomy IDs are schema_shape (enum rejects them).
+    assert_eq!(
+        reject(|v| v["misconception_ids"] = json!(["derivatives.no_such_id"])).code(),
+        "schema_shape"
+    );
     for mutate in cases {
         assert_eq!(reject(mutate).code(), "schema_constraint");
     }

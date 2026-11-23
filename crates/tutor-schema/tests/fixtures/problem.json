@@ -15,5 +15,27 @@
     "coefficients": [5, -2, 3],
     "point": 2
   },
-  "answer": { "kind": "integer", "value": 10 }
+  "difficulty": {
+    "max_degree": 4,
+    "coefficient_bound": 9,
+    "point_bound": 5
+  },
+  "answer": { "kind": "integer", "value": 10 },
+  "steps": [
+    {
+      "kind": "differentiate_polynomial",
+      "input": [5, -2, 3],
+      "output": [-2, 6]
+    },
+    {
+      "kind": "evaluate_polynomial",
+      "coefficients": [-2, 6],
+      "point": 2,
+      "value": 10
+    }
+  ],
+  "misconception_ids": [
+    "derivatives.power_rule_overgeneralised",
+    "algebra.sign_error"
+  ]
 }
