@@ -24,6 +24,16 @@ pub const RUST_RECOMPUTE: &str = "rust_recompute_steps_replay";
 /// Method recorded when the check ran in the Julia worker (`verify_answer` op).
 pub const JULIA_RECOMPUTE: &str = "julia_verify_answer";
 
+/// An integer math value the verifier recomputes: a coefficient, an
+/// evaluation point, or a step's claimed output. Newtyped so positions in a
+/// call can't be silently swapped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Scalar(pub i64);
+
+/// A binomial exponent (`u32`, matching the schema's exponent bounds).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Exponent(pub u32);
+
 /// Stable reason codes for rejected problems.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReasonCode {
@@ -82,21 +92,21 @@ impl Rejection {
 }
 
 /// `p'(x)` for `p = Σ c_k x^k`, or `None` on overflow.
-pub fn polynomial_derivative_at(coefficients: &[i64], x: i64) -> Option<i64> {
+pub fn polynomial_derivative_at(coefficients: &[i64], x: Scalar) -> Option<i64> {
     // Horner on p'(x) = Σ_{k≥1} k c_k x^(k-1), highest power first.
     let mut acc: i64 = 0;
     for (k, &c) in coefficients.iter().enumerate().skip(1).rev() {
         let term = i64::try_from(k).ok()?.checked_mul(c)?;
-        acc = acc.checked_mul(x)?.checked_add(term)?;
+        acc = acc.checked_mul(x.0)?.checked_add(term)?;
     }
     Some(acc)
 }
 
 /// `p(x)` for `p = Σ c_k x^k` (Horner), or `None` on overflow.
-pub fn polynomial_value_at(coefficients: &[i64], x: i64) -> Option<i64> {
+pub fn polynomial_value_at(coefficients: &[i64], x: Scalar) -> Option<i64> {
     let mut acc: i64 = 0;
     for &c in coefficients.iter().rev() {
-        acc = acc.checked_mul(x)?.checked_add(c)?;
+        acc = acc.checked_mul(x.0)?.checked_add(c)?;
     }
     Some(acc)
 }
@@ -120,26 +130,26 @@ fn expected_answer(parameters: &Parameters) -> Option<Answer> {
         Parameters::PolynomialDerivativeAtPoint {
             coefficients,
             point,
-        } => polynomial_derivative_at(coefficients, *point)?,
+        } => polynomial_derivative_at(coefficients, Scalar(*point))?,
         Parameters::BinomialDerivativeAtPoint { a, m, b, n, point } => {
             // f'(x) = a·m·x^(m-1) + b·n·x^(n-1); each term by checked pow/mul/add.
-            let term = |coeff: i64, e: u32| -> Option<i64> {
-                if e == 0 {
+            let term = |coeff: Scalar, e: Exponent| -> Option<i64> {
+                if e.0 == 0 {
                     return Some(0);
                 }
-                let base = coeff.checked_mul(i64::from(e))?;
-                base.checked_mul(point.checked_pow(e - 1)?)
+                let base = coeff.0.checked_mul(i64::from(e.0))?;
+                base.checked_mul(point.checked_pow(e.0 - 1)?)
             };
-            term(*a, *m)?.checked_add(term(*b, *n)?)?
+            term(Scalar(*a), Exponent(*m))?.checked_add(term(Scalar(*b), Exponent(*n))?)?
         }
         Parameters::ProductRuleAtPoint { p, q, point } => {
             // f'(a) = p'(a)·q(a) + p(a)·q'(a).
             let p_d = polynomial_derivative(p)?;
             let q_d = polynomial_derivative(q)?;
-            let t1 =
-                polynomial_value_at(&p_d, *point)?.checked_mul(polynomial_value_at(q, *point)?)?;
-            let t2 =
-                polynomial_value_at(p, *point)?.checked_mul(polynomial_value_at(&q_d, *point)?)?;
+            let t1 = polynomial_value_at(&p_d, Scalar(*point))?
+                .checked_mul(polynomial_value_at(q, Scalar(*point))?)?;
+            let t2 = polynomial_value_at(p, Scalar(*point))?
+                .checked_mul(polynomial_value_at(&q_d, Scalar(*point))?)?;
             t1.checked_add(t2)?
         }
         Parameters::ChainRuleAtPoint {
@@ -148,10 +158,11 @@ fn expected_answer(parameters: &Parameters) -> Option<Answer> {
             point,
         } => {
             // f'(a) = outer'(inner(a)) · inner'(a).
-            let u = polynomial_value_at(inner, *point)?;
+            let u = polynomial_value_at(inner, Scalar(*point))?;
             let outer_d = polynomial_derivative(outer)?;
             let inner_d = polynomial_derivative(inner)?;
-            polynomial_value_at(&outer_d, u)?.checked_mul(polynomial_value_at(&inner_d, *point)?)?
+            polynomial_value_at(&outer_d, Scalar(u))?
+                .checked_mul(polynomial_value_at(&inner_d, Scalar(*point))?)?
         }
     };
     Some(Answer::Integer { value })
@@ -164,7 +175,12 @@ fn parameter_polynomials(parameters: &Parameters) -> Vec<Vec<i64>> {
             vec![coefficients.clone()]
         }
         Parameters::BinomialDerivativeAtPoint { a, m, b, n, .. } => {
-            vec![dense_binomial(*a, *m, *b, *n)]
+            vec![dense_binomial(
+                Scalar(*a),
+                Exponent(*m),
+                Scalar(*b),
+                Exponent(*n),
+            )]
         }
         Parameters::ProductRuleAtPoint { p, q, .. } => vec![p.clone(), q.clone()],
         Parameters::ChainRuleAtPoint { outer, inner, .. } => {
@@ -174,10 +190,10 @@ fn parameter_polynomials(parameters: &Parameters) -> Vec<Vec<i64>> {
 }
 
 /// Dense ascending-order coefficients of `a·x^m + b·x^n` (`m > n`).
-pub fn dense_binomial(a: i64, m: u32, b: i64, n: u32) -> Vec<i64> {
-    let mut coefficients = vec![0i64; m as usize + 1];
-    coefficients[m as usize] = a;
-    coefficients[n as usize] = coefficients[n as usize].saturating_add(b);
+pub fn dense_binomial(a: Scalar, m: Exponent, b: Scalar, n: Exponent) -> Vec<i64> {
+    let mut coefficients = vec![0i64; m.0 as usize + 1];
+    coefficients[m.0 as usize] = a.0;
+    coefficients[n.0 as usize] = coefficients[n.0 as usize].saturating_add(b.0);
     coefficients
 }
 
@@ -227,9 +243,9 @@ impl Replay {
     }
 
     /// Record an integer produced by a step.
-    fn produce_integer(&mut self, v: i64) {
-        *self.produced.entry(v).or_insert(0) += 1;
-        self.last = Some(v);
+    fn produce_integer(&mut self, v: Scalar) {
+        *self.produced.entry(v.0).or_insert(0) += 1;
+        self.last = Some(v.0);
     }
 
     /// Whether `coefficients` is a declared parameter or an earlier output.
@@ -239,11 +255,11 @@ impl Replay {
 
     /// Consume one use of `v` as an operand; declared parameters are always
     /// usable, produced values only as many times as they were produced.
-    fn take_integer(&mut self, v: i64) -> bool {
-        if self.declared.contains(&v) {
+    fn take_integer(&mut self, v: Scalar) -> bool {
+        if self.declared.contains(&v.0) {
             return true;
         }
-        match self.produced.get_mut(&v) {
+        match self.produced.get_mut(&v.0) {
             Some(count) if *count > 0 => {
                 *count -= 1;
                 true
@@ -278,8 +294,8 @@ impl Replay {
     fn replay_evaluate(
         &mut self,
         coefficients: &[i64],
-        point: i64,
-        value: i64,
+        point: Scalar,
+        value: Scalar,
     ) -> Result<(), String> {
         let at = self.step_prefix();
         if !self.polynomial_known(coefficients) {
@@ -290,14 +306,16 @@ impl Replay {
         // `point` must be a declared parameter or an earlier integer output.
         if !self.take_integer(point) {
             return Err(format!(
-                "{at}: evaluation point {point} is not a declared parameter or earlier output"
+                "{at}: evaluation point {} is not a declared parameter or earlier output",
+                point.0
             ));
         }
         let recomputed = polynomial_value_at(coefficients, point)
             .ok_or(format!("{at}: evaluation overflowed"))?;
-        if recomputed != value {
+        if recomputed != value.0 {
             return Err(format!(
-                "{at}: {coefficients:?} at {point} is {recomputed}, not {value}"
+                "{at}: {coefficients:?} at {} is {recomputed}, not {}",
+                point.0, value.0
             ));
         }
         self.produce_integer(value);
@@ -310,11 +328,11 @@ impl Replay {
         &mut self,
         op: CombineOp,
         operands: &[i64],
-        value: i64,
+        value: Scalar,
     ) -> Result<(), String> {
         let at = self.step_prefix();
         for operand in operands {
-            if !self.take_integer(*operand) {
+            if !self.take_integer(Scalar(*operand)) {
                 return Err(format!(
                     "{at}: {} {operand} is not a declared parameter or earlier output",
                     op.operand_name()
@@ -323,12 +341,14 @@ impl Replay {
         }
         let recomputed = operands
             .iter()
-            .try_fold(op.identity(), |acc, o| op.combine(acc, *o))
+            .try_fold(op.identity(), |acc, o| op.combine(acc, Scalar(*o)))
             .ok_or(format!("{at}: recomputation overflowed"))?;
         if recomputed != value {
             return Err(format!(
-                "{at}: {}s {operands:?} combine to {recomputed}, not {value}",
-                op.operand_name()
+                "{at}: {}s {operands:?} combine to {}, not {}",
+                op.operand_name(),
+                recomputed.0,
+                value.0
             ));
         }
         self.produce_integer(value);
@@ -351,17 +371,17 @@ impl CombineOp {
         }
     }
 
-    fn identity(self) -> i64 {
+    fn identity(self) -> Scalar {
         match self {
-            CombineOp::Multiply => 1,
-            CombineOp::Add => 0,
+            CombineOp::Multiply => Scalar(1),
+            CombineOp::Add => Scalar(0),
         }
     }
 
-    fn combine(self, a: i64, b: i64) -> Option<i64> {
+    fn combine(self, a: Scalar, b: Scalar) -> Option<Scalar> {
         match self {
-            CombineOp::Multiply => a.checked_mul(b),
-            CombineOp::Add => a.checked_add(b),
+            CombineOp::Multiply => a.0.checked_mul(b.0).map(Scalar),
+            CombineOp::Add => a.0.checked_add(b.0).map(Scalar),
         }
     }
 }
@@ -372,8 +392,8 @@ impl CombineOp {
 fn replay_steps(problem: &Problem) -> Result<i64, String> {
     let mut replay = Replay::new(problem);
     let mut saw_differentiation = false;
-    for (i, step) in problem.steps.iter().enumerate() {
-        replay_step(&mut replay, i, step)?;
+    for step in &problem.steps {
+        replay_step(&mut replay, step)?;
         saw_differentiation |= matches!(step, Step::DifferentiatePolynomial { .. });
     }
     // Every topic is a derivative problem: a solution that never
@@ -394,9 +414,8 @@ fn replay_steps(problem: &Problem) -> Result<i64, String> {
         .ok_or_else(|| "no step produced an integer result".to_owned())
 }
 
-fn replay_step(replay: &mut Replay, i: usize, step: &Step) -> Result<(), String> {
-    replay.step_index = i;
-    match step {
+fn replay_step(replay: &mut Replay, step: &Step) -> Result<(), String> {
+    let result = match step {
         Step::DifferentiatePolynomial { input, output } => {
             replay.replay_differentiate(input, output)
         }
@@ -404,12 +423,16 @@ fn replay_step(replay: &mut Replay, i: usize, step: &Step) -> Result<(), String>
             coefficients,
             point,
             value,
-        } => replay.replay_evaluate(coefficients, *point, *value),
+        } => replay.replay_evaluate(coefficients, Scalar(*point), Scalar(*value)),
         Step::Multiply { factors, value } => {
-            replay.replay_combine(CombineOp::Multiply, factors, *value)
+            replay.replay_combine(CombineOp::Multiply, factors, Scalar(*value))
         }
-        Step::Add { addends, value } => replay.replay_combine(CombineOp::Add, addends, *value),
-    }
+        Step::Add { addends, value } => {
+            replay.replay_combine(CombineOp::Add, addends, Scalar(*value))
+        }
+    };
+    replay.step_index += 1;
+    result
 }
 
 /// Check `problem` independently (schema, step replay, answer recompute) and
@@ -584,7 +607,7 @@ mod tests {
     use super::*;
     use tutor_schema::{Difficulty, GeneratorLanguage, GeneratorProvenance, MisconceptionId};
 
-    fn problem(coefficients: Vec<i64>, point: i64, answer: i64) -> Problem {
+    fn problem(coefficients: Vec<i64>, point: Scalar, answer: Scalar) -> Problem {
         let derivative = polynomial_derivative(&coefficients).unwrap();
         Problem {
             schema_version: 1,
@@ -600,14 +623,14 @@ mod tests {
             statement: "s".into(),
             parameters: Parameters::PolynomialDerivativeAtPoint {
                 coefficients: coefficients.clone(),
-                point,
+                point: point.0,
             },
             difficulty: Difficulty {
                 max_degree: 4,
                 coefficient_bound: 9,
                 point_bound: 5,
             },
-            answer: Answer::Integer { value: answer },
+            answer: Answer::Integer { value: answer.0 },
             steps: vec![
                 Step::DifferentiatePolynomial {
                     input: coefficients,
@@ -615,8 +638,8 @@ mod tests {
                 },
                 Step::EvaluatePolynomial {
                     coefficients: derivative,
-                    point,
-                    value: answer,
+                    point: point.0,
+                    value: answer.0,
                 },
             ],
             misconception_ids: vec![MisconceptionId::DerivativesPowerRuleOvergeneralised],
@@ -626,19 +649,25 @@ mod tests {
 
     #[test]
     fn derivative_matches_hand_computation() {
-        assert_eq!(polynomial_derivative_at(&[5, -2, 3], 2), Some(10));
-        assert_eq!(polynomial_derivative_at(&[7], 3), Some(0));
-        assert_eq!(polynomial_derivative_at(&[0, 0, 0, 1], -2), Some(12));
-        assert_eq!(polynomial_derivative_at(&[1, 4, -9, 0, 2], -5), Some(-906));
-        assert_eq!(polynomial_derivative_at(&[0, 0, i64::MAX], 2), None);
-        assert_eq!(polynomial_value_at(&[5, -2, 3], 2), Some(13));
+        assert_eq!(polynomial_derivative_at(&[5, -2, 3], Scalar(2)), Some(10));
+        assert_eq!(polynomial_derivative_at(&[7], Scalar(3)), Some(0));
+        assert_eq!(
+            polynomial_derivative_at(&[0, 0, 0, 1], Scalar(-2)),
+            Some(12)
+        );
+        assert_eq!(
+            polynomial_derivative_at(&[1, 4, -9, 0, 2], Scalar(-5)),
+            Some(-906)
+        );
+        assert_eq!(polynomial_derivative_at(&[0, 0, i64::MAX], Scalar(2)), None);
+        assert_eq!(polynomial_value_at(&[5, -2, 3], Scalar(2)), Some(13));
         assert_eq!(polynomial_derivative(&[5, -2, 3]), Some(vec![-2, 6]));
         assert_eq!(polynomial_derivative(&[7]), Some(vec![0]));
     }
 
     #[test]
     fn accepts_correct_answers() {
-        let verified = verify(&problem(vec![5, -2, 3], 2, 10)).unwrap();
+        let verified = verify(&problem(vec![5, -2, 3], Scalar(2), Scalar(10))).unwrap();
         let record = verified.verification.unwrap();
         assert_eq!(record.method, RUST_RECOMPUTE);
         assert_eq!(record.verifier, VERIFIER);
@@ -649,7 +678,7 @@ mod tests {
         // Typical planted errors: off by one, sign flip, forgetting the chain factor k,
         // and returning f(x) instead of f'(x).
         for wrong in [9, 11, -10, 4, 13] {
-            let mut p = problem(vec![5, -2, 3], 2, wrong);
+            let mut p = problem(vec![5, -2, 3], Scalar(2), Scalar(wrong));
             // Keep the steps honest so the answer mismatch is what fires.
             p.steps[1] = Step::EvaluatePolynomial {
                 coefficients: vec![-2, 6],
@@ -665,7 +694,7 @@ mod tests {
     fn rejects_tampered_steps() {
         // Wrong intermediate value: the evaluate step's recorded value disagrees
         // with the recomputation.
-        let mut p = problem(vec![5, -2, 3], 2, 10);
+        let mut p = problem(vec![5, -2, 3], Scalar(2), Scalar(10));
         p.steps[0] = Step::DifferentiatePolynomial {
             input: vec![5, -2, 3],
             output: vec![-2, 7],
@@ -673,7 +702,7 @@ mod tests {
         assert_eq!(verify(&p).unwrap_err().code, ReasonCode::StepReplay);
 
         // An operand that never came from a parameter or earlier output.
-        let mut p = problem(vec![5, -2, 3], 2, 10);
+        let mut p = problem(vec![5, -2, 3], Scalar(2), Scalar(10));
         p.steps.push(Step::Multiply {
             factors: vec![10, 99],
             value: 990,
@@ -681,7 +710,7 @@ mod tests {
         assert_eq!(verify(&p).unwrap_err().code, ReasonCode::StepReplay);
 
         // Last step's value no longer equals the answer.
-        let mut p = problem(vec![5, -2, 3], 2, 10);
+        let mut p = problem(vec![5, -2, 3], Scalar(2), Scalar(10));
         p.steps[1] = Step::EvaluatePolynomial {
             coefficients: vec![-2, 6],
             point: 2,
@@ -693,7 +722,7 @@ mod tests {
 
     #[test]
     fn product_rule_recompute() {
-        let mut p = problem(vec![5, -2, 3], 2, 10);
+        let mut p = problem(vec![5, -2, 3], Scalar(2), Scalar(10));
         // f = p·q with p = [1, 2] (2x+1), q = [3, 1] (x+3), point 2:
         // p'=2, q'=1 → f'(2) = 2·5 + 5·1 = 15.
         p.parameters = Parameters::ProductRuleAtPoint {
@@ -749,7 +778,7 @@ mod tests {
 
     #[test]
     fn chain_rule_recompute() {
-        let mut p = problem(vec![5, -2, 3], 2, 10);
+        let mut p = problem(vec![5, -2, 3], Scalar(2), Scalar(10));
         // f = outer∘inner, outer = u^2 ([0,0,1]), inner = x+1 ([1,1]), point 2:
         // inner(2)=3, outer'(u)=2u → 6, inner'=1 → f'(2) = 6.
         p.parameters = Parameters::ChainRuleAtPoint {
@@ -797,7 +826,7 @@ mod tests {
     #[test]
     fn binomial_recompute() {
         // f(x) = 3x^4 - 2x^2, f'(2) = 3·4·8 - 2·2·2 = 96 - 8 = 88.
-        let mut p = problem(vec![5, -2, 3], 2, 10);
+        let mut p = problem(vec![5, -2, 3], Scalar(2), Scalar(10));
         p.parameters = Parameters::BinomialDerivativeAtPoint {
             a: 3,
             m: 4,
@@ -808,11 +837,23 @@ mod tests {
         p.answer = Answer::Integer { value: 88 };
         p.steps = vec![
             Step::DifferentiatePolynomial {
-                input: dense_binomial(3, 4, -2, 2),
-                output: polynomial_derivative(&dense_binomial(3, 4, -2, 2)).unwrap(),
+                input: dense_binomial(Scalar(3), Exponent(4), Scalar(-2), Exponent(2)),
+                output: polynomial_derivative(&dense_binomial(
+                    Scalar(3),
+                    Exponent(4),
+                    Scalar(-2),
+                    Exponent(2),
+                ))
+                .unwrap(),
             },
             Step::EvaluatePolynomial {
-                coefficients: polynomial_derivative(&dense_binomial(3, 4, -2, 2)).unwrap(),
+                coefficients: polynomial_derivative(&dense_binomial(
+                    Scalar(3),
+                    Exponent(4),
+                    Scalar(-2),
+                    Exponent(2),
+                ))
+                .unwrap(),
                 point: 2,
                 value: 88,
             },
@@ -826,7 +867,11 @@ mod tests {
     fn fails_closed() {
         // Derivative [0, 2·u32::MAX] fits, but evaluating it at x = u32::MAX overflows.
         // Loose declared bounds let the parameters validate; replay still fails closed.
-        let mut overflowing = problem(vec![0, 0, i64::from(u32::MAX)], i64::from(u32::MAX), 0);
+        let mut overflowing = problem(
+            vec![0, 0, i64::from(u32::MAX)],
+            Scalar(i64::from(u32::MAX)),
+            Scalar(0),
+        );
         overflowing.difficulty = Difficulty {
             max_degree: 4,
             coefficient_bound: u32::MAX,
@@ -834,9 +879,9 @@ mod tests {
         };
         let overflow = verify(&overflowing).unwrap_err();
         assert_eq!(overflow.code, ReasonCode::Overflow);
-        let invalid = verify(&problem(vec![1, 0], 2, 0)).unwrap_err();
+        let invalid = verify(&problem(vec![1, 0], Scalar(2), Scalar(0))).unwrap_err();
         assert_eq!(invalid.code, ReasonCode::SchemaInvalid);
-        let verified = verify(&problem(vec![5, -2, 3], 2, 10)).unwrap();
+        let verified = verify(&problem(vec![5, -2, 3], Scalar(2), Scalar(10))).unwrap();
         let twice = verify(&verified).unwrap_err();
         assert_eq!(twice.code, ReasonCode::AlreadyVerified);
         assert_eq!(twice.code.as_str(), "verify_already_verified");

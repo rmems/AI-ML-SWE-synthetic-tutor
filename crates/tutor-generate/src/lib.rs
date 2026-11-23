@@ -24,7 +24,7 @@ use tutor_schema::{
     Answer, Difficulty, GeneratorLanguage, GeneratorProvenance, MAX_SEED, MisconceptionId,
     Parameters, Problem, Step,
 };
-use tutor_verify::Rejection;
+use tutor_verify::{Exponent, Rejection, Scalar};
 use tutor_wire::{MathClient, WireError};
 
 /// Version of the Rust-native binomial generator.
@@ -195,7 +195,7 @@ pub fn binomial_derivative_at_point(seed: u64) -> Result<Problem, GenerateError>
         .and_then(|t1| term(b, n).and_then(|t2| t1.checked_add(t2)))
         .ok_or(GenerateError::Overflow)?;
 
-    let dense = tutor_verify::dense_binomial(a, m, b, n);
+    let dense = tutor_verify::dense_binomial(Scalar(a), Exponent(m), Scalar(b), Exponent(n));
     let derivative = tutor_verify::polynomial_derivative(&dense).ok_or(GenerateError::Overflow)?;
     let statement = format!(
         "Let f(x) = {}. Compute f'({point}).",

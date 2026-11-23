@@ -18,7 +18,7 @@ use tutor_schema::{
     Answer, Difficulty, GeneratorLanguage, GeneratorProvenance, MisconceptionId, Parameters,
     Problem, Step,
 };
-use tutor_verify::{ReasonCode, verify};
+use tutor_verify::{Exponent, ReasonCode, Scalar, verify};
 use tutor_wire::{MathClient, PROTOCOL};
 
 const GENERATORS: [&str; 3] = [
@@ -135,9 +135,9 @@ fn julia_verify_answer_round_trip() {
 /// emits (kind `binomial_derivative_at_point`, `language = "rust"`).
 fn rust_binomial_problem(terms: ((i64, u32), (i64, u32)), point: i64) -> Problem {
     let ((a, m), (b, n)) = terms;
-    let dense = tutor_verify::dense_binomial(a, m, b, n);
+    let dense = tutor_verify::dense_binomial(Scalar(a), Exponent(m), Scalar(b), Exponent(n));
     let derivative = tutor_verify::polynomial_derivative(&dense).unwrap();
-    let value = tutor_verify::polynomial_value_at(&derivative, point).unwrap();
+    let value = tutor_verify::polynomial_value_at(&derivative, Scalar(point)).unwrap();
     Problem {
         schema_version: 1,
         problem_id: format!("binomial_derivative_at_point/v1/seed-{a}-{m}-{b}-{n}"),
