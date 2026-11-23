@@ -5,8 +5,16 @@
 //! value that passes [`Problem::from_json`] is schema-valid. A test in
 //! `tests/schema_sync.rs` keeps these types and the JSON Schema file in line.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+mod dialogue;
+
+pub use dialogue::{
+    DIALOGUE_SCHEMA_VERSION, DialogueProvenance, DialogueRow, MAX_HINT_LEVEL, NamedVersion, Role,
+    RowSource, RowType, TUTOR_POLICY_VERSION, Turn, TurnKind, dialogue_json_schema,
+};
 
 /// Current `schema_version` of [`Problem`].
 pub const PROBLEM_SCHEMA_VERSION: u32 = 1;
@@ -127,7 +135,9 @@ pub struct Verification {
 /// dataset row's primary misconception label validates against the same list the
 /// simulator, families, and eval read. IDs are permanent once published: a renamed
 /// or split entry gets a new variant and the old one stays parseable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 pub enum MisconceptionId {
     /// `algebra.distribution_error`.
     #[serde(rename = "algebra.distribution_error")]
@@ -241,7 +251,91 @@ impl MisconceptionId {
             Self::TrigUnitCircle => "trig.unit_circle",
         }
     }
+
+    /// Curriculum topics where this misconception can appear, from the
+    /// `topics` list of its `schemas/taxonomy.yaml` entry. The
+    /// `taxonomy_sync` test keeps this table in line with the file.
+    pub fn topics(self) -> &'static [&'static str] {
+        let index = Self::ALL
+            .iter()
+            .position(|id| *id == self)
+            .expect("every variant is in ALL");
+        TOPICS[index]
+    }
 }
+
+/// Topics per [`MisconceptionId`], in [`MisconceptionId::ALL`] order, copied
+/// from `schemas/taxonomy.yaml`.
+const TOPICS: [&[&str]; 20] = [
+    &[
+        "algebra.distributive_property",
+        "algebra.polynomial_expansion",
+    ],
+    &["algebra.exponent_rules", "algebra.polynomial_operations"],
+    &["algebra.combining_like_terms", "algebra.linear_equations"],
+    &["algebra.linear_equations", "algebra.multi_step_equations"],
+    &[
+        "calculus.derivatives.chain_rule",
+        "calculus.derivatives.composite_functions",
+    ],
+    &[
+        "calculus.derivatives.implicit_differentiation",
+        "calculus.derivatives.chain_rule",
+    ],
+    &[
+        "calculus.derivatives.exponential_derivatives",
+        "calculus.derivatives.power_rule",
+    ],
+    &[
+        "calculus.derivatives.product_rule",
+        "calculus.derivatives.trigonometric_derivatives",
+    ],
+    &[
+        "calculus.derivatives.quotient_rule",
+        "calculus.derivatives.rational_functions",
+    ],
+    &["functions.composition", "functions.function_notation"],
+    &[
+        "functions.domain",
+        "functions.range",
+        "functions.rational_functions",
+    ],
+    &["functions.inverse_functions", "functions.function_notation"],
+    &["integrals.power_rule", "integrals.basic_antiderivatives"],
+    &[
+        "integrals.indefinite_integrals",
+        "integrals.antiderivatives",
+    ],
+    &[
+        "integrals.definite_integrals",
+        "integrals.fundamental_theorem_of_calculus",
+    ],
+    &[
+        "limits.indeterminate_forms",
+        "limits.limit_evaluation",
+        "algebra.rational_expressions",
+    ],
+    &[
+        "limits.indeterminate_forms",
+        "limits.limit_laws",
+        "limits.limits_at_infinity",
+    ],
+    &[
+        "limits.one_sided_limits",
+        "limits.limit_existence",
+        "functions.piecewise_functions",
+    ],
+    &[
+        "trig.identities",
+        "trig.tangent",
+        "trig.pythagorean_identity",
+    ],
+    &[
+        "trig.unit_circle",
+        "trig.trigonometric_functions",
+        "trig.special_angles",
+    ],
+];
 
 /// Why a value is not schema-valid.
 #[derive(Debug, Error)]
@@ -277,7 +371,7 @@ fn invalid(field: &'static str, reason: impl Into<String>) -> SchemaError {
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), SchemaError> {
-    if value.is_empty() {
+    if value.trim().is_empty() {
         return Err(invalid(field, "must be non-empty"));
     }
     Ok(())
