@@ -149,3 +149,6 @@ applied to this repo's teachers.
   refuse any teacher without an `allowed` entry** — that refusal contract is
   the wiring requirement noted here. The teacher clients themselves are not
   built in this issue.
+- The on-row representation of the rights envelope (teacher + route + serving
+  vendor) is owned by the dialogue schema and the downstream ingest gate
+  (rmems/peira#63), not this issue.
