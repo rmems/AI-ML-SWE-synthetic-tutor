@@ -29,6 +29,9 @@ applied to this repo's teachers.
   rights evidence rather than trusting paths.
 - **Route (roster-wide, decided 2026-11-21):** Merge Gateway primary,
   OpenRouter fallback. All roster pins are confirmed in the Gateway catalog.
+  Exception pending evidence: DeepSeek V4.1 Flash's `allowed` currently covers
+  its DeepSeek Open Platform API channel only — gateway-routed DeepSeek awaits
+  the model-specific terms snapshot noted in its entry.
 
 ## Entries
 
