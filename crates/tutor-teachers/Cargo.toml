@@ -1,6 +1,6 @@
 [package]
 name = "tutor-teachers"
-description = "Teacher model clients for DeepSeek V4.1 Flash and Nemotron 3 (placeholder; see issue #17)."
+description = "Teacher model clients for DeepSeek V4.1 Flash and MiMo V2.6 Flash (placeholder; see issue #17)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
