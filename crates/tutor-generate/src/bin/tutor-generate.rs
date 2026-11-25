@@ -456,6 +456,41 @@ fn write_simulation_output(
         );
     }
 
+    let (correct_count, noise_count) = simulation_counts(&batch);
+    // Calculate the complete bundle's digests before touching the output
+    // directory. The data files are individually replaced atomically, and the
+    // manifest is the commit record: it is written last and carries their
+    // hashes and sizes so a consumer can detect an interrupted multi-file
+    // publish.
+    let bundle_artifacts = serde_json::json!({
+        "attempts.jsonl": jsonl_metadata(batch.attempts.iter())?,
+        "rejections.jsonl": jsonl_metadata(batch.rejections.iter())?,
+    });
+    let manifest_text =
+        simulation_manifest_text(args, &batch, correct_count, noise_count, &bundle_artifacts)?;
+
+    std::fs::create_dir_all(&args.out)?;
+    let _lock = OutputLock::acquire(&args.out)?;
+    let existing = ensure_simulation_output(&args.out)?;
+    publish_bundle(
+        &args.out,
+        &batch,
+        &bundle_artifacts,
+        &manifest_text,
+        &existing,
+    )?;
+    println!(
+        "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
+        batch.attempts.len(),
+        correct_count,
+        batch.attempts.len() - correct_count,
+        batch.rejections.len(),
+        args.out.display()
+    );
+    Ok(())
+}
+
+fn simulation_counts(batch: &SimulationBatch) -> (usize, usize) {
     let correct_count = batch
         .attempts
         .iter()
@@ -470,15 +505,16 @@ fn write_simulation_output(
                 .is_some_and(|noise| !noise.is_empty())
         })
         .count();
+    (correct_count, noise_count)
+}
 
-    // Serialize the complete bundle before touching the output directory. The
-    // data files are individually replaced atomically, and the manifest is the
-    // commit record: it is written last and carries their hashes and sizes so a
-    // consumer can detect an interrupted multi-file publish.
-    let bundle_artifacts = serde_json::json!({
-        "attempts.jsonl": jsonl_metadata(batch.attempts.iter())?,
-        "rejections.jsonl": jsonl_metadata(batch.rejections.iter())?,
-    });
+fn simulation_manifest_text(
+    args: &SimulateArgs,
+    batch: &SimulationBatch,
+    correct_count: usize,
+    noise_count: usize,
+    bundle_artifacts: &serde_json::Value,
+) -> Result<String, serde_json::Error> {
     let manifest = serde_json::json!({
         "simulator": SIMULATOR_NAME,
         "simulator_version": SIMULATOR_VERSION,
@@ -496,31 +532,42 @@ fn write_simulation_output(
         "correction": batch.attempts.len() - correct_count,
         "notation_noise": noise_count,
         "rejected": batch.rejections.len(),
-        "artifacts": bundle_artifacts.clone(),
+        "artifacts": bundle_artifacts,
     });
-    let manifest_text = serde_json::to_string_pretty(&manifest)?;
-    let pending_text = serde_json::to_string(&serde_json::json!({
+    serde_json::to_string_pretty(&manifest)
+}
+
+fn publish_bundle(
+    out: &Path,
+    batch: &SimulationBatch,
+    bundle_artifacts: &serde_json::Value,
+    manifest_text: &str,
+    existing: &[(&'static str, serde_json::Value)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pending_text = pending_publish_text(bundle_artifacts, existing)?;
+    write_text_atomic(&pending_publish_path(out), &pending_text)?;
+    write_jsonl_atomic(&out.join("attempts.jsonl"), batch.attempts.iter())?;
+    write_jsonl_atomic(&out.join("rejections.jsonl"), batch.rejections.iter())?;
+    write_text_atomic(&out.join("manifest.json"), manifest_text)?;
+    let _ = std::fs::remove_file(pending_publish_path(out));
+    Ok(())
+}
+
+fn pending_publish_text(
+    bundle_artifacts: &serde_json::Value,
+    existing: &[(&'static str, serde_json::Value)],
+) -> Result<String, serde_json::Error> {
+    let mut replaces = serde_json::Map::new();
+    for (artifact, metadata) in existing {
+        if bundle_artifacts[*artifact] != *metadata {
+            replaces.insert((*artifact).to_owned(), metadata.clone());
+        }
+    }
+    serde_json::to_string(&serde_json::json!({
         "simulator": SIMULATOR_NAME,
         "artifacts": bundle_artifacts,
-    }))?;
-
-    std::fs::create_dir_all(&args.out)?;
-    let _lock = OutputLock::acquire(&args.out)?;
-    ensure_simulation_output(&args.out)?;
-    write_text_atomic(&pending_publish_path(&args.out), &pending_text)?;
-    write_jsonl_atomic(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
-    write_jsonl_atomic(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
-    write_text_atomic(&args.out.join("manifest.json"), &manifest_text)?;
-    let _ = std::fs::remove_file(pending_publish_path(&args.out));
-    println!(
-        "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
-        batch.attempts.len(),
-        correct_count,
-        batch.attempts.len() - correct_count,
-        batch.rejections.len(),
-        args.out.display()
-    );
-    Ok(())
+        "replaces": replaces,
+    }))
 }
 
 fn jsonl_metadata<'a>(
@@ -529,10 +576,10 @@ fn jsonl_metadata<'a>(
     let mut hasher = Sha256::new();
     let mut bytes = 0_u64;
     for row in rows {
-        let line = serde_json::to_string(row)?;
+        let mut line = serde_json::to_string(row)?;
+        line.push('\n');
         hasher.update(line.as_bytes());
-        hasher.update(b"\n");
-        bytes += line.len() as u64 + 1;
+        bytes += line.len() as u64;
     }
     let digest = hasher.finalize();
     Ok(serde_json::json!({
@@ -586,27 +633,37 @@ where
         .map_err(|error| format!("invalid {field} {value:?}: {error}").into())
 }
 
+const ARTIFACT_FILES: [&str; 2] = ["attempts.jsonl", "rejections.jsonl"];
+
 fn pending_publish_path(out: &Path) -> PathBuf {
     out.join(".simulate-pending.json")
 }
 
-fn ensure_simulation_output(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    validate_existing_manifest(out)?;
-    if out.join("manifest.json").exists() || !has_artifact_files(out) {
-        return Ok(());
-    }
-    validate_interrupted_publish(out)
+fn ensure_simulation_output(
+    out: &Path,
+) -> Result<Vec<(&'static str, serde_json::Value)>, Box<dyn std::error::Error>> {
+    let manifest = read_simulator_manifest(out)?;
+    let existing = existing_artifact_metadata(out)?;
+    let pending = if existing.is_empty() {
+        None
+    } else {
+        read_pending_publish(out)?
+    };
+    validate_existing_artifacts(out, &existing, manifest.as_ref(), pending.as_ref())?;
+    Ok(existing)
 }
 
-fn validate_existing_manifest(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn read_simulator_manifest(
+    out: &Path,
+) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
     let manifest = out.join("manifest.json");
     if !manifest.exists() {
-        return Ok(());
+        return Ok(None);
     }
     let text = std::fs::read_to_string(&manifest)?;
     let existing: serde_json::Value = serde_json::from_str(&text)?;
     if existing.get("simulator") == Some(&serde_json::json!(SIMULATOR_NAME)) {
-        return Ok(());
+        return Ok(Some(existing));
     }
     Err(format!(
         "{} already contains a non-simulator manifest; choose a separate simulation output directory",
@@ -615,38 +672,74 @@ fn validate_existing_manifest(out: &Path) -> Result<(), Box<dyn std::error::Erro
     .into())
 }
 
-fn has_artifact_files(out: &Path) -> bool {
-    ["attempts.jsonl", "rejections.jsonl"]
-        .iter()
-        .any(|artifact| out.join(artifact).exists())
+fn existing_artifact_metadata(
+    out: &Path,
+) -> Result<Vec<(&'static str, serde_json::Value)>, Box<dyn std::error::Error>> {
+    let mut existing = Vec::new();
+    for artifact in ARTIFACT_FILES {
+        let path = out.join(artifact);
+        if path.exists() {
+            existing.push((artifact, file_artifact_metadata(&path)?));
+        }
+    }
+    Ok(existing)
 }
 
-fn validate_interrupted_publish(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+fn read_pending_publish(
+    out: &Path,
+) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
     let pending_path = pending_publish_path(out);
     if !pending_path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&pending_path)?;
+    let pending: serde_json::Value = serde_json::from_str(&text)?;
+    if pending.get("simulator") == Some(&serde_json::json!(SIMULATOR_NAME)) {
+        return Ok(Some(pending));
+    }
+    Err(format!(
+        "{} is not a simulator pending-publish record; choose a separate output directory",
+        pending_path.display()
+    )
+    .into())
+}
+
+fn validate_existing_artifacts(
+    out: &Path,
+    existing: &[(&'static str, serde_json::Value)],
+    manifest: Option<&serde_json::Value>,
+    pending: Option<&serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if existing.is_empty() {
+        return Ok(());
+    }
+    if manifest.is_none() && pending.is_none() {
         return Err(format!(
             "{} contains artifact files without simulator provenance; choose a separate output directory",
             out.display()
         )
         .into());
     }
-    let text = std::fs::read_to_string(&pending_path)?;
-    let pending: serde_json::Value = serde_json::from_str(&text)?;
-    if pending.get("simulator") != Some(&serde_json::json!(SIMULATOR_NAME)) {
-        return Err(format!(
-            "{} is not a simulator pending-publish record; choose a separate output directory",
-            pending_path.display()
-        )
-        .into());
-    }
-    for artifact in ["attempts.jsonl", "rejections.jsonl"] {
-        let path = out.join(artifact);
-        if path.exists() && file_artifact_metadata(&path)? != pending["artifacts"][artifact] {
-            return Err(format!(
-                "{} does not match the interrupted simulation record; choose a separate output directory",
-                path.display()
-            )
-            .into());
+    for (artifact, actual) in existing {
+        let matches_manifest =
+            manifest.is_some_and(|record| record["artifacts"][artifact] == *actual);
+        let matches_pending = pending.is_some_and(|record| {
+            record["artifacts"][artifact] == *actual || record["replaces"][artifact] == *actual
+        });
+        if !matches_manifest && !matches_pending {
+            return Err(if manifest.is_some() {
+                format!(
+                    "{} does not match simulator artifact provenance; choose a separate output directory",
+                    out.join(artifact).display()
+                )
+                .into()
+            } else {
+                format!(
+                    "{} does not match the interrupted simulation record; choose a separate output directory",
+                    out.join(artifact).display()
+                )
+                .into()
+            });
         }
     }
     Ok(())
@@ -676,33 +769,29 @@ fn write_jsonl_atomic<'a>(
     path: &Path,
     rows: impl Iterator<Item = &'a serde_json::Value>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-    AtomicFile::new_with_tmpdir(path, AllowOverwrite, parent)
-        .write(|file| {
-            for row in rows {
-                let line = serde_json::to_string(row).map_err(std::io::Error::other)?;
-                file.write_all(line.as_bytes())?;
-                file.write_all(b"\n")?;
-            }
-            Ok::<(), std::io::Error>(())
-        })
-        .map_err(|error| {
-            std::io::Error::other(format!(
-                "atomic write to {} failed: {error:?}",
-                path.display()
-            ))
-        })?;
-    Ok(())
+    atomic_write_with(path, |file| {
+        for row in rows {
+            let mut line = serde_json::to_string(row).map_err(std::io::Error::other)?;
+            line.push('\n');
+            file.write_all(line.as_bytes())?;
+        }
+        Ok(())
+    })
 }
 
 fn write_text_atomic(path: &Path, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    atomic_write_with(path, |file| file.write_all(text.as_bytes()))
+}
+
+fn atomic_write_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
     AtomicFile::new_with_tmpdir(path, AllowOverwrite, parent)
-        .write(|file| file.write_all(text.as_bytes()))
+        .write(write)
         .map_err(|error| {
             std::io::Error::other(format!(
                 "atomic write to {} failed: {error:?}",

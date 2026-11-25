@@ -401,32 +401,64 @@ fn artifact_metadata(bytes: &[u8]) -> serde_json::Value {
 }
 
 fn write_pending_record(out: &std::path::Path, attempts: &[u8], rejections: &[u8]) {
+    write_pending_record_with_replacement(out, attempts, None, rejections);
+}
+
+fn write_pending_record_with_replacement(
+    out: &std::path::Path,
+    attempts: &[u8],
+    replaced_attempts: Option<&[u8]>,
+    rejections: &[u8],
+) {
+    let mut replaces = serde_json::json!({});
+    if let Some(replaced) = replaced_attempts {
+        replaces["attempts.jsonl"] = artifact_metadata(replaced);
+    }
     let pending = serde_json::json!({
         "simulator": "synthetic-student-simulator",
         "artifacts": {
             "attempts.jsonl": artifact_metadata(attempts),
             "rejections.jsonl": artifact_metadata(rejections),
-        }
+        },
+        "replaces": replaces,
     });
     std::fs::write(out.join(".simulate-pending.json"), pending.to_string())
         .expect("write pending record");
 }
 
 #[test]
-fn foreign_artifact_files_without_a_pending_record_are_refused() {
-    let problems = unique_path("foreign-problems.jsonl");
-    let out = unique_path("foreign-out");
-    write_problem(&problems);
-    std::fs::create_dir_all(&out).expect("create output directory");
-    std::fs::write(out.join("attempts.jsonl"), "foreign\n").expect("write foreign artifact");
+fn manifestless_artifact_files_require_matching_pending_provenance() {
+    for (case, artifact, pending, expected_error) in [
+        ("foreign", "foreign\n", None, "without simulator provenance"),
+        (
+            "mismatched",
+            "changed\n",
+            Some((b"partial\n".as_slice(), b"".as_slice())),
+            "does not match the interrupted simulation record",
+        ),
+    ] {
+        let problems = unique_path(&format!("{case}-problems.jsonl"));
+        let out = unique_path(&format!("{case}-out"));
+        write_problem(&problems);
+        std::fs::create_dir_all(&out).expect("create output directory");
+        std::fs::write(out.join("attempts.jsonl"), artifact).expect("write artifact");
+        if let Some((attempts, rejections)) = pending {
+            write_pending_record(&out, attempts, rejections);
+        }
 
-    let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
-    assert!(!output.status.success());
-    assert!(stderr(&output).contains("without simulator provenance"));
-    assert_eq!(
-        std::fs::read_to_string(out.join("attempts.jsonl")).expect("foreign artifact remains"),
-        "foreign\n"
-    );
+        let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+        assert!(!output.status.success(), "{case} unexpectedly succeeded");
+        assert!(
+            stderr(&output).contains(expected_error),
+            "{case} stderr: {}",
+            stderr(&output)
+        );
+        assert_eq!(
+            std::fs::read_to_string(out.join("attempts.jsonl")).expect("artifact remains"),
+            artifact,
+            "{case} artifact was replaced"
+        );
+    }
 }
 
 #[test]
@@ -451,20 +483,41 @@ fn a_matching_pending_record_allows_replacing_an_interrupted_bundle() {
 }
 
 #[test]
-fn artifacts_that_do_not_match_the_pending_record_are_refused() {
-    let problems = unique_path("mismatched-problems.jsonl");
-    let out = unique_path("mismatched-out");
+fn a_retained_replacement_digest_allows_recovery_from_an_interrupted_retry() {
+    let problems = unique_path("replacement-digest-problems.jsonl");
+    let out = unique_path("replacement-digest-out");
     write_problem(&problems);
     std::fs::create_dir_all(&out).expect("create output directory");
-    std::fs::write(out.join("attempts.jsonl"), "changed\n").expect("write changed artifact");
-    write_pending_record(&out, b"partial\n", b"");
+    std::fs::write(out.join("attempts.jsonl"), "correction\n").expect("write retained artifact");
+    write_pending_record_with_replacement(&out, b"confirmation\n", Some(b"correction\n"), b"");
 
     let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
-    assert!(!output.status.success());
-    assert!(stderr(&output).contains("does not match the interrupted simulation record"));
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_ne!(
+        std::fs::read_to_string(out.join("attempts.jsonl")).expect("replacement attempts"),
+        "correction\n"
+    );
+}
+
+#[test]
+fn a_simulator_manifest_does_not_authorize_replacing_foreign_artifacts() {
+    let problems = unique_path("manifest-provenance-problems.jsonl");
+    let out = unique_path("manifest-provenance-out");
+    write_problem(&problems);
+    let first = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(first.status.success(), "stderr: {}", stderr(&first));
+    std::fs::write(out.join("attempts.jsonl"), "foreign\n").expect("write foreign artifact");
+
+    let second = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(!second.status.success());
+    assert!(
+        stderr(&second).contains("does not match simulator artifact provenance"),
+        "stderr: {}",
+        stderr(&second)
+    );
     assert_eq!(
-        std::fs::read_to_string(out.join("attempts.jsonl")).expect("artifact remains"),
-        "changed\n"
+        std::fs::read_to_string(out.join("attempts.jsonl")).expect("foreign artifact remains"),
+        "foreign\n"
     );
 }
 

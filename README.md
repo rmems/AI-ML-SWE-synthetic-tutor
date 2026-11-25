@@ -153,14 +153,16 @@ replacement, serializes same-directory writers with `.simulate.lock`, then
 writes `manifest.json` last. The manifest records each data file's SHA-256 and
 byte length; because no portable filesystem primitive commits several files as
 one transaction, consumers should validate those digests before treating the
-set as a complete bundle. An interrupted first run leaves a pending-publish
-record containing the expected artifact digests, so a retry can verify and
-replace the partial bundle, while unrelated artifact files without simulator
-provenance are still refused. If a simulation is killed while publishing,
-confirm no writer is still active, remove the orphaned `.simulate.lock`, and
-rerun the command; the pending-publish record verifies any partial artifacts.
-Use a simulation output directory separate from the problem-run root; the
-command refuses to replace a non-simulator `manifest.json`.
+set as a complete bundle. Before replacing pre-existing data files, the
+simulator validates their digests against the committed manifest or a
+pending-publish record. That record contains the intended artifact digests
+plus the verified digests of the partial files it may replace, so interrupted
+retries can resume without overwriting unrelated artifacts. If a simulation
+is killed while publishing, confirm no writer is still active, remove the
+orphaned `.simulate.lock`, and rerun the command. Use a simulation output
+directory separate from the problem-run root; the command refuses to replace
+a non-simulator `manifest.json` or artifact files without matching simulator
+provenance.
 `--seed-start` is mixed with the problem ID and per-problem attempt index, so
 a problem's attempts stay stable when unrelated input lines change. Seeds are
 capped at `2^53 - 1` so JSON consumers can replay them exactly. Use
