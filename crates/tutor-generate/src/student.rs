@@ -8,7 +8,6 @@
 
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
-use serde::Serialize;
 use thiserror::Error;
 use tutor_schema::{
     MisconceptionId, NamedVersion, NotationNoise, Parameters, Persistence, PlantedTransformation,
@@ -141,7 +140,7 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
     } else {
         Vec::new()
     };
-    let profile = StudentProfile {
+    let mut profile = StudentProfile {
         level,
         surface_style,
         notation_noise: notation_noise.clone(),
@@ -202,13 +201,10 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
 
     // Apply notation noise after composing the mathematical claim. It only
     // drops a multiplication dot; it cannot alter the claim's meaning.
-    if notation_noise.contains(&NotationNoise::DroppedMultiplicationDot) {
-        for turn in &mut student_turns {
-            if let Some(index) = turn.content.find('·') {
-                turn.content.remove(index);
-                break;
-            }
-        }
+    if notation_noise.contains(&NotationNoise::DroppedMultiplicationDot)
+        && !drop_one_multiplication_dot(&mut student_turns)
+    {
+        profile.notation_noise.clear();
     }
 
     let attempt = StudentAttempt {
@@ -309,8 +305,18 @@ fn plant_product_rule(problem: &Problem) -> Result<PlantedTransformation, Studen
         .ok_or_else(|| overflow(problem))?;
     let q_da = tutor_verify::polynomial_value_at(&q_d, tutor_verify::Scalar(point))
         .ok_or_else(|| overflow(problem))?;
+    let pa = tutor_verify::polynomial_value_at(p, tutor_verify::Scalar(point))
+        .ok_or_else(|| overflow(problem))?;
+    let qa = tutor_verify::polynomial_value_at(q, tutor_verify::Scalar(point))
+        .ok_or_else(|| overflow(problem))?;
     let corrupted = p_da.checked_mul(q_da).ok_or_else(|| overflow(problem))?;
-    let correct = answer_value(problem);
+    let correct = p_da
+        .checked_mul(qa)
+        .and_then(|first| {
+            pa.checked_mul(q_da)
+                .and_then(|second| first.checked_add(second))
+        })
+        .ok_or_else(|| overflow(problem))?;
     Ok(PlantedTransformation {
         misconception: MisconceptionId::DerivativesProductRule,
         step_index: problem.steps.len().saturating_sub(1),
@@ -337,7 +343,12 @@ fn plant_chain_rule(problem: &Problem) -> Result<PlantedTransformation, StudentE
     let outer_d = tutor_verify::polynomial_derivative(outer).ok_or_else(|| overflow(problem))?;
     let corrupted = tutor_verify::polynomial_value_at(&outer_d, tutor_verify::Scalar(u))
         .ok_or_else(|| overflow(problem))?;
-    let correct = answer_value(problem);
+    let inner_d = tutor_verify::polynomial_derivative(inner).ok_or_else(|| overflow(problem))?;
+    let inner_da = tutor_verify::polynomial_value_at(&inner_d, tutor_verify::Scalar(point))
+        .ok_or_else(|| overflow(problem))?;
+    let correct = corrupted
+        .checked_mul(inner_da)
+        .ok_or_else(|| overflow(problem))?;
     Ok(PlantedTransformation {
         misconception: MisconceptionId::DerivativesChainRule,
         step_index: problem.steps.len().saturating_sub(1),
@@ -367,6 +378,16 @@ fn answer_value(problem: &Problem) -> i64 {
     match problem.answer {
         tutor_schema::Answer::Integer { value } => value,
     }
+}
+
+fn drop_one_multiplication_dot(student_turns: &mut [Turn]) -> bool {
+    for turn in student_turns {
+        if let Some(index) = turn.content.find('·') {
+            turn.content.remove(index);
+            return true;
+        }
+    }
+    false
 }
 
 fn opening_turn(problem: &Problem, work: &str, _noise: &[NotationNoise]) -> Turn {
@@ -477,6 +498,7 @@ struct ProductParts {
     q_da: i64,
     t1: i64,
     t2: i64,
+    sum: i64,
 }
 
 fn product_parts(problem: &Problem) -> Option<ProductParts> {
@@ -491,7 +513,7 @@ fn product_parts(problem: &Problem) -> Option<ProductParts> {
     let q_da = tutor_verify::polynomial_value_at(&q_d, tutor_verify::Scalar(*point))?;
     let t1 = p_da.checked_mul(qa)?;
     let t2 = pa.checked_mul(q_da)?;
-    t1.checked_add(t2)?;
+    let sum = t1.checked_add(t2)?;
     Some(ProductParts {
         p_d,
         q_d,
@@ -502,6 +524,7 @@ fn product_parts(problem: &Problem) -> Option<ProductParts> {
         q_da,
         t1,
         t2,
+        sum,
     })
 }
 
@@ -523,10 +546,10 @@ fn product_rule_correct_work(
         q_da,
         t1,
         t2,
+        sum,
     } = parts;
-    let answer = answer_value(problem);
     let core = format!(
-        "h′({point}) = p′({point})q({point}) + p({point})q′({point}) = {p_da}·{qa} + {pa}·{q_da} = {t1} + {t2} = {answer}."
+        "h′({point}) = p′({point})q({point}) + p({point})q′({point}) = {p_da}·{qa} + {pa}·{q_da} = {t1} + {t2} = {sum}."
     );
     if verbose(style, level) {
         format!(
@@ -693,21 +716,6 @@ pub fn format_polynomial(coefficients: &[i64]) -> String {
         }
     }
     parts.join(" ")
-}
-
-/// Batch summary written by the CLI.
-#[derive(Debug, Default, Serialize)]
-pub struct SimulationSummary {
-    /// Attempts written.
-    pub emitted: usize,
-    /// Correct confirmation-mode attempts.
-    pub correct: usize,
-    /// Planted-correction attempts.
-    pub correction: usize,
-    /// Attempts carrying explicit notation-noise flags.
-    pub notation_noise: usize,
-    /// Rejected simulation requests.
-    pub rejected: usize,
 }
 
 #[cfg(test)]
@@ -883,7 +891,9 @@ mod tests {
             ..AttemptSpec::seeded(7)
         };
         let attempt = simulate(&problem, &spec).unwrap();
-        assert_eq!(attempt.transformation.as_ref().unwrap().corrupted_value, 6);
+        let transformation = attempt.transformation.as_ref().unwrap();
+        assert_eq!(transformation.corrupted_value, 6);
+        assert_eq!(transformation.correct_value, 12);
         assert_eq!(attempt.student_turns.len(), 4);
         assert!(attempt.student_turns[0].content.contains("p′(u) = 6"));
         assert!(!attempt.student_turns[0].content.contains("q′(1)"));
@@ -899,7 +909,9 @@ mod tests {
             ..AttemptSpec::seeded(8)
         };
         let attempt = simulate(&problem, &spec).unwrap();
-        assert_eq!(attempt.transformation.as_ref().unwrap().corrupted_value, 1);
+        let transformation = attempt.transformation.as_ref().unwrap();
+        assert_eq!(transformation.corrupted_value, 1);
+        assert_eq!(transformation.correct_value, 5);
         assert!(attempt.student_turns[0].content.contains("1·1 = 1"));
     }
 

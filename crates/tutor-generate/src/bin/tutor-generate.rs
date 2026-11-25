@@ -334,7 +334,7 @@ fn parse_snake_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error
 where
     T: DeserializeOwned,
 {
-    serde_json::from_str(&format!("\"{value}\""))
+    serde_json::from_str(&serde_json::to_string(value).expect("string serializes"))
         .map_err(|error| format!("invalid {field} {value:?}: {error}").into())
 }
 
