@@ -1,6 +1,7 @@
 //! `tutor-generate` — generate seeded problems, verify every answer, emit
 //! `verified/problems.jsonl`, `rejected/rejections.jsonl`, and `manifest.json`.
 
+use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -312,6 +313,7 @@ fn stable_attempt_seed(seed_start: u64, problem_id: &str, attempt_index: u64) ->
 struct SimulationBatch {
     attempts: Vec<serde_json::Value>,
     rejections: Vec<serde_json::Value>,
+    seen_problem_ids: HashSet<String>,
 }
 
 fn simulate_batch(
@@ -323,6 +325,7 @@ fn simulate_batch(
     let mut batch = SimulationBatch {
         attempts: Vec::new(),
         rejections: Vec::new(),
+        seen_problem_ids: HashSet::new(),
     };
     let context = SimulationContext {
         attempts_per_problem: args.attempts_per_problem,
@@ -364,6 +367,14 @@ impl SimulationBatch {
         problem: &Problem,
         context: &SimulationContext<'_>,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        if !self.seen_problem_ids.insert(problem.problem_id.clone()) {
+            self.rejections.push(serde_json::json!({
+                "problem_id": problem.problem_id,
+                "stage": "duplicate_problem",
+                "detail": "duplicate problem ID in simulation input",
+            }));
+            return Ok(());
+        }
         for attempt_index in 0..context.attempts_per_problem {
             let seed = stable_attempt_seed(
                 context.options.seed_start,

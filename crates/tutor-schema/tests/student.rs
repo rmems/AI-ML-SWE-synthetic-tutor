@@ -115,6 +115,16 @@ fn correction_value_must_actually_be_wrong() {
 }
 
 #[test]
+fn provenance_must_identify_a_versioned_generator() {
+    let mut attempt = correction_attempt();
+    attempt.provenance.generator.version = 0;
+    let error = attempt
+        .validate()
+        .expect_err("version zero is not replayable provenance");
+    assert_eq!(error.code(), "schema_constraint");
+}
+
+#[test]
 fn persistence_controls_retry_count() {
     let mut attempt = correction_attempt();
     attempt.persistence = Persistence::NeedsL3;

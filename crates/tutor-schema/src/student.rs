@@ -228,9 +228,23 @@ impl StudentAttempt {
                 format!("expected 1..={TAXONOMY_VERSION}"),
             ));
         }
+        self.validate_provenance()?;
         self.validate_label()?;
         self.validate_turns()?;
         self.validate_teacher_variety()
+    }
+
+    fn validate_provenance(&self) -> Result<(), SchemaError> {
+        if self.provenance.generator.name.trim().is_empty() {
+            return Err(invalid("provenance.generator.name", "must not be empty"));
+        }
+        if self.provenance.generator.version == 0 {
+            return Err(invalid(
+                "provenance.generator.version",
+                "must be at least 1",
+            ));
+        }
+        Ok(())
     }
 
     fn validate_label(&self) -> Result<(), SchemaError> {

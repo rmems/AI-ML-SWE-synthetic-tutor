@@ -164,6 +164,45 @@ fn attempt_seeds_are_stable_across_unrelated_input_lines() {
 }
 
 #[test]
+fn duplicate_problem_ids_are_rejected_instead_of_duplicating_attempt_ids() {
+    let problems = unique_path("duplicate-problems.jsonl");
+    write_problem(&problems);
+    let line = std::fs::read_to_string(&problems).expect("read problem");
+    std::fs::write(
+        &problems,
+        format!(
+            "{line}
+{line}"
+        ),
+    )
+    .expect("duplicate problem");
+    let out = unique_path("duplicate-out");
+    let output = bin()
+        .args([
+            "simulate",
+            "--problems",
+            problems.to_str().expect("utf-8 temp path"),
+            "--out",
+            out.to_str().expect("utf-8 temp path"),
+            "--mode",
+            "correction",
+            "--misconception",
+            "derivatives.chain_rule",
+            "--schema",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../schemas/student-attempt.schema.json"
+            ),
+        ])
+        .output()
+        .expect("runs simulation");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let rejections =
+        std::fs::read_to_string(out.join("rejections.jsonl")).expect("rejections written");
+    assert!(rejections.contains("duplicate_problem"));
+}
+
+#[test]
 fn rejected_rerun_preserves_previous_attempts() {
     let problems = unique_path("problems.jsonl");
     let out = unique_path("rerun-out");

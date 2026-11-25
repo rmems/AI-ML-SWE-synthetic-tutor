@@ -185,12 +185,49 @@ fn plant_correction(
     if correct {
         return Ok(None);
     }
-    let misconception = select_misconception(problem, requested)?;
-    let transformation = plant(problem, misconception)?;
-    Ok(Some(PlantedCorrection {
+    if let Some(misconception) = requested {
+        if !problem.misconception_ids.contains(&misconception) {
+            return Err(StudentError::UndeclaredMisconception {
+                problem_id: problem.problem_id.clone(),
+                misconception,
+            });
+        }
+        return planted_correction(problem, misconception).map(Some);
+    }
+    plant_automatic_correction(problem).map(Some)
+}
+
+fn planted_correction(
+    problem: &Problem,
+    misconception: MisconceptionId,
+) -> Result<PlantedCorrection, StudentError> {
+    plant(problem, misconception).map(|transformation| PlantedCorrection {
         misconception,
         transformation,
-    }))
+    })
+}
+
+fn plant_automatic_correction(problem: &Problem) -> Result<PlantedCorrection, StudentError> {
+    let mut first_supported = None;
+    for misconception in problem.misconception_ids.iter().copied().filter(|id| {
+        matches!(
+            id,
+            MisconceptionId::DerivativesProductRule | MisconceptionId::DerivativesChainRule
+        )
+    }) {
+        first_supported.get_or_insert(misconception);
+        match planted_correction(problem, misconception) {
+            Ok(correction) => return Ok(correction),
+            Err(error @ StudentError::IncompatibleMisconception { .. }) => {
+                let _ = error;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let misconception = first_supported.or_else(|| problem.misconception_ids.first().copied());
+    let misconception = misconception
+        .ok_or_else(|| StudentError::NoDeclaredMisconceptions(problem.problem_id.clone()))?;
+    planted_correction(problem, misconception)
 }
 
 fn notation_noise_flags(has_notation_noise: bool) -> Vec<NotationNoise> {
@@ -387,37 +424,6 @@ fn correction_turns(
     turns
 }
 
-fn select_misconception(
-    problem: &Problem,
-    requested: Option<MisconceptionId>,
-) -> Result<MisconceptionId, StudentError> {
-    if let Some(id) = requested {
-        return problem
-            .misconception_ids
-            .contains(&id)
-            .then_some(id)
-            .ok_or_else(|| StudentError::UndeclaredMisconception {
-                problem_id: problem.problem_id.clone(),
-                misconception: id,
-            });
-    }
-    // Prefer the exact derivative-rule transformations. Any other declared ID
-    // is attempted next so unsupported shapes still fail closed in `plant`.
-    for id in [
-        MisconceptionId::DerivativesProductRule,
-        MisconceptionId::DerivativesChainRule,
-    ] {
-        if problem.misconception_ids.contains(&id) {
-            return Ok(id);
-        }
-    }
-    problem
-        .misconception_ids
-        .first()
-        .copied()
-        .ok_or_else(|| StudentError::NoDeclaredMisconceptions(problem.problem_id.clone()))
-}
-
 fn plant(problem: &Problem, id: MisconceptionId) -> Result<PlantedTransformation, StudentError> {
     match id {
         MisconceptionId::DerivativesProductRule => plant_product_rule(problem),
@@ -600,7 +606,7 @@ fn drop_one_multiplication_dot(student_turns: &mut [Turn]) -> bool {
 
 fn student_work_dot_index(content: &str) -> Option<usize> {
     const ATTEMPT_MARKER: &str = "My attempt: ";
-    let marker = content.find(ATTEMPT_MARKER)?;
+    let marker = content.rfind(ATTEMPT_MARKER)?;
     let work_start = marker + ATTEMPT_MARKER.len();
     implicit_multiplication_dot(&content[work_start..]).map(|index| work_start + index)
 }
@@ -703,7 +709,13 @@ fn complete_work(level: StudentLevel) -> bool {
 }
 
 fn simple_correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLevel) -> String {
-    let Some(Step::DifferentiatePolynomial { output, .. }) = problem.steps.first() else {
+    let Some(output) = problem.steps.iter().find_map(|step| {
+        if let Step::DifferentiatePolynomial { output, .. } = step {
+            Some(output)
+        } else {
+            None
+        }
+    }) else {
         return String::new();
     };
     let point = *problem.parameters.point();
@@ -1244,6 +1256,23 @@ mod tests {
             simulate(&problem, &spec),
             Err(StudentError::VerificationInvalid { .. })
         ));
+    }
+
+    #[test]
+    fn automatic_correction_tries_the_next_supported_declared_id() {
+        let mut problem = chain_problem();
+        problem
+            .misconception_ids
+            .insert(0, MisconceptionId::DerivativesProductRule);
+        let spec = AttemptSpec {
+            correct: Some(false),
+            ..AttemptSpec::seeded(13)
+        };
+        let attempt = simulate(&problem, &spec).unwrap();
+        assert_eq!(
+            attempt.misconception,
+            Some(MisconceptionId::DerivativesChainRule)
+        );
     }
 
     #[test]
