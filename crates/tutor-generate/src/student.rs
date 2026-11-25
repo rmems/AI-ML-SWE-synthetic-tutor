@@ -594,14 +594,18 @@ fn answer_value(problem: &Problem) -> i64 {
 }
 
 fn drop_one_multiplication_dot(student_turns: &mut [Turn]) -> bool {
-    let Some(opening) = student_turns.first_mut() else {
-        return false;
-    };
-    let Some(index) = student_work_dot_index(&opening.content) else {
-        return false;
-    };
-    opening.content.remove(index);
-    true
+    for (turn_index, turn) in student_turns.iter_mut().enumerate() {
+        let dot = if turn_index == 0 {
+            student_work_dot_index(&turn.content)
+        } else {
+            implicit_multiplication_dot(&turn.content)
+        };
+        if let Some(index) = dot {
+            turn.content.remove(index);
+            return true;
+        }
+    }
+    false
 }
 
 fn student_work_dot_index(content: &str) -> Option<usize> {
@@ -727,11 +731,14 @@ fn simple_correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLev
         ""
     };
     let substitution = if verbose(style) {
-        format!("Then substitute x = {point}, so ")
+        format!(". Then substitute x = {point}, so ")
     } else {
-        "so ".to_owned()
+        ", so ".to_owned()
     };
-    format!("{derivation}f′(x) = {derivative}, {substitution}f′({point}) = {answer}.")
+    if level == StudentLevel::Struggling {
+        return format!("f′({point}) = {answer}.");
+    }
+    format!("{derivation}f′(x) = {derivative}{substitution}f′({point}) = {answer}.")
 }
 
 struct ProductParts {
@@ -794,9 +801,13 @@ fn product_rule_correct_work(
         t2,
         sum,
     } = parts;
-    let core = format!(
-        "h′({point}) = p′({point})q({point}) + p({point})q′({point}) = {p_da}·{qa} + {pa}·{q_da} = {t1} + {t2} = {sum}."
-    );
+    let core = if level == StudentLevel::Struggling {
+        format!("h′({point}) = {sum}.")
+    } else {
+        format!(
+            "h′({point}) = p′({point})q({point}) + p({point})q′({point}) = {p_da}·{qa} + {pa}·{q_da} = {t1} + {t2} = {sum}."
+        )
+    };
     let rule = if verbose(style) {
         "Use the product rule. "
     } else {
@@ -831,10 +842,14 @@ fn product_rule_wrong_work(
         q_da,
         ..
     } = parts;
-    let core = format!(
-        "p′({point}) = {p_da} and q′({point}) = {q_da}, so h′({point}) = {p_da}·{q_da} = {}.",
-        transformation.corrupted_value
-    );
+    let core = if level == StudentLevel::Struggling {
+        format!("h′({point}) = {}.", transformation.corrupted_value)
+    } else {
+        format!(
+            "p′({point}) = {p_da} and q′({point}) = {q_da}, so h′({point}) = {p_da}·{q_da} = {}.",
+            transformation.corrupted_value
+        )
+    };
     let rule = if verbose(style) {
         "I differentiate each factor first. "
     } else {
@@ -898,9 +913,13 @@ fn chain_rule_correct_work(problem: &Problem, style: SurfaceStyle, level: Studen
         return simple_correct_work(problem, style, level);
     };
     let answer = answer_value(problem);
-    let core = format!(
-        "u = q({point}) = {u}; h′({point}) = p′(u)·q′({point}) = {outer_d_u}·{inner_d_a} = {answer}."
-    );
+    let core = if level == StudentLevel::Struggling {
+        format!("h′({point}) = {answer}.")
+    } else {
+        format!(
+            "u = q({point}) = {u}; h′({point}) = p′(u)·q′({point}) = {outer_d_u}·{inner_d_a} = {answer}."
+        )
+    };
     let rule = if verbose(style) {
         "Use the chain rule. "
     } else {
@@ -930,10 +949,14 @@ fn chain_rule_wrong_work(
     else {
         return format!("h′(x) = {}.", transformation.corrupted_value);
     };
-    let core = format!(
-        "u = q({point}) = {u}, so h′({point}) = p′(u) = {}.",
-        transformation.corrupted_value
-    );
+    let core = if level == StudentLevel::Struggling {
+        format!("h′({point}) = {}.", transformation.corrupted_value)
+    } else {
+        format!(
+            "u = q({point}) = {u}, so h′({point}) = p′(u) = {}.",
+            transformation.corrupted_value
+        )
+    };
     let rule = if verbose(style) {
         "I differentiate the outside function. "
     } else {
