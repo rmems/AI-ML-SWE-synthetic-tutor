@@ -199,6 +199,21 @@ fn generated_schema_rejects_a_mismatched_transformation_label() {
 }
 
 #[test]
+fn generated_schema_accepts_null_labels_on_a_confirmation() {
+    let mut attempt = correction_attempt();
+    attempt.correct = true;
+    attempt.misconception = None;
+    attempt.transformation = None;
+    attempt.student_turns.truncate(1);
+    let mut value = serde_json::to_value(attempt).expect("attempt serializes");
+    value["misconception"] = serde_json::Value::Null;
+    value["transformation"] = serde_json::Value::Null;
+    assert!(json_validator().is_valid(&value));
+    StudentAttempt::from_json(&serde_json::to_string(&value).expect("serializes"))
+        .expect("serde also treats explicit null labels as absent");
+}
+
+#[test]
 fn generated_schema_rejects_null_correction_labels() {
     let value = serde_json::to_value(correction_attempt()).expect("attempt serializes");
     for field in ["misconception", "transformation"] {

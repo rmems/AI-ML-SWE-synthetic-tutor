@@ -550,24 +550,16 @@
         ]
       },
       "then": {
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "misconception"
-              ]
-            },
-            {
-              "required": [
-                "transformation"
-              ]
-            }
-          ]
-        },
         "properties": {
+          "misconception": {
+            "type": "null"
+          },
           "student_turns": {
             "maxItems": 1,
             "minItems": 1
+          },
+          "transformation": {
+            "type": "null"
           }
         }
       }

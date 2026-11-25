@@ -475,11 +475,9 @@ fn write_simulation_output(
     // data files are individually replaced atomically, and the manifest is the
     // commit record: it is written last and carries their hashes and sizes so a
     // consumer can detect an interrupted multi-file publish.
-    let attempts_text = jsonl_text(batch.attempts.iter())?;
-    let rejections_text = jsonl_text(batch.rejections.iter())?;
     let bundle_artifacts = serde_json::json!({
-        "attempts.jsonl": artifact_metadata(&attempts_text),
-        "rejections.jsonl": artifact_metadata(&rejections_text),
+        "attempts.jsonl": jsonl_metadata(batch.attempts.iter())?,
+        "rejections.jsonl": jsonl_metadata(batch.rejections.iter())?,
     });
     let manifest = serde_json::json!({
         "simulator": SIMULATOR_NAME,
@@ -510,8 +508,8 @@ fn write_simulation_output(
     let _lock = OutputLock::acquire(&args.out)?;
     ensure_simulation_output(&args.out)?;
     write_text_atomic(&pending_publish_path(&args.out), &pending_text)?;
-    write_text_atomic(&args.out.join("attempts.jsonl"), &attempts_text)?;
-    write_text_atomic(&args.out.join("rejections.jsonl"), &rejections_text)?;
+    write_jsonl_atomic(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
+    write_jsonl_atomic(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
     write_text_atomic(&args.out.join("manifest.json"), &manifest_text)?;
     let _ = std::fs::remove_file(pending_publish_path(&args.out));
     println!(
@@ -525,23 +523,22 @@ fn write_simulation_output(
     Ok(())
 }
 
-fn jsonl_text<'a>(
+fn jsonl_metadata<'a>(
     rows: impl Iterator<Item = &'a serde_json::Value>,
-) -> Result<String, serde_json::Error> {
-    let mut text = String::new();
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut hasher = Sha256::new();
+    let mut bytes = 0_u64;
     for row in rows {
-        text.push_str(&serde_json::to_string(row)?);
-        text.push('\n');
+        let line = serde_json::to_string(row)?;
+        hasher.update(line.as_bytes());
+        hasher.update(b"\n");
+        bytes += line.len() as u64 + 1;
     }
-    Ok(text)
-}
-
-fn artifact_metadata(text: &str) -> serde_json::Value {
-    let digest = Sha256::digest(text.as_bytes());
-    serde_json::json!({
+    let digest = hasher.finalize();
+    Ok(serde_json::json!({
         "sha256": format!("{digest:x}"),
-        "bytes": text.len(),
-    })
+        "bytes": bytes,
+    }))
 }
 
 struct OutputLock {
@@ -673,6 +670,31 @@ fn file_artifact_metadata(path: &Path) -> std::io::Result<serde_json::Value> {
         "sha256": format!("{digest:x}"),
         "bytes": bytes,
     }))
+}
+
+fn write_jsonl_atomic<'a>(
+    path: &Path,
+    rows: impl Iterator<Item = &'a serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    AtomicFile::new_with_tmpdir(path, AllowOverwrite, parent)
+        .write(|file| {
+            for row in rows {
+                let line = serde_json::to_string(row).map_err(std::io::Error::other)?;
+                file.write_all(line.as_bytes())?;
+                file.write_all(b"\n")?;
+            }
+            Ok::<(), std::io::Error>(())
+        })
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "atomic write to {} failed: {error:?}",
+                path.display()
+            ))
+        })?;
+    Ok(())
 }
 
 fn write_text_atomic(path: &Path, text: &str) -> Result<(), Box<dyn std::error::Error>> {

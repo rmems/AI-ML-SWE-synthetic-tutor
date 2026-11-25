@@ -435,13 +435,9 @@ fn correctness_shape_constraint() -> serde_json::Value {
         },
         "then": {
             "properties": {
-                "student_turns": {"minItems": 1, "maxItems": 1}
-            },
-            "not": {
-                "anyOf": [
-                    {"required": ["misconception"]},
-                    {"required": ["transformation"]}
-                ]
+                "student_turns": {"minItems": 1, "maxItems": 1},
+                "misconception": {"type": "null"},
+                "transformation": {"type": "null"}
             }
         },
         "else": {
