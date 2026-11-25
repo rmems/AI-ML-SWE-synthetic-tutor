@@ -113,6 +113,61 @@ fn simulate_cli_emits_schema_valid_attempts() {
 }
 
 #[test]
+fn rejected_rerun_preserves_previous_attempts() {
+    let problems = unique_path("problems.jsonl");
+    let out = unique_path("rerun-out");
+    write_problem(&problems);
+    let schema = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../schemas/student-attempt.schema.json"
+    );
+    let base_args = [
+        "simulate".to_owned(),
+        "--problems".to_owned(),
+        problems.to_str().expect("utf-8 temp path").to_owned(),
+        "--out".to_owned(),
+        out.to_str().expect("utf-8 temp path").to_owned(),
+        "--mode".to_owned(),
+        "correction".to_owned(),
+        "--schema".to_owned(),
+        schema.to_owned(),
+    ];
+    let output = bin()
+        .args(
+            base_args.iter().chain(
+                [
+                    "--misconception".to_owned(),
+                    "derivatives.chain_rule".to_owned(),
+                ]
+                .iter(),
+            ),
+        )
+        .output()
+        .expect("runs successful simulation");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let attempts_path = out.join("attempts.jsonl");
+    let before = std::fs::read_to_string(&attempts_path).expect("first attempts written");
+
+    let output = bin()
+        .args(
+            base_args.iter().chain(
+                [
+                    "--misconception".to_owned(),
+                    "derivatives.quotient_rule".to_owned(),
+                ]
+                .iter(),
+            ),
+        )
+        .output()
+        .expect("runs rejected simulation");
+    assert!(!output.status.success());
+    assert_eq!(
+        std::fs::read_to_string(&attempts_path).expect("previous attempts remain"),
+        before
+    );
+}
+
+#[test]
 fn teacher_variety_fails_closed_until_a_teacher_lane_exists() {
     let problems = unique_path("problems.jsonl");
     let out = unique_path("teacher-out");

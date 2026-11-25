@@ -218,7 +218,34 @@ fn reconcile_notation_noise(
     }
 }
 
+fn attempt_config_fingerprint(
+    parts: &AttemptParts<'_>,
+    misconception: Option<MisconceptionId>,
+) -> u64 {
+    let config = serde_json::json!({
+        "correct": parts.drawn.correct,
+        "misconception": misconception.map(MisconceptionId::as_str),
+        "level": parts.drawn.level,
+        "persistence": parts.drawn.persistence,
+        "surface_style": parts.drawn.surface_style,
+        "notation_noise": parts.profile.notation_noise,
+    });
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in config.to_string().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 fn build_attempt(parts: AttemptParts<'_>) -> StudentAttempt {
+    let fingerprint = attempt_config_fingerprint(
+        &parts,
+        parts
+            .correction
+            .as_ref()
+            .map(|correction| correction.misconception),
+    );
     let (misconception, transformation) = parts
         .correction
         .map(|correction| {
@@ -231,8 +258,8 @@ fn build_attempt(parts: AttemptParts<'_>) -> StudentAttempt {
     StudentAttempt {
         schema_version: STUDENT_ATTEMPT_SCHEMA_VERSION,
         attempt_id: format!(
-            "{}/{}/v{}/seed-{}",
-            parts.problem.problem_id, SIMULATOR_NAME, SIMULATOR_VERSION, parts.seed
+            "{}/{}/v{}/seed-{}-{:016x}",
+            parts.problem.problem_id, SIMULATOR_NAME, SIMULATOR_VERSION, parts.seed, fingerprint,
         ),
         problem_id: parts.problem.problem_id.clone(),
         topic: parts.problem.topic.clone(),
@@ -635,12 +662,11 @@ fn correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLevel) -> 
     }
 }
 
-fn verbose(style: SurfaceStyle, level: StudentLevel) -> bool {
-    // Level controls completeness independently of voice: strong students
-    // explain even terse work, while struggling students usually stop at the
-    // equation chain even when their connective style is verbose.
-    level == StudentLevel::Strong
-        || (style == SurfaceStyle::Verbose && level != StudentLevel::Struggling)
+fn verbose(style: SurfaceStyle, _level: StudentLevel) -> bool {
+    // Surface style controls connective detail. Level already affects the
+    // correctness mix in `draw_profile`; it must not override the style
+    // metadata recorded on the attempt.
+    style == SurfaceStyle::Verbose
 }
 
 fn simple_correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLevel) -> String {
@@ -1230,6 +1256,72 @@ mod tests {
         let content = &turns[0].content;
         assert!(content.contains("p(x)·q(x)"));
         assert!(content.contains("My attempt: 11 = 1."));
+    }
+
+    #[test]
+    fn surface_style_controls_rendered_detail_at_every_level() {
+        let problem = chain_problem();
+        let base = AttemptSpec {
+            correct: Some(true),
+            level: Some(StudentLevel::Strong),
+            ..AttemptSpec::seeded(43)
+        };
+        let terse = simulate(
+            &problem,
+            &AttemptSpec {
+                surface_style: Some(SurfaceStyle::Terse),
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        let verbose = simulate(
+            &problem,
+            &AttemptSpec {
+                surface_style: Some(SurfaceStyle::Verbose),
+                ..base
+            },
+        )
+        .unwrap();
+        assert!(
+            !terse.student_turns[0]
+                .content
+                .contains("Use the chain rule")
+        );
+        assert!(
+            verbose.student_turns[0]
+                .content
+                .contains("Use the chain rule")
+        );
+    }
+
+    #[test]
+    fn attempt_id_distinguishes_forced_correctness_modes() {
+        let problem = chain_problem();
+        let base = AttemptSpec {
+            seed: 42,
+            level: Some(StudentLevel::Typical),
+            persistence: Some(Persistence::CorrectsAfterL1),
+            surface_style: Some(SurfaceStyle::Terse),
+            ..AttemptSpec::seeded(42)
+        };
+        let correct = simulate(
+            &problem,
+            &AttemptSpec {
+                correct: Some(true),
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        let correction = simulate(
+            &problem,
+            &AttemptSpec {
+                correct: Some(false),
+                misconception: Some(MisconceptionId::DerivativesChainRule),
+                ..base
+            },
+        )
+        .unwrap();
+        assert_ne!(correct.attempt_id, correction.attempt_id);
     }
 
     #[test]

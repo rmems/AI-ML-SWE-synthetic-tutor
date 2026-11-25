@@ -428,7 +428,13 @@ fn write_simulation_output(
     args: &SimulateArgs,
     batch: SimulationBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if batch.attempts.is_empty() {
+        return Err(
+            "no student attempt emitted; existing simulation artifacts were left unchanged".into(),
+        );
+    }
     std::fs::create_dir_all(&args.out)?;
+    ensure_simulation_manifest(&args.out.join("manifest.json"))?;
     stage_jsonl(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
     stage_jsonl(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
 
@@ -454,6 +460,10 @@ fn write_simulation_output(
         "seed_start": args.seed_start,
         "attempts_per_problem": args.attempts_per_problem,
         "mode": args.mode,
+        "misconception": args.misconception,
+        "level": args.level,
+        "persistence": args.persistence,
+        "surface_style": args.surface_style,
         "emitted": batch.attempts.len(),
         "correct": correct_count,
         "correction": batch.attempts.len() - correct_count,
@@ -472,9 +482,6 @@ fn write_simulation_output(
         batch.rejections.len(),
         args.out.display()
     );
-    if batch.attempts.is_empty() {
-        return Err("no student attempt emitted".into());
-    }
     Ok(())
 }
 
@@ -484,6 +491,22 @@ where
 {
     serde_json::from_str(&serde_json::to_string(value).expect("string serializes"))
         .map_err(|error| format!("invalid {field} {value:?}: {error}").into())
+}
+
+fn ensure_simulation_manifest(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(path)?;
+    let existing: serde_json::Value = serde_json::from_str(&text)?;
+    if existing.get("simulator") == Some(&serde_json::json!("synthetic-student-simulator")) {
+        return Ok(());
+    }
+    Err(format!(
+        "{} already contains a non-simulator manifest; choose a separate simulation output directory",
+        path.display()
+    )
+    .into())
 }
 
 fn stage_jsonl<'a>(

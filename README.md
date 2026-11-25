@@ -148,9 +148,11 @@ cargo run -p tutor-generate --bin tutor-generate -- simulate \
 
 The command writes `attempts.jsonl`, `rejections.jsonl`, and `manifest.json`
 through temporary sibling files so a failed rerun cannot leave a half-written
-artifact. `--seed-start` is mixed with the problem ID and per-problem attempt
-index, so a problem's attempts stay stable when unrelated input lines change.
-Use `--mode correction` or `--mode confirmation` to force the row type, and
+artifact. Use a simulation output directory separate from the problem-run
+root; the command refuses to replace a non-simulator `manifest.json`.
+`--seed-start` is mixed with the problem ID and per-problem attempt index, so
+a problem's attempts stay stable when unrelated input lines change. Use
+`--mode correction` or `--mode confirmation` to force the row type, and
 `--level`, `--persistence`, `--surface-style`, or `--misconception` to pin
 profile fields for debugging; omitted fields are deterministic seed draws.
 
