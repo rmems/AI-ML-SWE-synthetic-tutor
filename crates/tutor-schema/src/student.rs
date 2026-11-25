@@ -385,8 +385,14 @@ pub fn student_attempt_json_schema() -> serde_json::Value {
         "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$"
     });
 
-    // Keep schema-only validation aligned with the semantic validator wherever
-    // JSON Schema can express the constraint.
+    tighten_provenance_schema(&mut schema);
+    schema["allOf"] = serde_json::Value::Array(semantic_attempt_constraints());
+    schema
+}
+
+/// Keep schema-only validation aligned with replay provenance constraints that
+/// JSON Schema can express.
+fn tighten_provenance_schema(schema: &mut serde_json::Value) {
     schema["$defs"]["StudentAttemptProvenance"]["properties"]["seed"]["maximum"] =
         serde_json::json!(MAX_SEED);
     schema["$defs"]["StudentAttemptProvenance"]["properties"]["taxonomy_version"]["minimum"] =
@@ -396,8 +402,57 @@ pub fn student_attempt_json_schema() -> serde_json::Value {
     schema["$defs"]["NamedVersion"]["properties"]["name"]["minLength"] = serde_json::json!(1);
     schema["$defs"]["NamedVersion"]["properties"]["name"]["pattern"] = serde_json::json!(".*\\S.*");
     schema["$defs"]["NamedVersion"]["properties"]["version"]["minimum"] = serde_json::json!(1);
+}
 
-    let persistence_constraints = [
+fn semantic_attempt_constraints() -> Vec<serde_json::Value> {
+    let mut constraints = vec![correctness_shape_constraint()];
+    constraints.extend(MisconceptionId::ALL.iter().map(|id| {
+        serde_json::json!({
+            "if": {
+                "properties": {"misconception": {"const": id.as_str()}},
+                "required": ["misconception"]
+            },
+            "then": {
+                "properties": {
+                    "transformation": {
+                        "properties": {
+                            "misconception": {"const": id.as_str()}
+                        },
+                        "required": ["misconception"]
+                    }
+                }
+            }
+        })
+    }));
+    constraints
+}
+
+fn correctness_shape_constraint() -> serde_json::Value {
+    serde_json::json!({
+        "if": {
+            "properties": {"correct": {"const": true}},
+            "required": ["correct"]
+        },
+        "then": {
+            "properties": {
+                "student_turns": {"minItems": 1, "maxItems": 1}
+            },
+            "not": {
+                "anyOf": [
+                    {"required": ["misconception"]},
+                    {"required": ["transformation"]}
+                ]
+            }
+        },
+        "else": {
+            "required": ["misconception", "transformation"],
+            "allOf": persistence_turn_constraints()
+        }
+    })
+}
+
+fn persistence_turn_constraints() -> Vec<serde_json::Value> {
+    [
         ("corrects_after_l1", 3),
         ("corrects_after_l2", 4),
         ("needs_l3", 5),
@@ -416,47 +471,5 @@ pub fn student_attempt_json_schema() -> serde_json::Value {
             }
         })
     })
-    .collect::<Vec<_>>();
-    let correction_constraint = serde_json::json!({
-        "if": {
-            "properties": {"correct": {"const": true}},
-            "required": ["correct"]
-        },
-        "then": {
-            "properties": {
-                "student_turns": {"minItems": 1, "maxItems": 1}
-            },
-            "not": {
-                "anyOf": [
-                    {"required": ["misconception"]},
-                    {"required": ["transformation"]}
-                ]
-            }
-        },
-        "else": {
-            "required": ["misconception", "transformation"],
-            "allOf": persistence_constraints
-        }
-    });
-    let mut all_of = vec![correction_constraint];
-    all_of.extend(MisconceptionId::ALL.iter().map(|id| {
-        serde_json::json!({
-            "if": {
-                "properties": {"misconception": {"const": id.as_str()}},
-                "required": ["misconception"]
-            },
-            "then": {
-                "properties": {
-                    "transformation": {
-                        "properties": {
-                            "misconception": {"const": id.as_str()}
-                        },
-                        "required": ["misconception"]
-                    }
-                }
-            }
-        })
-    }));
-    schema["allOf"] = serde_json::Value::Array(all_of);
-    schema
+    .collect()
 }

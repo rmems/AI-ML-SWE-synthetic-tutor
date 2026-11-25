@@ -581,36 +581,44 @@ where
 
 fn ensure_simulation_output(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     const OUTPUT_MARKER: &str = ".synthetic-student-simulator-output";
+    validate_existing_manifest(out)?;
     let marker = out.join(OUTPUT_MARKER);
-    let marker_exists = marker.exists();
-    let manifest = out.join("manifest.json");
-    let manifest_exists = manifest.exists();
-    if manifest_exists {
-        let text = std::fs::read_to_string(&manifest)?;
-        let existing: serde_json::Value = serde_json::from_str(&text)?;
-        if existing.get("simulator") != Some(&serde_json::json!(SIMULATOR_NAME)) {
-            return Err(format!(
-                "{} already contains a non-simulator manifest; choose a separate simulation output directory",
-                manifest.display()
-            )
-            .into());
-        }
+    if marker.exists() {
+        return Ok(());
     }
-    if !marker_exists {
-        if !manifest_exists {
-            for artifact in ["attempts.jsonl", "rejections.jsonl"] {
-                if out.join(artifact).exists() {
-                    return Err(format!(
-                        "{} contains artifact files without simulator provenance; choose a separate output directory",
-                        out.display()
-                    )
-                    .into());
-                }
-            }
-        }
-        std::fs::write(&marker, "synthetic-student-simulator output directory\n")?;
+    if has_unowned_artifacts(out) {
+        return Err(format!(
+            "{} contains artifact files without simulator provenance; choose a separate output directory",
+            out.display()
+        )
+        .into());
     }
+    std::fs::write(&marker, "synthetic-student-simulator output directory\n")?;
     Ok(())
+}
+
+fn validate_existing_manifest(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest = out.join("manifest.json");
+    if !manifest.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&manifest)?;
+    let existing: serde_json::Value = serde_json::from_str(&text)?;
+    if existing.get("simulator") == Some(&serde_json::json!(SIMULATOR_NAME)) {
+        return Ok(());
+    }
+    Err(format!(
+        "{} already contains a non-simulator manifest; choose a separate simulation output directory",
+        manifest.display()
+    )
+    .into())
+}
+
+fn has_unowned_artifacts(out: &Path) -> bool {
+    !out.join("manifest.json").exists()
+        && ["attempts.jsonl", "rejections.jsonl"]
+            .iter()
+            .any(|artifact| out.join(artifact).exists())
 }
 
 fn write_text_atomic(path: &Path, text: &str) -> Result<(), Box<dyn std::error::Error>> {
