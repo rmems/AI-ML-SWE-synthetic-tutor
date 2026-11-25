@@ -249,6 +249,12 @@ impl StudentAttempt {
                         format!("{:?} is not a listed topic for {}", self.topic, id.as_str()),
                     ));
                 }
+                if transformation.correct_value == transformation.corrupted_value {
+                    return Err(invalid(
+                        "transformation.corrupted_value",
+                        "must differ from correct_value so the row is actually incorrect",
+                    ));
+                }
                 Ok(())
             }
             _ => Err(invalid(

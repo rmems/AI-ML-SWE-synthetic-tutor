@@ -101,6 +101,20 @@ fn correct_attempt_must_not_carry_a_label() {
 }
 
 #[test]
+fn correction_value_must_actually_be_wrong() {
+    let mut attempt = correction_attempt();
+    attempt
+        .transformation
+        .as_mut()
+        .expect("correction attempt has a transformation")
+        .corrupted_value = 12;
+    let error = attempt
+        .validate()
+        .expect_err("a correction row whose value is correct is invalid");
+    assert_eq!(error.code(), "schema_constraint");
+}
+
+#[test]
 fn persistence_controls_retry_count() {
     let mut attempt = correction_attempt();
     attempt.persistence = Persistence::NeedsL3;

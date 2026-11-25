@@ -84,6 +84,9 @@ pub enum StudentError {
         /// Why no exact transformation exists.
         reason: String,
     },
+    /// The problem declares no taxonomy IDs from which a correction can be selected.
+    #[error("problem {0} declares no misconception IDs")]
+    NoDeclaredMisconceptions(String),
     /// Integer arithmetic overflow while constructing the corrupted attempt.
     #[error("attempt arithmetic overflows i64 for {0}")]
     Overflow(String),
@@ -361,12 +364,11 @@ fn select_misconception(
             return Ok(id);
         }
     }
-    let id = problem
+    problem
         .misconception_ids
         .first()
         .copied()
-        .unwrap_or(MisconceptionId::AlgebraSignError);
-    Ok(id)
+        .ok_or_else(|| StudentError::NoDeclaredMisconceptions(problem.problem_id.clone()))
 }
 
 fn plant(problem: &Problem, id: MisconceptionId) -> Result<PlantedTransformation, StudentError> {
@@ -415,15 +417,18 @@ fn plant_product_rule(problem: &Problem) -> Result<PlantedTransformation, Studen
                 .and_then(|second| first.checked_add(second))
         })
         .ok_or_else(|| overflow(problem))?;
-    Ok(PlantedTransformation {
-        misconception: MisconceptionId::DerivativesProductRule,
-        step_index: problem.steps.len().saturating_sub(1),
-        step_kind: "add".to_owned(),
-        correct_value: correct,
-        corrupted_value: corrupted,
-        propagates_to_answer: true,
-        description: "replace the product-rule sum p'(a)q(a)+p(a)q'(a) with the product of derivatives p'(a)q'(a)".to_owned(),
-    })
+    nondegenerate(
+        problem,
+        PlantedTransformation {
+            misconception: MisconceptionId::DerivativesProductRule,
+            step_index: biting_step(problem, "add")?,
+            step_kind: "add".to_owned(),
+            correct_value: correct,
+            corrupted_value: corrupted,
+            propagates_to_answer: true,
+            description: "replace the product-rule sum p'(a)q(a)+p(a)q'(a) with the product of derivatives p'(a)q'(a)".to_owned(),
+        },
+    )
 }
 
 fn plant_chain_rule(problem: &Problem) -> Result<PlantedTransformation, StudentError> {
@@ -447,15 +452,72 @@ fn plant_chain_rule(problem: &Problem) -> Result<PlantedTransformation, StudentE
     let correct = corrupted
         .checked_mul(inner_da)
         .ok_or_else(|| overflow(problem))?;
-    Ok(PlantedTransformation {
-        misconception: MisconceptionId::DerivativesChainRule,
-        step_index: problem.steps.len().saturating_sub(1),
-        step_kind: "multiply".to_owned(),
-        correct_value: correct,
-        corrupted_value: corrupted,
-        propagates_to_answer: true,
-        description: "omit the inner-derivative factor q'(a), leaving only p'(q(a))".to_owned(),
-    })
+    nondegenerate(
+        problem,
+        PlantedTransformation {
+            misconception: MisconceptionId::DerivativesChainRule,
+            step_index: biting_step(problem, "multiply")?,
+            step_kind: "multiply".to_owned(),
+            correct_value: correct,
+            corrupted_value: corrupted,
+            propagates_to_answer: true,
+            description: "omit the inner-derivative factor q'(a), leaving only p'(q(a))".to_owned(),
+        },
+    )
+}
+
+fn nondegenerate(
+    problem: &Problem,
+    transformation: PlantedTransformation,
+) -> Result<PlantedTransformation, StudentError> {
+    if transformation.correct_value == transformation.corrupted_value {
+        return Err(StudentError::IncompatibleMisconception {
+            problem_id: problem.problem_id.clone(),
+            misconception: transformation.misconception,
+            reason: "the transformation is degenerate at this point and does not change the value"
+                .to_owned(),
+        });
+    }
+    Ok(transformation)
+}
+
+fn biting_step(problem: &Problem, expected_kind: &str) -> Result<usize, StudentError> {
+    let answer = answer_value(problem);
+    problem
+        .steps
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, step)| step_kind(step) == expected_kind && step_value(step) == Some(answer))
+        .map(|(index, _)| index)
+        .ok_or_else(|| StudentError::IncompatibleMisconception {
+            problem_id: problem.problem_id.clone(),
+            misconception: match expected_kind {
+                "add" => MisconceptionId::DerivativesProductRule,
+                _ => MisconceptionId::DerivativesChainRule,
+            },
+            reason: format!(
+                "the verified steps contain no final-answer {expected_kind} step where this transformation bites"
+            ),
+        })
+}
+
+fn step_kind(step: &Step) -> &'static str {
+    match step {
+        Step::DifferentiatePolynomial { .. } => "differentiate_polynomial",
+        Step::EvaluatePolynomial { .. } => "evaluate_polynomial",
+        Step::Multiply { .. } => "multiply",
+        Step::Add { .. } => "add",
+    }
+}
+
+fn step_value(step: &Step) -> Option<i64> {
+    match step {
+        Step::EvaluatePolynomial { value, .. }
+        | Step::Multiply { value, .. }
+        | Step::Add { value, .. } => Some(*value),
+        Step::DifferentiatePolynomial { .. } => None,
+    }
 }
 
 fn incompatible<T>(problem: &Problem, misconception: MisconceptionId) -> Result<T, StudentError> {
@@ -480,12 +542,23 @@ fn answer_value(problem: &Problem) -> i64 {
 
 fn drop_one_multiplication_dot(student_turns: &mut [Turn]) -> bool {
     for turn in student_turns {
-        if let Some(index) = turn.content.find('·') {
+        if let Some(index) = student_work_dot_index(&turn.content) {
             turn.content.remove(index);
             return true;
         }
     }
     false
+}
+
+fn student_work_dot_index(content: &str) -> Option<usize> {
+    const ATTEMPT_MARKER: &str = "My attempt: ";
+    if let Some(marker) = content.find(ATTEMPT_MARKER) {
+        let work_start = marker + ATTEMPT_MARKER.len();
+        return content[work_start..]
+            .find('·')
+            .map(|relative| work_start + relative);
+    }
+    content.find('·')
 }
 
 fn opening_turn(problem: &Problem, work: &str, _noise: &[NotationNoise]) -> Turn {
@@ -1097,6 +1170,66 @@ mod tests {
                     | Err(StudentError::UndeclaredMisconception { .. })
             ));
         }
+    }
+
+    #[test]
+    fn degenerate_transformation_is_rejected_instead_of_mislabeled() {
+        let mut problem = chain_problem();
+        let inner = vec![0, 1]; // q(x) = x, so q'(1) = 1 and omitting it changes nothing.
+        problem.parameters = Parameters::ChainRuleAtPoint {
+            outer: vec![0, 0, 1],
+            inner: inner.clone(),
+            point: 1,
+        };
+        problem.answer = Answer::Integer { value: 2 };
+        problem.steps = vec![
+            Step::EvaluatePolynomial {
+                coefficients: inner,
+                point: 1,
+                value: 1,
+            },
+            Step::DifferentiatePolynomial {
+                input: vec![0, 0, 1],
+                output: vec![0, 2],
+            },
+            Step::DifferentiatePolynomial {
+                input: vec![0, 1],
+                output: vec![1],
+            },
+            Step::EvaluatePolynomial {
+                coefficients: vec![0, 2],
+                point: 1,
+                value: 2,
+            },
+            Step::EvaluatePolynomial {
+                coefficients: vec![1],
+                point: 1,
+                value: 1,
+            },
+            Step::Multiply {
+                factors: vec![2, 1],
+                value: 2,
+            },
+        ];
+        let spec = AttemptSpec {
+            correct: Some(false),
+            misconception: Some(MisconceptionId::DerivativesChainRule),
+            ..AttemptSpec::seeded(11)
+        };
+        assert!(matches!(
+            simulate(&problem, &spec),
+            Err(StudentError::IncompatibleMisconception { .. })
+        ));
+    }
+
+    #[test]
+    fn notation_noise_drops_a_dot_from_student_work_not_the_statement() {
+        let problem = product_problem();
+        let mut turns = vec![opening_turn(&problem, "1·1 = 1.", &[])];
+        assert!(drop_one_multiplication_dot(&mut turns));
+        let content = &turns[0].content;
+        assert!(content.contains("p(x)·q(x)"));
+        assert!(content.contains("My attempt: 11 = 1."));
     }
 
     #[test]

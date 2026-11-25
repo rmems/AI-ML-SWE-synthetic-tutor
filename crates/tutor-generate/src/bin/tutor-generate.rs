@@ -56,7 +56,7 @@ enum Command {
         /// Output directory for attempts.jsonl, rejections.jsonl, and manifest.json.
         #[arg(long)]
         out: PathBuf,
-        /// First attempt seed.
+        /// Base seed for stable per-problem attempt seeds.
         #[arg(long, default_value_t = 0)]
         seed_start: u64,
         /// Attempts drawn per problem.
@@ -224,6 +224,7 @@ struct SimulateArgs {
 
 #[derive(Clone, Copy)]
 struct SimulationOptions {
+    seed_start: u64,
     correct: Option<bool>,
     misconception: Option<MisconceptionId>,
     level: Option<StudentLevel>,
@@ -260,6 +261,7 @@ fn simulation_options(
         }
     };
     Ok(SimulationOptions {
+        seed_start: args.seed_start,
         correct,
         misconception: args
             .misconception
@@ -290,10 +292,26 @@ struct SimulationContext<'a> {
     validator: &'a jsonschema::Validator,
 }
 
+/// Derive a stable attempt seed from the caller's seed stream, problem ID, and
+/// per-problem attempt index, so unrelated input lines do not reseed a problem.
+fn stable_attempt_seed(seed_start: u64, problem_id: &str, attempt_index: u64) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in seed_start
+        .to_le_bytes()
+        .into_iter()
+        .chain(problem_id.as_bytes().iter().copied())
+        .chain([0xff])
+        .chain(attempt_index.to_le_bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 struct SimulationBatch {
     attempts: Vec<serde_json::Value>,
     rejections: Vec<serde_json::Value>,
-    next_seed: u64,
 }
 
 fn simulate_batch(
@@ -305,7 +323,6 @@ fn simulate_batch(
     let mut batch = SimulationBatch {
         attempts: Vec::new(),
         rejections: Vec::new(),
-        next_seed: args.seed_start,
     };
     let context = SimulationContext {
         attempts_per_problem: args.attempts_per_problem,
@@ -347,12 +364,12 @@ impl SimulationBatch {
         problem: &Problem,
         context: &SimulationContext<'_>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        for _ in 0..context.attempts_per_problem {
-            let seed = self.next_seed;
-            self.next_seed = self
-                .next_seed
-                .checked_add(1)
-                .ok_or("attempt seed overflow")?;
+        for attempt_index in 0..context.attempts_per_problem {
+            let seed = stable_attempt_seed(
+                context.options.seed_start,
+                &problem.problem_id,
+                attempt_index,
+            );
             let spec = AttemptSpec {
                 seed,
                 correct: context.options.correct,
@@ -412,8 +429,8 @@ fn write_simulation_output(
     batch: SimulationBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&args.out)?;
-    write_jsonl(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
-    write_jsonl(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
+    stage_jsonl(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
+    stage_jsonl(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
 
     let correct_count = batch
         .attempts
@@ -443,9 +460,9 @@ fn write_simulation_output(
         "notation_noise": noise_count,
         "rejected": batch.rejections.len(),
     });
-    std::fs::write(
-        args.out.join("manifest.json"),
-        serde_json::to_string_pretty(&manifest)?,
+    write_text_atomic(
+        &args.out.join("manifest.json"),
+        &serde_json::to_string_pretty(&manifest)?,
     )?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
@@ -467,6 +484,37 @@ where
 {
     serde_json::from_str(&serde_json::to_string(value).expect("string serializes"))
         .map_err(|error| format!("invalid {field} {value:?}: {error}").into())
+}
+
+fn stage_jsonl<'a>(
+    path: &Path,
+    rows: impl Iterator<Item = &'a serde_json::Value>,
+) -> std::io::Result<()> {
+    let tmp = staging_path(path, "jsonl");
+    write_jsonl(&tmp, rows)?;
+    publish(&tmp, path)
+}
+
+fn write_text_atomic(path: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = staging_path(path, "json");
+    std::fs::write(&tmp, text)?;
+    publish(&tmp, path)
+}
+
+fn staging_path(path: &Path, extension: &str) -> PathBuf {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    path.with_extension(format!("{extension}.tmp.{}.{nonce:x}", std::process::id()))
+}
+
+fn publish(tmp: &Path, dest: &Path) -> std::io::Result<()> {
+    // rename does not replace an existing destination on Windows.
+    if dest.exists() {
+        std::fs::remove_file(dest)?;
+    }
+    std::fs::rename(tmp, dest)
 }
 
 fn write_jsonl<'a>(
