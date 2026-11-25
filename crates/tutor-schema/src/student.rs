@@ -445,6 +445,10 @@ fn correctness_shape_constraint() -> serde_json::Value {
             }
         },
         "else": {
+            "properties": {
+                "misconception": {"$ref": "#/$defs/MisconceptionId"},
+                "transformation": {"$ref": "#/$defs/PlantedTransformation"}
+            },
             "required": ["misconception", "transformation"],
             "allOf": persistence_turn_constraints()
         }

@@ -199,6 +199,19 @@ fn generated_schema_rejects_a_mismatched_transformation_label() {
 }
 
 #[test]
+fn generated_schema_rejects_null_correction_labels() {
+    let value = serde_json::to_value(correction_attempt()).expect("attempt serializes");
+    for field in ["misconception", "transformation"] {
+        let mut null_value = value.clone();
+        null_value[field] = serde_json::Value::Null;
+        assert!(
+            !json_validator().is_valid(&null_value),
+            "null {field} must not satisfy the correction branch"
+        );
+    }
+}
+
+#[test]
 fn provenance_seed_must_remain_json_exact() {
     let mut attempt = correction_attempt();
     attempt.provenance.seed = tutor_schema::MAX_SEED + 1;

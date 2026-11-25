@@ -526,6 +526,14 @@
             }
           }
         ],
+        "properties": {
+          "misconception": {
+            "$ref": "#/$defs/MisconceptionId"
+          },
+          "transformation": {
+            "$ref": "#/$defs/PlantedTransformation"
+          }
+        },
         "required": [
           "misconception",
           "transformation"

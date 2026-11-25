@@ -392,6 +392,82 @@ fn an_existing_output_lock_blocks_a_rerun_before_replacing_artifacts() {
     );
 }
 
+fn artifact_metadata(bytes: &[u8]) -> serde_json::Value {
+    let digest = Sha256::digest(bytes);
+    serde_json::json!({
+        "sha256": format!("{digest:x}"),
+        "bytes": bytes.len(),
+    })
+}
+
+fn write_pending_record(out: &std::path::Path, attempts: &[u8], rejections: &[u8]) {
+    let pending = serde_json::json!({
+        "simulator": "synthetic-student-simulator",
+        "artifacts": {
+            "attempts.jsonl": artifact_metadata(attempts),
+            "rejections.jsonl": artifact_metadata(rejections),
+        }
+    });
+    std::fs::write(out.join(".simulate-pending.json"), pending.to_string())
+        .expect("write pending record");
+}
+
+#[test]
+fn foreign_artifact_files_without_a_pending_record_are_refused() {
+    let problems = unique_path("foreign-problems.jsonl");
+    let out = unique_path("foreign-out");
+    write_problem(&problems);
+    std::fs::create_dir_all(&out).expect("create output directory");
+    std::fs::write(out.join("attempts.jsonl"), "foreign\n").expect("write foreign artifact");
+
+    let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("without simulator provenance"));
+    assert_eq!(
+        std::fs::read_to_string(out.join("attempts.jsonl")).expect("foreign artifact remains"),
+        "foreign\n"
+    );
+}
+
+#[test]
+fn a_matching_pending_record_allows_replacing_an_interrupted_bundle() {
+    let problems = unique_path("pending-problems.jsonl");
+    let out = unique_path("pending-out");
+    write_problem(&problems);
+    std::fs::create_dir_all(&out).expect("create output directory");
+    std::fs::write(out.join("attempts.jsonl"), "partial\n").expect("write partial artifact");
+    write_pending_record(&out, b"partial\n", b"");
+
+    let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_ne!(
+        std::fs::read_to_string(out.join("attempts.jsonl")).expect("replacement attempts"),
+        "partial\n"
+    );
+    assert!(
+        !out.join(".simulate-pending.json").exists(),
+        "pending record is cleared after the manifest commits"
+    );
+}
+
+#[test]
+fn artifacts_that_do_not_match_the_pending_record_are_refused() {
+    let problems = unique_path("mismatched-problems.jsonl");
+    let out = unique_path("mismatched-out");
+    write_problem(&problems);
+    std::fs::create_dir_all(&out).expect("create output directory");
+    std::fs::write(out.join("attempts.jsonl"), "changed\n").expect("write changed artifact");
+    write_pending_record(&out, b"partial\n", b"");
+
+    let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("does not match the interrupted simulation record"));
+    assert_eq!(
+        std::fs::read_to_string(out.join("attempts.jsonl")).expect("artifact remains"),
+        "changed\n"
+    );
+}
+
 #[test]
 fn teacher_variety_fails_closed_until_a_teacher_lane_exists() {
     let problems = unique_path("problems.jsonl");

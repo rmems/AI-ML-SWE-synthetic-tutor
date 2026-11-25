@@ -4,7 +4,7 @@
 use atomicwrites::{AllowOverwrite, AtomicFile};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tutor_generate::student::{AttemptSpec, SIMULATOR_NAME, SIMULATOR_VERSION, simulate};
@@ -477,6 +477,10 @@ fn write_simulation_output(
     // consumer can detect an interrupted multi-file publish.
     let attempts_text = jsonl_text(batch.attempts.iter())?;
     let rejections_text = jsonl_text(batch.rejections.iter())?;
+    let bundle_artifacts = serde_json::json!({
+        "attempts.jsonl": artifact_metadata(&attempts_text),
+        "rejections.jsonl": artifact_metadata(&rejections_text),
+    });
     let manifest = serde_json::json!({
         "simulator": SIMULATOR_NAME,
         "simulator_version": SIMULATOR_VERSION,
@@ -494,19 +498,22 @@ fn write_simulation_output(
         "correction": batch.attempts.len() - correct_count,
         "notation_noise": noise_count,
         "rejected": batch.rejections.len(),
-        "artifacts": {
-            "attempts.jsonl": artifact_metadata(&attempts_text),
-            "rejections.jsonl": artifact_metadata(&rejections_text),
-        },
+        "artifacts": bundle_artifacts.clone(),
     });
     let manifest_text = serde_json::to_string_pretty(&manifest)?;
+    let pending_text = serde_json::to_string(&serde_json::json!({
+        "simulator": SIMULATOR_NAME,
+        "artifacts": bundle_artifacts,
+    }))?;
 
     std::fs::create_dir_all(&args.out)?;
-    ensure_simulation_output(&args.out)?;
     let _lock = OutputLock::acquire(&args.out)?;
+    ensure_simulation_output(&args.out)?;
+    write_text_atomic(&pending_publish_path(&args.out), &pending_text)?;
     write_text_atomic(&args.out.join("attempts.jsonl"), &attempts_text)?;
     write_text_atomic(&args.out.join("rejections.jsonl"), &rejections_text)?;
     write_text_atomic(&args.out.join("manifest.json"), &manifest_text)?;
+    let _ = std::fs::remove_file(pending_publish_path(&args.out));
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
         batch.attempts.len(),
@@ -560,8 +567,11 @@ impl OutputLock {
             }
             Err(error) => return Err(error.into()),
         };
-        writeln!(file, "pid {}", std::process::id())?;
-        Ok(Self { path })
+        let lock = Self { path };
+        let result = writeln!(file, "pid {}", std::process::id());
+        drop(file);
+        result?;
+        Ok(lock)
     }
 }
 
@@ -579,22 +589,16 @@ where
         .map_err(|error| format!("invalid {field} {value:?}: {error}").into())
 }
 
+fn pending_publish_path(out: &Path) -> PathBuf {
+    out.join(".simulate-pending.json")
+}
+
 fn ensure_simulation_output(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    const OUTPUT_MARKER: &str = ".synthetic-student-simulator-output";
     validate_existing_manifest(out)?;
-    let marker = out.join(OUTPUT_MARKER);
-    if marker.exists() {
+    if out.join("manifest.json").exists() || !has_artifact_files(out) {
         return Ok(());
     }
-    if has_unowned_artifacts(out) {
-        return Err(format!(
-            "{} contains artifact files without simulator provenance; choose a separate output directory",
-            out.display()
-        )
-        .into());
-    }
-    std::fs::write(&marker, "synthetic-student-simulator output directory\n")?;
-    Ok(())
+    validate_interrupted_publish(out)
 }
 
 fn validate_existing_manifest(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -614,11 +618,61 @@ fn validate_existing_manifest(out: &Path) -> Result<(), Box<dyn std::error::Erro
     .into())
 }
 
-fn has_unowned_artifacts(out: &Path) -> bool {
-    !out.join("manifest.json").exists()
-        && ["attempts.jsonl", "rejections.jsonl"]
-            .iter()
-            .any(|artifact| out.join(artifact).exists())
+fn has_artifact_files(out: &Path) -> bool {
+    ["attempts.jsonl", "rejections.jsonl"]
+        .iter()
+        .any(|artifact| out.join(artifact).exists())
+}
+
+fn validate_interrupted_publish(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let pending_path = pending_publish_path(out);
+    if !pending_path.exists() {
+        return Err(format!(
+            "{} contains artifact files without simulator provenance; choose a separate output directory",
+            out.display()
+        )
+        .into());
+    }
+    let text = std::fs::read_to_string(&pending_path)?;
+    let pending: serde_json::Value = serde_json::from_str(&text)?;
+    if pending.get("simulator") != Some(&serde_json::json!(SIMULATOR_NAME)) {
+        return Err(format!(
+            "{} is not a simulator pending-publish record; choose a separate output directory",
+            pending_path.display()
+        )
+        .into());
+    }
+    for artifact in ["attempts.jsonl", "rejections.jsonl"] {
+        let path = out.join(artifact);
+        if path.exists() && file_artifact_metadata(&path)? != pending["artifacts"][artifact] {
+            return Err(format!(
+                "{} does not match the interrupted simulation record; choose a separate output directory",
+                path.display()
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn file_artifact_metadata(path: &Path) -> std::io::Result<serde_json::Value> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut bytes = 0_u64;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        bytes += read as u64;
+    }
+    let digest = hasher.finalize();
+    Ok(serde_json::json!({
+        "sha256": format!("{digest:x}"),
+        "bytes": bytes,
+    }))
 }
 
 fn write_text_atomic(path: &Path, text: &str) -> Result<(), Box<dyn std::error::Error>> {
