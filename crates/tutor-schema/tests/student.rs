@@ -141,3 +141,71 @@ fn student_turns_must_use_dialogue_student_shape() {
         .expect_err("non-attempt student turn is invalid");
     assert_eq!(error.code(), "schema_constraint");
 }
+
+fn json_validator() -> jsonschema::Validator {
+    jsonschema::validator_for(&student_attempt_json_schema()).expect("student schema compiles")
+}
+
+#[test]
+fn generated_schema_accepts_a_valid_correction_attempt() {
+    let value = serde_json::to_value(correction_attempt()).expect("attempt serializes");
+    let validator = json_validator();
+    assert!(
+        validator.is_valid(&value),
+        "{}",
+        validator
+            .iter_errors(&value)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
+}
+
+#[test]
+fn generated_schema_accepts_a_valid_correct_attempt() {
+    let mut attempt = correction_attempt();
+    attempt.correct = true;
+    attempt.misconception = None;
+    attempt.transformation = None;
+    attempt.student_turns.truncate(1);
+    attempt.validate().expect("correct artifact validates");
+    let value = serde_json::to_value(attempt).expect("attempt serializes");
+    assert!(json_validator().is_valid(&value));
+}
+
+#[test]
+fn generated_schema_rejects_a_correct_attempt_with_a_label() {
+    let mut attempt = correction_attempt();
+    attempt.correct = true;
+    attempt.student_turns.truncate(1);
+    let value = serde_json::to_value(attempt).expect("attempt serializes");
+    assert!(!json_validator().is_valid(&value));
+}
+
+#[test]
+fn generated_schema_rejects_the_wrong_retry_count() {
+    let mut attempt = correction_attempt();
+    attempt.student_turns.truncate(2);
+    let value = serde_json::to_value(attempt).expect("attempt serializes");
+    assert!(!json_validator().is_valid(&value));
+}
+
+#[test]
+fn generated_schema_rejects_a_mismatched_transformation_label() {
+    let mut attempt = correction_attempt();
+    attempt.misconception = Some(MisconceptionId::DerivativesProductRule);
+    let value = serde_json::to_value(attempt).expect("attempt serializes");
+    assert!(!json_validator().is_valid(&value));
+}
+
+#[test]
+fn provenance_seed_must_remain_json_exact() {
+    let mut attempt = correction_attempt();
+    attempt.provenance.seed = tutor_schema::MAX_SEED + 1;
+    let error = attempt
+        .validate()
+        .expect_err("seed above the JSON-safe maximum is invalid");
+    assert_eq!(error.code(), "schema_constraint");
+    let value = serde_json::to_value(attempt).expect("attempt serializes");
+    assert!(!json_validator().is_valid(&value));
+}

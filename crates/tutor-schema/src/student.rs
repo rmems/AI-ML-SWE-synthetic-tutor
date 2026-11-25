@@ -12,8 +12,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    MisconceptionId, NamedVersion, Role, SchemaError, TAXONOMY_VERSION, Turn, TurnKind, invalid,
-    is_valid_topic,
+    MAX_SEED, MisconceptionId, NamedVersion, Role, SchemaError, TAXONOMY_VERSION, Turn, TurnKind,
+    invalid, is_valid_topic,
 };
 
 /// Current `schema_version` of [`StudentAttempt`].
@@ -245,6 +245,15 @@ impl StudentAttempt {
                 "must be at least 1",
             ));
         }
+        if self.provenance.seed > MAX_SEED {
+            return Err(invalid(
+                "provenance.seed",
+                format!(
+                    "{} exceeds the JSON-safe maximum {MAX_SEED}",
+                    self.provenance.seed
+                ),
+            ));
+        }
         Ok(())
     }
 
@@ -375,5 +384,79 @@ pub fn student_attempt_json_schema() -> serde_json::Value {
         "type": "string",
         "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$"
     });
+
+    // Keep schema-only validation aligned with the semantic validator wherever
+    // JSON Schema can express the constraint.
+    schema["$defs"]["StudentAttemptProvenance"]["properties"]["seed"]["maximum"] =
+        serde_json::json!(MAX_SEED);
+    schema["$defs"]["StudentAttemptProvenance"]["properties"]["taxonomy_version"]["minimum"] =
+        serde_json::json!(1);
+    schema["$defs"]["StudentAttemptProvenance"]["properties"]["taxonomy_version"]["maximum"] =
+        serde_json::json!(TAXONOMY_VERSION);
+    schema["$defs"]["NamedVersion"]["properties"]["name"]["minLength"] = serde_json::json!(1);
+    schema["$defs"]["NamedVersion"]["properties"]["name"]["pattern"] = serde_json::json!(".*\\S.*");
+    schema["$defs"]["NamedVersion"]["properties"]["version"]["minimum"] = serde_json::json!(1);
+
+    let persistence_constraints = [
+        ("corrects_after_l1", 3),
+        ("corrects_after_l2", 4),
+        ("needs_l3", 5),
+    ]
+    .into_iter()
+    .map(|(persistence, turns)| {
+        serde_json::json!({
+            "if": {
+                "properties": {"persistence": {"const": persistence}},
+                "required": ["persistence"]
+            },
+            "then": {
+                "properties": {
+                    "student_turns": {"minItems": turns, "maxItems": turns}
+                }
+            }
+        })
+    })
+    .collect::<Vec<_>>();
+    let correction_constraint = serde_json::json!({
+        "if": {
+            "properties": {"correct": {"const": true}},
+            "required": ["correct"]
+        },
+        "then": {
+            "properties": {
+                "student_turns": {"minItems": 1, "maxItems": 1}
+            },
+            "not": {
+                "anyOf": [
+                    {"required": ["misconception"]},
+                    {"required": ["transformation"]}
+                ]
+            }
+        },
+        "else": {
+            "required": ["misconception", "transformation"],
+            "allOf": persistence_constraints
+        }
+    });
+    let mut all_of = vec![correction_constraint];
+    all_of.extend(MisconceptionId::ALL.iter().map(|id| {
+        serde_json::json!({
+            "if": {
+                "properties": {"misconception": {"const": id.as_str()}},
+                "required": ["misconception"]
+            },
+            "then": {
+                "properties": {
+                    "transformation": {
+                        "properties": {
+                            "misconception": {"const": id.as_str()}
+                        },
+                        "required": ["misconception"]
+                    }
+                }
+            }
+        })
+    }));
+    schema["allOf"] = serde_json::Value::Array(all_of);
     schema
 }

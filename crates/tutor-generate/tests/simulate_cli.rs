@@ -3,7 +3,9 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Output};
+
+use sha2::{Digest, Sha256};
 
 fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tutor-generate"))
@@ -18,6 +20,28 @@ fn unique_path(name: &str) -> PathBuf {
         "tutor-generate-simulate-{name}-{}-{nanos}",
         std::process::id()
     ))
+}
+
+fn run_simulation(
+    problems: &std::path::Path,
+    out: &std::path::Path,
+    extra_args: &[&str],
+) -> Output {
+    let schema = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../schemas/student-attempt.schema.json"
+    );
+    let mut args = vec![
+        "simulate".to_owned(),
+        "--problems".to_owned(),
+        problems.to_str().expect("utf-8 temp path").to_owned(),
+        "--out".to_owned(),
+        out.to_str().expect("utf-8 temp path").to_owned(),
+        "--schema".to_owned(),
+        schema.to_owned(),
+    ];
+    args.extend(extra_args.iter().map(|arg| (*arg).to_owned()));
+    bin().args(args).output().expect("runs simulation")
 }
 
 fn write_problem(path: &std::path::Path) {
@@ -253,6 +277,115 @@ fn rejected_rerun_preserves_previous_attempts() {
     assert!(!output.status.success());
     assert_eq!(
         std::fs::read_to_string(&attempts_path).expect("previous attempts remain"),
+        before
+    );
+}
+
+#[test]
+fn a_stale_duplicate_does_not_block_a_valid_copy_of_the_problem() {
+    let problems = unique_path("stale-duplicate-problems.jsonl");
+    write_problem(&problems);
+    let valid = std::fs::read_to_string(&problems).expect("read problem");
+    let mut stale: serde_json::Value = serde_json::from_str(&valid).expect("problem parses");
+    stale["steps"][5]["value"] = serde_json::json!(13);
+    stale["answer"]["value"] = serde_json::json!(13);
+    std::fs::write(&problems, format!("{stale}\n{}", valid.trim_end()))
+        .expect("write stale duplicate input");
+    let out = unique_path("stale-duplicate-out");
+    let output = run_simulation(
+        &problems,
+        &out,
+        &[
+            "--mode",
+            "correction",
+            "--misconception",
+            "derivatives.chain_rule",
+        ],
+    );
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let attempts = std::fs::read_to_string(out.join("attempts.jsonl")).expect("attempts written");
+    assert_eq!(attempts.lines().count(), 1);
+    let rejections =
+        std::fs::read_to_string(out.join("rejections.jsonl")).expect("rejections written");
+    assert!(rejections.contains("does not replay as verified"));
+    assert!(!rejections.contains("duplicate_problem"));
+}
+
+#[test]
+fn successful_rerun_replaces_the_bundle_and_cleans_its_lock() {
+    let problems = unique_path("rerun-problems.jsonl");
+    let out = unique_path("successful-rerun-out");
+    write_problem(&problems);
+    let correction = run_simulation(
+        &problems,
+        &out,
+        &[
+            "--mode",
+            "correction",
+            "--misconception",
+            "derivatives.chain_rule",
+        ],
+    );
+    assert!(
+        correction.status.success(),
+        "stderr: {}",
+        stderr(&correction)
+    );
+    let incorrect = std::fs::read_to_string(out.join("attempts.jsonl")).expect("first attempts");
+
+    let confirmation = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(
+        confirmation.status.success(),
+        "stderr: {}",
+        stderr(&confirmation)
+    );
+    let correct =
+        std::fs::read_to_string(out.join("attempts.jsonl")).expect("replacement attempts");
+    assert_ne!(incorrect, correct);
+    assert!(
+        !out.join(".simulate.lock").exists(),
+        "output lock is cleaned up"
+    );
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out.join("manifest.json")).expect("manifest written"),
+    )
+    .expect("manifest parses");
+    let digest = Sha256::digest(correct.as_bytes());
+    assert_eq!(
+        manifest["artifacts"]["attempts.jsonl"]["sha256"],
+        serde_json::json!(format!("{digest:x}"))
+    );
+    assert_eq!(
+        manifest["artifacts"]["attempts.jsonl"]["bytes"],
+        serde_json::json!(correct.len())
+    );
+}
+
+#[test]
+fn an_existing_output_lock_blocks_a_rerun_before_replacing_artifacts() {
+    let problems = unique_path("locked-problems.jsonl");
+    let out = unique_path("locked-out");
+    write_problem(&problems);
+    let first = run_simulation(
+        &problems,
+        &out,
+        &[
+            "--mode",
+            "correction",
+            "--misconception",
+            "derivatives.chain_rule",
+        ],
+    );
+    assert!(first.status.success(), "stderr: {}", stderr(&first));
+    let before = std::fs::read_to_string(out.join("attempts.jsonl")).expect("first attempts");
+    std::fs::write(out.join(".simulate.lock"), "pid test").expect("write test lock");
+
+    let second = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(!second.status.success());
+    assert!(stderr(&second).contains("already locked"));
+    assert_eq!(
+        std::fs::read_to_string(out.join("attempts.jsonl")).expect("attempts remain"),
         before
     );
 }

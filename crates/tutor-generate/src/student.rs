@@ -8,19 +8,20 @@
 
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tutor_schema::{
-    MisconceptionId, NamedVersion, NotationNoise, Parameters, Persistence, PlantedTransformation,
-    Problem, Role, STUDENT_ATTEMPT_SCHEMA_VERSION, Step, StudentAttempt, StudentAttemptProvenance,
-    StudentLevel, StudentProfile, SurfaceStyle, TAXONOMY_VERSION, TeacherVariety,
-    TeacherVarietyStatus, Turn, TurnKind,
+    MAX_SEED, MisconceptionId, NamedVersion, NotationNoise, Parameters, Persistence,
+    PlantedTransformation, Problem, Role, STUDENT_ATTEMPT_SCHEMA_VERSION, Step, StudentAttempt,
+    StudentAttemptProvenance, StudentLevel, StudentProfile, SurfaceStyle, TAXONOMY_VERSION,
+    TeacherVariety, TeacherVarietyStatus, Turn, TurnKind,
 };
 
 /// Simulator name written to provenance.
 pub const SIMULATOR_NAME: &str = "synthetic-student-simulator";
 
 /// Simulator version; bump when output for a seed changes.
-pub const SIMULATOR_VERSION: u32 = 1;
+pub const SIMULATOR_VERSION: u32 = 2;
 
 /// Explicit inputs for one attempt. `None` profile fields are drawn from `seed`.
 #[derive(Debug, Clone)]
@@ -63,6 +64,12 @@ impl AttemptSpec {
 /// Why an attempt cannot be emitted.
 #[derive(Debug, Error)]
 pub enum StudentError {
+    /// The attempt seed cannot be represented exactly by every JSON consumer.
+    #[error("attempt seed {seed} exceeds the JSON-safe maximum {MAX_SEED}")]
+    SeedOutOfRange {
+        /// Rejected seed.
+        seed: u64,
+    },
     /// The input problem has not passed independent verification.
     #[error("problem {0} has no verification record")]
     UnverifiedProblem(String),
@@ -120,6 +127,9 @@ struct DrawnProfile {
 
 /// Draw profile fields and simulate one seeded student attempt.
 pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt, StudentError> {
+    if spec.seed > MAX_SEED {
+        return Err(StudentError::SeedOutOfRange { seed: spec.seed });
+    }
     if spec.teacher_variety {
         return Err(StudentError::TeacherVarietyUnavailable);
     }
@@ -287,12 +297,8 @@ fn attempt_config_fingerprint(
         "surface_style": parts.drawn.surface_style,
         "notation_noise": parts.profile.notation_noise,
     });
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in config.to_string().as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    let digest = Sha256::digest(config.to_string().as_bytes());
+    u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 has eight bytes"))
 }
 
 fn build_attempt(parts: AttemptParts<'_>) -> StudentAttempt {
@@ -448,27 +454,15 @@ fn plant(problem: &Problem, id: MisconceptionId) -> Result<PlantedTransformation
 }
 
 fn plant_product_rule(problem: &Problem) -> Result<PlantedTransformation, StudentError> {
-    let Parameters::ProductRuleAtPoint { p, q, point } = &problem.parameters else {
+    if !matches!(problem.parameters, Parameters::ProductRuleAtPoint { .. }) {
         return incompatible(problem, MisconceptionId::DerivativesProductRule);
+    }
+    let Some(parts) = product_parts(problem) else {
+        return Err(overflow(problem));
     };
-    let point = *point;
-    let p_d = tutor_verify::polynomial_derivative(p).ok_or_else(|| overflow(problem))?;
-    let q_d = tutor_verify::polynomial_derivative(q).ok_or_else(|| overflow(problem))?;
-    let p_da = tutor_verify::polynomial_value_at(&p_d, tutor_verify::Scalar(point))
-        .ok_or_else(|| overflow(problem))?;
-    let q_da = tutor_verify::polynomial_value_at(&q_d, tutor_verify::Scalar(point))
-        .ok_or_else(|| overflow(problem))?;
-    let pa = tutor_verify::polynomial_value_at(p, tutor_verify::Scalar(point))
-        .ok_or_else(|| overflow(problem))?;
-    let qa = tutor_verify::polynomial_value_at(q, tutor_verify::Scalar(point))
-        .ok_or_else(|| overflow(problem))?;
-    let corrupted = p_da.checked_mul(q_da).ok_or_else(|| overflow(problem))?;
-    let correct = p_da
-        .checked_mul(qa)
-        .and_then(|first| {
-            pa.checked_mul(q_da)
-                .and_then(|second| first.checked_add(second))
-        })
+    let corrupted = parts
+        .p_da
+        .checked_mul(parts.q_da)
         .ok_or_else(|| overflow(problem))?;
     nondegenerate(
         problem,
@@ -476,7 +470,7 @@ fn plant_product_rule(problem: &Problem) -> Result<PlantedTransformation, Studen
             misconception: MisconceptionId::DerivativesProductRule,
             step_index: biting_step(problem, "add")?,
             step_kind: "add".to_owned(),
-            correct_value: correct,
+            correct_value: parts.sum,
             corrupted_value: corrupted,
             propagates_to_answer: true,
             description: "replace the product-rule sum p'(a)q(a)+p(a)q'(a) with the product of derivatives p'(a)q'(a)".to_owned(),
@@ -485,25 +479,16 @@ fn plant_product_rule(problem: &Problem) -> Result<PlantedTransformation, Studen
 }
 
 fn plant_chain_rule(problem: &Problem) -> Result<PlantedTransformation, StudentError> {
-    let Parameters::ChainRuleAtPoint {
-        outer,
-        inner,
-        point,
-    } = &problem.parameters
-    else {
+    if !matches!(problem.parameters, Parameters::ChainRuleAtPoint { .. }) {
         return incompatible(problem, MisconceptionId::DerivativesChainRule);
+    }
+    let Some(parts) = chain_parts(problem) else {
+        return Err(overflow(problem));
     };
-    let point = *point;
-    let u = tutor_verify::polynomial_value_at(inner, tutor_verify::Scalar(point))
-        .ok_or_else(|| overflow(problem))?;
-    let outer_d = tutor_verify::polynomial_derivative(outer).ok_or_else(|| overflow(problem))?;
-    let corrupted = tutor_verify::polynomial_value_at(&outer_d, tutor_verify::Scalar(u))
-        .ok_or_else(|| overflow(problem))?;
-    let inner_d = tutor_verify::polynomial_derivative(inner).ok_or_else(|| overflow(problem))?;
-    let inner_da = tutor_verify::polynomial_value_at(&inner_d, tutor_verify::Scalar(point))
-        .ok_or_else(|| overflow(problem))?;
-    let correct = corrupted
-        .checked_mul(inner_da)
+    let corrupted = parts.outer_d_u;
+    let correct = parts
+        .outer_d_u
+        .checked_mul(parts.inner_d_a)
         .ok_or_else(|| overflow(problem))?;
     nondegenerate(
         problem,
@@ -843,7 +828,10 @@ fn product_rule_wrong_work(
         ..
     } = parts;
     let core = if level == StudentLevel::Struggling {
-        format!("h′({point}) = {}.", transformation.corrupted_value)
+        format!(
+            "h′({point}) = {p_da}·{q_da} = {}.",
+            transformation.corrupted_value
+        )
     } else {
         format!(
             "p′({point}) = {p_da} and q′({point}) = {q_da}, so h′({point}) = {p_da}·{q_da} = {}.",
@@ -949,14 +937,10 @@ fn chain_rule_wrong_work(
     else {
         return format!("h′(x) = {}.", transformation.corrupted_value);
     };
-    let core = if level == StudentLevel::Struggling {
-        format!("h′({point}) = {}.", transformation.corrupted_value)
-    } else {
-        format!(
-            "u = q({point}) = {u}, so h′({point}) = p′(u) = {}.",
-            transformation.corrupted_value
-        )
-    };
+    let core = format!(
+        "u = q({point}) = {u}, so h′({point}) = p′(u) = {}.",
+        transformation.corrupted_value
+    );
     let rule = if verbose(style) {
         "I differentiate the outside function. "
     } else {
@@ -1214,6 +1198,33 @@ mod tests {
         assert_eq!(transformation.corrupted_value, 1);
         assert_eq!(transformation.correct_value, 5);
         assert!(attempt.student_turns[0].content.contains("1·1 = 1"));
+    }
+
+    #[test]
+    fn struggling_correction_work_still_exposes_the_planted_step() {
+        let problem = product_problem();
+        let spec = AttemptSpec {
+            correct: Some(false),
+            misconception: Some(MisconceptionId::DerivativesProductRule),
+            level: Some(StudentLevel::Struggling),
+            persistence: Some(Persistence::CorrectsAfterL1),
+            surface_style: Some(SurfaceStyle::Terse),
+            ..AttemptSpec::seeded(10)
+        };
+        let attempt = simulate(&problem, &spec).unwrap();
+        assert!(
+            attempt.student_turns[0]
+                .content
+                .contains("h′(1) = 1·1 = 1.")
+        );
+    }
+
+    #[test]
+    fn seeds_above_the_json_safe_maximum_fail_closed() {
+        let problem = product_problem();
+        let spec = AttemptSpec::seeded(MAX_SEED + 1);
+        let error = simulate(&problem, &spec).expect_err("out-of-range seed is rejected");
+        assert!(matches!(error, StudentError::SeedOutOfRange { .. }));
     }
 
     #[test]

@@ -13,6 +13,8 @@ serde_json.workspace = true
 thiserror.workspace = true
 schemars.workspace = true
 
+[dev-dependencies]
+jsonschema.workspace = true
 
 [lints]
 workspace = true

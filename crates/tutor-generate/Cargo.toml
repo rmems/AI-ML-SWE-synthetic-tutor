@@ -9,6 +9,7 @@ repository.workspace = true
 build = "build.rs"
 
 [dependencies]
+atomicwrites.workspace = true
 clap.workspace = true
 jsonschema.workspace = true
 rand.workspace = true
@@ -16,6 +17,7 @@ rand_pcg.workspace = true
 rayon.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 tutor-schema.workspace = true
 tutor-verify.workspace = true

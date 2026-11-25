@@ -111,12 +111,14 @@
       "properties": {
         "name": {
           "description": "Producer name.",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
           "type": "string"
         },
         "version": {
           "description": "Producer version.",
           "format": "uint32",
-          "minimum": 0,
+          "minimum": 1,
           "type": "integer"
         }
       },
@@ -235,13 +237,15 @@
         "seed": {
           "description": "Attempt-generation seed.",
           "format": "uint64",
+          "maximum": 9007199254740991,
           "minimum": 0,
           "type": "integer"
         },
         "taxonomy_version": {
           "description": "Taxonomy version used for the misconception label.",
           "format": "uint32",
-          "minimum": 0,
+          "maximum": 1,
+          "minimum": 1,
           "type": "integer"
         }
       },
@@ -457,6 +461,630 @@
   "$id": "https://github.com/rmems/AI-ML-SWE-synthetic-tutor/schemas/student-attempt.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "else": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "persistence": {
+                  "const": "corrects_after_l1"
+                }
+              },
+              "required": [
+                "persistence"
+              ]
+            },
+            "then": {
+              "properties": {
+                "student_turns": {
+                  "maxItems": 3,
+                  "minItems": 3
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "persistence": {
+                  "const": "corrects_after_l2"
+                }
+              },
+              "required": [
+                "persistence"
+              ]
+            },
+            "then": {
+              "properties": {
+                "student_turns": {
+                  "maxItems": 4,
+                  "minItems": 4
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "persistence": {
+                  "const": "needs_l3"
+                }
+              },
+              "required": [
+                "persistence"
+              ]
+            },
+            "then": {
+              "properties": {
+                "student_turns": {
+                  "maxItems": 5,
+                  "minItems": 5
+                }
+              }
+            }
+          }
+        ],
+        "required": [
+          "misconception",
+          "transformation"
+        ]
+      },
+      "if": {
+        "properties": {
+          "correct": {
+            "const": true
+          }
+        },
+        "required": [
+          "correct"
+        ]
+      },
+      "then": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "misconception"
+              ]
+            },
+            {
+              "required": [
+                "transformation"
+              ]
+            }
+          ]
+        },
+        "properties": {
+          "student_turns": {
+            "maxItems": 1,
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "algebra.distribution_error"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "algebra.distribution_error"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "algebra.exponent_rule"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "algebra.exponent_rule"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "algebra.like_terms"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "algebra.like_terms"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "algebra.sign_error"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "algebra.sign_error"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.chain_rule"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "derivatives.chain_rule"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.implicit_differentiation"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "derivatives.implicit_differentiation"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.power_rule_overgeneralised"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "derivatives.power_rule_overgeneralised"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.product_rule"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "derivatives.product_rule"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.quotient_rule"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "derivatives.quotient_rule"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "functions.composition_order"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "functions.composition_order"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "functions.domain_range"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "functions.domain_range"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "functions.inverse_not_reciprocal"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "functions.inverse_not_reciprocal"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "integrals.antiderivative_exponent"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "integrals.antiderivative_exponent"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "integrals.constant_of_integration"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "integrals.constant_of_integration"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "integrals.setup_confusion"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "integrals.setup_confusion"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "limits.divide_by_zero_form"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "limits.divide_by_zero_form"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "limits.infinity_indeterminate_form"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "limits.infinity_indeterminate_form"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "limits.one_sided_limit"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "limits.one_sided_limit"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "trig.identity_confusion"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "trig.identity_confusion"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "trig.unit_circle"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "trig.unit_circle"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    }
+  ],
   "description": "One synthetic student-attempt artifact (schema_version 1). Student turns use the canonical dialogue-schema Turn shape; assembly splices them into DialogueRow. Regenerate with `cargo run -p tutor-schema --example print_student_attempt_schema`.",
   "properties": {
     "attempt_id": {

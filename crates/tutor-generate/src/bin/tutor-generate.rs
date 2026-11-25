@@ -1,13 +1,15 @@
 //! `tutor-generate` — generate seeded problems, verify every answer, emit
 //! `verified/problems.jsonl`, `rejected/rejections.jsonl`, and `manifest.json`.
 
+use atomicwrites::{AllowOverwrite, AtomicFile};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
-use tutor_generate::student::{AttemptSpec, simulate};
+use tutor_generate::student::{AttemptSpec, SIMULATOR_NAME, SIMULATOR_VERSION, simulate};
 use tutor_generate::{GENERATORS, RunConfig, run, spec};
-use tutor_schema::{MisconceptionId, Persistence, Problem, StudentLevel, SurfaceStyle};
+use tutor_schema::{MAX_SEED, MisconceptionId, Persistence, Problem, StudentLevel, SurfaceStyle};
 use tutor_wire::DEFAULT_ENDPOINT;
 
 use clap::{Parser, Subcommand};
@@ -250,6 +252,13 @@ fn run_simulation(args: SimulateArgs) -> Result<(), Box<dyn std::error::Error>> 
 fn simulation_options(
     args: &SimulateArgs,
 ) -> Result<SimulationOptions, Box<dyn std::error::Error>> {
+    if args.seed_start > MAX_SEED {
+        return Err(format!(
+            "--seed-start {} exceeds the JSON-safe maximum {MAX_SEED}",
+            args.seed_start
+        )
+        .into());
+    }
     let correct = match args.mode.as_str() {
         "mixed" => None,
         "correction" => Some(false),
@@ -296,18 +305,13 @@ struct SimulationContext<'a> {
 /// Derive a stable attempt seed from the caller's seed stream, problem ID, and
 /// per-problem attempt index, so unrelated input lines do not reseed a problem.
 fn stable_attempt_seed(seed_start: u64, problem_id: &str, attempt_index: u64) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in seed_start
-        .to_le_bytes()
-        .into_iter()
-        .chain(problem_id.as_bytes().iter().copied())
-        .chain([0xff])
-        .chain(attempt_index.to_le_bytes())
-    {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    let mut hasher = Sha256::new();
+    hasher.update(seed_start.to_le_bytes());
+    hasher.update(problem_id.as_bytes());
+    hasher.update([0xff]);
+    hasher.update(attempt_index.to_le_bytes());
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 has eight bytes")) & MAX_SEED
 }
 
 struct SimulationBatch {
@@ -367,7 +371,7 @@ impl SimulationBatch {
         problem: &Problem,
         context: &SimulationContext<'_>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if !self.seen_problem_ids.insert(problem.problem_id.clone()) {
+        if self.seen_problem_ids.contains(&problem.problem_id) {
             self.rejections.push(serde_json::json!({
                 "problem_id": problem.problem_id,
                 "stage": "duplicate_problem",
@@ -375,6 +379,7 @@ impl SimulationBatch {
             }));
             return Ok(());
         }
+        let attempts_before = self.attempts.len();
         for attempt_index in 0..context.attempts_per_problem {
             let seed = stable_attempt_seed(
                 context.options.seed_start,
@@ -391,6 +396,9 @@ impl SimulationBatch {
                 teacher_variety: false,
             };
             self.add_attempt(problem, spec, context.validator)?;
+        }
+        if self.attempts.len() > attempts_before {
+            self.seen_problem_ids.insert(problem.problem_id.clone());
         }
         Ok(())
     }
@@ -447,10 +455,6 @@ fn write_simulation_output(
             "no student attempt emitted; existing simulation artifacts were left unchanged".into(),
         );
     }
-    std::fs::create_dir_all(&args.out)?;
-    ensure_simulation_output(&args.out)?;
-    stage_jsonl(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
-    stage_jsonl(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
 
     let correct_count = batch
         .attempts
@@ -466,9 +470,16 @@ fn write_simulation_output(
                 .is_some_and(|noise| !noise.is_empty())
         })
         .count();
+
+    // Serialize the complete bundle before touching the output directory. The
+    // data files are individually replaced atomically, and the manifest is the
+    // commit record: it is written last and carries their hashes and sizes so a
+    // consumer can detect an interrupted multi-file publish.
+    let attempts_text = jsonl_text(batch.attempts.iter())?;
+    let rejections_text = jsonl_text(batch.rejections.iter())?;
     let manifest = serde_json::json!({
-        "simulator": "synthetic-student-simulator",
-        "simulator_version": 1,
+        "simulator": SIMULATOR_NAME,
+        "simulator_version": SIMULATOR_VERSION,
         "schema": args.schema.display().to_string(),
         "problems": args.problems.display().to_string(),
         "seed_start": args.seed_start,
@@ -483,11 +494,19 @@ fn write_simulation_output(
         "correction": batch.attempts.len() - correct_count,
         "notation_noise": noise_count,
         "rejected": batch.rejections.len(),
+        "artifacts": {
+            "attempts.jsonl": artifact_metadata(&attempts_text),
+            "rejections.jsonl": artifact_metadata(&rejections_text),
+        },
     });
-    write_text_atomic(
-        &args.out.join("manifest.json"),
-        &serde_json::to_string_pretty(&manifest)?,
-    )?;
+    let manifest_text = serde_json::to_string_pretty(&manifest)?;
+
+    std::fs::create_dir_all(&args.out)?;
+    ensure_simulation_output(&args.out)?;
+    let _lock = OutputLock::acquire(&args.out)?;
+    write_text_atomic(&args.out.join("attempts.jsonl"), &attempts_text)?;
+    write_text_atomic(&args.out.join("rejections.jsonl"), &rejections_text)?;
+    write_text_atomic(&args.out.join("manifest.json"), &manifest_text)?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
         batch.attempts.len(),
@@ -499,6 +518,59 @@ fn write_simulation_output(
     Ok(())
 }
 
+fn jsonl_text<'a>(
+    rows: impl Iterator<Item = &'a serde_json::Value>,
+) -> Result<String, serde_json::Error> {
+    let mut text = String::new();
+    for row in rows {
+        text.push_str(&serde_json::to_string(row)?);
+        text.push('\n');
+    }
+    Ok(text)
+}
+
+fn artifact_metadata(text: &str) -> serde_json::Value {
+    let digest = Sha256::digest(text.as_bytes());
+    serde_json::json!({
+        "sha256": format!("{digest:x}"),
+        "bytes": text.len(),
+    })
+}
+
+struct OutputLock {
+    path: PathBuf,
+}
+
+impl OutputLock {
+    fn acquire(out: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = out.join(".simulate.lock");
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(format!(
+                    "{} is already locked by another simulation; if that simulation stopped, remove {}",
+                    out.display(),
+                    path.display()
+                )
+                .into());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        writeln!(file, "pid {}", std::process::id())?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for OutputLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 fn parse_snake_enum<T>(value: &str, field: &str) -> Result<T, Box<dyn std::error::Error>>
 where
     T: DeserializeOwned,
@@ -508,81 +580,50 @@ where
 }
 
 fn ensure_simulation_output(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    const OUTPUT_MARKER: &str = ".synthetic-student-simulator-output";
+    let marker = out.join(OUTPUT_MARKER);
+    let marker_exists = marker.exists();
     let manifest = out.join("manifest.json");
-    if !manifest.exists() {
-        for artifact in ["attempts.jsonl", "rejections.jsonl"] {
-            if out.join(artifact).exists() {
-                return Err(format!(
-                    "{} contains artifact files without a simulator manifest; choose a separate output directory",
-                    out.display()
-                )
-                .into());
-            }
+    let manifest_exists = manifest.exists();
+    if manifest_exists {
+        let text = std::fs::read_to_string(&manifest)?;
+        let existing: serde_json::Value = serde_json::from_str(&text)?;
+        if existing.get("simulator") != Some(&serde_json::json!(SIMULATOR_NAME)) {
+            return Err(format!(
+                "{} already contains a non-simulator manifest; choose a separate simulation output directory",
+                manifest.display()
+            )
+            .into());
         }
     }
-    if !manifest.exists() {
-        return Ok(());
+    if !marker_exists {
+        if !manifest_exists {
+            for artifact in ["attempts.jsonl", "rejections.jsonl"] {
+                if out.join(artifact).exists() {
+                    return Err(format!(
+                        "{} contains artifact files without simulator provenance; choose a separate output directory",
+                        out.display()
+                    )
+                    .into());
+                }
+            }
+        }
+        std::fs::write(&marker, "synthetic-student-simulator output directory\n")?;
     }
-    let text = std::fs::read_to_string(&manifest)?;
-    let existing: serde_json::Value = serde_json::from_str(&text)?;
-    if existing.get("simulator") == Some(&serde_json::json!("synthetic-student-simulator")) {
-        return Ok(());
-    }
-    Err(format!(
-        "{} already contains a non-simulator manifest; choose a separate simulation output directory",
-        manifest.display()
-    )
-    .into())
+    Ok(())
 }
 
-fn stage_jsonl<'a>(
-    path: &Path,
-    rows: impl Iterator<Item = &'a serde_json::Value>,
-) -> std::io::Result<()> {
-    let tmp = staging_path(path, "jsonl");
-    let result = write_jsonl(&tmp, rows).and_then(|_| publish(&tmp, path));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
-fn write_text_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let tmp = staging_path(path, "json");
-    let result = std::fs::write(&tmp, text).and_then(|_| publish(&tmp, path));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
-}
-
-fn staging_path(path: &Path, extension: &str) -> PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    path.with_extension(format!("{extension}.tmp.{}.{nonce:x}", std::process::id()))
-}
-
-fn publish(tmp: &Path, dest: &Path) -> std::io::Result<()> {
-    // rename does not replace an existing destination on Windows.
-    if dest.exists() {
-        std::fs::remove_file(dest)?;
-    }
-    std::fs::rename(tmp, dest)
-}
-
-fn write_jsonl<'a>(
-    path: &Path,
-    rows: impl Iterator<Item = &'a serde_json::Value>,
-) -> std::io::Result<()> {
-    let mut file = std::fs::File::create(path)?;
-    for row in rows {
-        writeln!(
-            file,
-            "{}",
-            serde_json::to_string(row).map_err(std::io::Error::other)?
-        )?;
-    }
+fn write_text_atomic(path: &Path, text: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
+    AtomicFile::new_with_tmpdir(path, AllowOverwrite, parent)
+        .write(|file| file.write_all(text.as_bytes()))
+        .map_err(|error| {
+            std::io::Error::other(format!(
+                "atomic write to {} failed: {error:?}",
+                path.display()
+            ))
+        })?;
     Ok(())
 }
