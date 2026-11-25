@@ -85,7 +85,7 @@ Every batch leaves a run-log manifest
 |------|--------|
 | Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace (`crates/`). Schema types, the ZMQ client, the `tutor-generate` generator registry + pipeline, and `tutor-verify` verification exist; the student simulator, assembly, and export are *planned*. |
 | Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. The worker is `TutorMath` in `math-julia/` (protocol `tutor-math/1`, ops `ping` / `generate_problem` / `verify_answer`); it serves the polynomial, product-rule, and chain-rule generators plus the Julia-side verifier. |
-| Teachers | **DeepSeek V4.1 Flash** and **Nemotron 3** (exact variant pinned per use). They vary dialogue surface and critique drafts; they never decide a correct answer — verification does. |
+| Teachers | **DeepSeek V4.1 Flash** and **MiMo V2.6 Flash** (exact checkpoints pinned per use in [docs/rights.md](docs/rights.md); Nemotron 3 parked). They vary dialogue surface and critique drafts; they never decide a correct answer — verification does. |
 | Python | Not a pipeline language here. It returns later as a *target* language students are tutored in. |
 
 **Rights rule: no terms snapshot, no generation.** No row may be generated
