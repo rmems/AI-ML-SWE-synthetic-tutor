@@ -12,6 +12,8 @@
 //! Answers are claims, not checks — [`run`] verifies each problem on the
 //! opposite side of the boundary and writes `verified/` and `rejected/` outputs.
 
+pub mod student;
+
 use rand::{Rng, SeedableRng};
 use rand_pcg::Pcg64;
 use serde::Serialize;

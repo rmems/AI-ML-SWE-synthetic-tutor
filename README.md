@@ -83,7 +83,7 @@ Every batch leaves a run-log manifest
 
 | Role | Choice |
 |------|--------|
-| Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace (`crates/`). Schema types, the ZMQ client, the `tutor-generate` generator registry + pipeline, and `tutor-verify` verification exist; the student simulator, assembly, and export are *planned*. |
+| Pipeline (generators, verification harness, student simulator, assembly, export) | **Rust**, in a Cargo workspace (`crates/`). Schema types, the ZMQ client, the `tutor-generate` generator registry + pipeline, and `tutor-verify` verification, and the seeded student simulator exist; assembly and export are *planned*. |
 | Math-heavy generation and checking (symbolic / numeric work simpler in Julia) | **Julia** math workers, driven by the Rust pipeline over **ZMQ** (REQ/REP, JSON payloads) — the same Rust `zmq` ↔ Julia `ZMQ.jl` bridge used in [Limen-Capital](https://github.com/rmems/Limen-Capital) and [DendriteTrader.jl](https://github.com/rmems/DendriteTrader.jl). Julia is a math engine, not a second pipeline. The worker is `TutorMath` in `math-julia/` (protocol `tutor-math/1`, ops `ping` / `generate_problem` / `verify_answer`); it serves the polynomial, product-rule, and chain-rule generators plus the Julia-side verifier. |
 | Teachers | **DeepSeek V4.1 Flash** and **MiMo V2.6 Flash** (exact checkpoints pinned per use in [docs/rights.md](docs/rights.md); Nemotron 3 parked). They vary dialogue surface and critique drafts; they never decide a correct answer — verification does. |
 | Python | Not a pipeline language here. It returns later as a *target* language students are tutored in. |
@@ -110,6 +110,46 @@ grading itself — and records the method on the verified row. Problems that
 fail are rejected with a reason code into `rejected/` and never ship.
 Details:
 [problem generators + verification pipeline (#18)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18).
+
+---
+
+## Synthetic student attempts
+
+The simulator is the Rust procedural core required by
+[#19](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/19). It starts
+from a verified `Problem`, never invents symbolic math in Rust, and either:
+
+- renders the verified solution as a correct attempt for confirmation rows, or
+- applies one taxonomy misconception as a defined transformation at the worked
+  step where it bites, then propagates the corrupted value through the attempt.
+
+Attempt artifacts validate against
+[`schemas/student-attempt.schema.json`](schemas/student-attempt.schema.json).
+Their `student_turns` reuse the exact `Turn` representation of the dialogue
+schema, so dialogue assembly can splice them into rows without a shape
+conversion; profile, persistence, planted transformation, surface-noise flags,
+and replay provenance are recorded around those turns.
+
+Implemented transformations cover the verified product-rule and chain-rule
+problem kinds. Power-rule-overgeneralisation, quotient-rule, and
+implicit-differentiation IDs fail closed today because the verified problem
+substrate from #18 does not yet contain an expression shape where those
+taxonomy definitions can bite faithfully; those requests are written to
+`rejections.jsonl` rather than being mislabeled. Teacher surface variety is
+flag-gated and currently fails closed because no rights-approved teacher lane
+is wired.
+
+```sh
+cargo run -p tutor-generate --bin tutor-generate -- simulate \
+  --problems out/verified/problems.jsonl \
+  --out out/student-attempts \
+  --seed-start 0 --attempts-per-problem 4 --mode mixed
+```
+
+The command writes `attempts.jsonl`, `rejections.jsonl`, and `manifest.json`.
+Use `--mode correction` or `--mode confirmation` to force the row type, and
+`--level`, `--persistence`, `--surface-style`, or `--misconception` to pin
+profile fields for debugging; omitted fields are deterministic seed draws.
 
 ---
 
@@ -148,15 +188,15 @@ proven.
 ```
 Cargo.toml, Cargo.lock, rust-toolchain.toml   Rust workspace (Rust 1.99.1, edition 2024)
 crates/
-  tutor-schema/     problem + dialogue row types and validation (mirrors schemas/)
+  tutor-schema/     problem, student-attempt, and dialogue row types and validation (mirrors schemas/)
   tutor-validate/   dialogue row validator CLI (JSON schema + policy checks)
   tutor-wire/       ZMQ REQ client for the Julia worker (tutor-math/1 JSON envelope)
   tutor-verify/     independent answer verification + Rust<->Julia bridge proof test
-  tutor-generate/   placeholder: generators, student simulator (#18, #19)
+  tutor-generate/   seeded problem generators (#18) and the procedural student simulator (#19)
   tutor-teachers/   placeholder: teacher model clients (#17)
   tutor-build/      placeholder: dedup, splits, Hugging Face export (#8, #21)
 math-julia/         TutorMath: seeded problem generators + ZMQ REP worker
-schemas/            problem.schema.json, dialogue.schema.json (generated), taxonomy.yaml
+schemas/            problem.schema.json, dialogue.schema.json, student-attempt.schema.json (generated), taxonomy.yaml
 docs/               mission, tutor policy (v1), rights
 prompts/            versioned tutor system prompts
 curriculum/         coverage matrix (#16)

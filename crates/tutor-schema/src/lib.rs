@@ -10,10 +10,16 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod dialogue;
+mod student;
 
 pub use dialogue::{
     DIALOGUE_SCHEMA_VERSION, DialogueProvenance, DialogueRow, MAX_HINT_LEVEL, NamedVersion, Role,
     RowSource, RowType, TUTOR_POLICY_VERSION, Turn, TurnKind, dialogue_json_schema,
+};
+pub use student::{
+    NotationNoise, Persistence, PlantedTransformation, STUDENT_ATTEMPT_SCHEMA_VERSION,
+    StudentAttempt, StudentAttemptProvenance, StudentLevel, StudentProfile, SurfaceStyle,
+    TeacherId, TeacherVariety, TeacherVarietyStatus, student_attempt_json_schema,
 };
 
 /// Current `schema_version` of [`Problem`].
@@ -498,7 +504,7 @@ impl SchemaError {
     }
 }
 
-fn invalid(field: &'static str, reason: impl Into<String>) -> SchemaError {
+pub(crate) fn invalid(field: &'static str, reason: impl Into<String>) -> SchemaError {
     SchemaError::Invalid {
         field,
         reason: reason.into(),

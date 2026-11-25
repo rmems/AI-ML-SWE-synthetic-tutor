@@ -1,0 +1,542 @@
+{
+  "$defs": {
+    "MisconceptionId": {
+      "description": "Stable misconception taxonomy ID, e.g. `derivatives.chain_rule`.\n\nSerialized as the dotted ID string used in `schemas/taxonomy.yaml`, so a\ndataset row's primary misconception label validates against the same list the\nsimulator, families, and eval read. IDs are permanent once published: a renamed\nor split entry gets a new variant and the old one stays parseable.",
+      "oneOf": [
+        {
+          "const": "algebra.distribution_error",
+          "description": "`algebra.distribution_error`.",
+          "type": "string"
+        },
+        {
+          "const": "algebra.exponent_rule",
+          "description": "`algebra.exponent_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "algebra.like_terms",
+          "description": "`algebra.like_terms`.",
+          "type": "string"
+        },
+        {
+          "const": "algebra.sign_error",
+          "description": "`algebra.sign_error`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.chain_rule",
+          "description": "`derivatives.chain_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.implicit_differentiation",
+          "description": "`derivatives.implicit_differentiation`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.power_rule_overgeneralised",
+          "description": "`derivatives.power_rule_overgeneralised`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.product_rule",
+          "description": "`derivatives.product_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.quotient_rule",
+          "description": "`derivatives.quotient_rule`.",
+          "type": "string"
+        },
+        {
+          "const": "functions.composition_order",
+          "description": "`functions.composition_order`.",
+          "type": "string"
+        },
+        {
+          "const": "functions.domain_range",
+          "description": "`functions.domain_range`.",
+          "type": "string"
+        },
+        {
+          "const": "functions.inverse_not_reciprocal",
+          "description": "`functions.inverse_not_reciprocal`.",
+          "type": "string"
+        },
+        {
+          "const": "integrals.antiderivative_exponent",
+          "description": "`integrals.antiderivative_exponent`.",
+          "type": "string"
+        },
+        {
+          "const": "integrals.constant_of_integration",
+          "description": "`integrals.constant_of_integration`.",
+          "type": "string"
+        },
+        {
+          "const": "integrals.setup_confusion",
+          "description": "`integrals.setup_confusion`.",
+          "type": "string"
+        },
+        {
+          "const": "limits.divide_by_zero_form",
+          "description": "`limits.divide_by_zero_form`.",
+          "type": "string"
+        },
+        {
+          "const": "limits.infinity_indeterminate_form",
+          "description": "`limits.infinity_indeterminate_form`.",
+          "type": "string"
+        },
+        {
+          "const": "limits.one_sided_limit",
+          "description": "`limits.one_sided_limit`.",
+          "type": "string"
+        },
+        {
+          "const": "trig.identity_confusion",
+          "description": "`trig.identity_confusion`.",
+          "type": "string"
+        },
+        {
+          "const": "trig.unit_circle",
+          "description": "`trig.unit_circle`.",
+          "type": "string"
+        }
+      ]
+    },
+    "NamedVersion": {
+      "additionalProperties": false,
+      "description": "A named, versioned producer (e.g. a dialogue generator).",
+      "properties": {
+        "name": {
+          "description": "Producer name.",
+          "type": "string"
+        },
+        "version": {
+          "description": "Producer version.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "NotationNoise": {
+      "description": "A non-substantive notation slip. These never change the mathematical claim.",
+      "oneOf": [
+        {
+          "const": "dropped_multiplication_dot",
+          "description": "One multiplication dot is omitted (for example `2x cos(x)`), with no\nchange to the intended multiplication.",
+          "type": "string"
+        }
+      ]
+    },
+    "Persistence": {
+      "description": "How a planted misconception behaves as tutor hints arrive.",
+      "oneOf": [
+        {
+          "const": "corrects_after_l1",
+          "description": "After answering the diagnosis, the student corrects the planted error\nimmediately after the L1 nudge.",
+          "type": "string"
+        },
+        {
+          "const": "corrects_after_l2",
+          "description": "The student repeats the same planted error after L1 and corrects after L2.",
+          "type": "string"
+        },
+        {
+          "const": "needs_l3",
+          "description": "The error is still present after L2; the student corrects only after L3.",
+          "type": "string"
+        }
+      ]
+    },
+    "PlantedTransformation": {
+      "additionalProperties": false,
+      "description": "The procedural transformation that planted one taxonomy misconception.",
+      "properties": {
+        "correct_value": {
+          "description": "Verified value at the step/final propagation point.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "corrupted_value": {
+          "description": "Value produced by applying exactly this transformation.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "description": {
+          "description": "Short machine-auditable description of the transformation.",
+          "type": "string"
+        },
+        "misconception": {
+          "$ref": "#/$defs/MisconceptionId",
+          "description": "The taxonomy ID this transformation implements."
+        },
+        "propagates_to_answer": {
+          "description": "Whether the corrupted step propagates to the student's final answer.",
+          "type": "boolean"
+        },
+        "step_index": {
+          "description": "Zero-based index of the verified worked-solution step where the error bites.",
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "step_kind": {
+          "description": "The `kind` of that worked-solution step.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "misconception",
+        "step_index",
+        "step_kind",
+        "correct_value",
+        "corrupted_value",
+        "propagates_to_answer",
+        "description"
+      ],
+      "type": "object"
+    },
+    "Role": {
+      "description": "Who speaks in a [`Turn`].",
+      "oneOf": [
+        {
+          "const": "system",
+          "description": "The versioned tutor policy prompt; exactly one, always first.",
+          "type": "string"
+        },
+        {
+          "const": "student",
+          "description": "The learner: presents the problem and attempts, responds to hints.",
+          "type": "string"
+        },
+        {
+          "const": "tutor",
+          "description": "The tutor: diagnoses, hints one level at a time, closes with\nconfirmation, the fix rule, and a follow-up.",
+          "type": "string"
+        }
+      ]
+    },
+    "StudentAttemptProvenance": {
+      "additionalProperties": false,
+      "description": "Replay provenance for a student attempt.",
+      "properties": {
+        "generator": {
+          "$ref": "#/$defs/NamedVersion",
+          "description": "Simulator name/version."
+        },
+        "seed": {
+          "description": "Attempt-generation seed.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "taxonomy_version": {
+          "description": "Taxonomy version used for the misconception label.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "generator",
+        "seed",
+        "taxonomy_version"
+      ],
+      "type": "object"
+    },
+    "StudentLevel": {
+      "description": "Topic-relative student level.",
+      "oneOf": [
+        {
+          "const": "struggling",
+          "description": "Shorter, less complete work; in batch generation this level is more\nlikely to receive a planted misconception.",
+          "type": "string"
+        },
+        {
+          "const": "typical",
+          "description": "Ordinary complete work.",
+          "type": "string"
+        },
+        {
+          "const": "strong",
+          "description": "More complete explanatory work; in batch generation this level is more\nlikely to be correct.",
+          "type": "string"
+        }
+      ]
+    },
+    "StudentProfile": {
+      "additionalProperties": false,
+      "description": "Topic-relative student strength and surface form.",
+      "properties": {
+        "level": {
+          "$ref": "#/$defs/StudentLevel",
+          "description": "Topic-relative level controlling error rate and attempt completeness."
+        },
+        "notation_noise": {
+          "description": "Non-substantive notation slips present in the rendered attempt. Empty\nmeans none; every slip is explicit so it cannot masquerade as the\ntaxonomy label.",
+          "items": {
+            "$ref": "#/$defs/NotationNoise"
+          },
+          "type": "array"
+        },
+        "surface_style": {
+          "$ref": "#/$defs/SurfaceStyle",
+          "description": "Terse or verbose student voice."
+        }
+      },
+      "required": [
+        "level",
+        "surface_style",
+        "notation_noise"
+      ],
+      "type": "object"
+    },
+    "SurfaceStyle": {
+      "description": "Surface verbosity of the student's written attempt.",
+      "oneOf": [
+        {
+          "const": "terse",
+          "description": "Mostly equations and minimal connective text.",
+          "type": "string"
+        },
+        {
+          "const": "verbose",
+          "description": "Equations plus short explanations of the chosen step.",
+          "type": "string"
+        }
+      ]
+    },
+    "TeacherId": {
+      "description": "Teachers named by the rights registry.",
+      "oneOf": [
+        {
+          "const": "deepseek_v41_flash",
+          "description": "DeepSeek V4.1 Flash.",
+          "type": "string"
+        },
+        {
+          "const": "mimo_v26_flash",
+          "description": "MiMo V2.6 Flash at the pinned rights-registry revision.",
+          "type": "string"
+        }
+      ]
+    },
+    "TeacherVariety": {
+      "additionalProperties": false,
+      "description": "Teacher surface-variety provenance. The procedural core never rewrites through\na teacher; teacher lanes fail closed unless an allowed teacher client is wired.",
+      "properties": {
+        "requested": {
+          "description": "Whether the caller requested teacher surface variety.",
+          "type": "boolean"
+        },
+        "status": {
+          "$ref": "#/$defs/TeacherVarietyStatus",
+          "description": "Result of the request."
+        },
+        "teacher": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TeacherId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Teacher used when `status` is `applied`; absent for procedural output."
+        }
+      },
+      "required": [
+        "requested",
+        "status"
+      ],
+      "type": "object"
+    },
+    "TeacherVarietyStatus": {
+      "description": "How teacher surface variety was handled for one attempt.",
+      "oneOf": [
+        {
+          "const": "disabled",
+          "description": "Not requested; procedural rendering only.",
+          "type": "string"
+        },
+        {
+          "const": "unavailable",
+          "description": "Requested but not applied because no allowed teacher lane is wired; rows\ncarrying this status are procedural output and must not be represented as\nteacher-varied rows.",
+          "type": "string"
+        },
+        {
+          "const": "applied",
+          "description": "An allowed teacher rephrased the already-planted attempt and the result\nwas rechecked against the labelled transformation.",
+          "type": "string"
+        }
+      ]
+    },
+    "Turn": {
+      "additionalProperties": false,
+      "description": "One turn of the dialogue.",
+      "properties": {
+        "content": {
+          "description": "What they say. For tutor `hint` turns, exactly one ladder level of\nhelp — never more.",
+          "type": "string"
+        },
+        "hint_level": {
+          "description": "Ladder level, 1–4. Required on `tutor` `hint` turns, absent elsewhere.",
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TurnKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Turn's function within the policy shape. Required on `student` and\n`tutor` turns, absent on the `system` turn."
+        },
+        "reveals_final_answer": {
+          "description": "Whether the turn states the verified final answer. May be `true` only\non an L4 worked-solution `hint` or on the last turn (the tutor\n`closing` turn): no other turn reveals the answer.",
+          "type": "boolean"
+        },
+        "role": {
+          "$ref": "#/$defs/Role",
+          "description": "Who speaks."
+        }
+      },
+      "required": [
+        "role",
+        "content"
+      ],
+      "type": "object"
+    },
+    "TurnKind": {
+      "description": "A turn's function in the policy shape.\n\n`Attempt` and `AnswerRequest` belong to `student` turns; `Diagnosis`,\n`Hint`, and `Closing` belong to `tutor` turns.",
+      "oneOf": [
+        {
+          "const": "attempt",
+          "description": "Student work on the problem, initial or retry.",
+          "type": "string"
+        },
+        {
+          "const": "answer_request",
+          "description": "Student asks for the answer directly. Policy converts this into the\nnext rung of the ladder: the next tutor turn must be a `hint` at the\nnext level (L1 when no hint has been given yet).",
+          "type": "string"
+        },
+        {
+          "const": "diagnosis",
+          "description": "First tutor turn of a correction row: names what the attempt got\nright, then surfaces the misconception with a question. Never opens\nwith the full solution.",
+          "type": "string"
+        },
+        {
+          "const": "hint",
+          "description": "One rung of the hint ladder: L1 nudge, L2 targeted diagnostic question,\nL3 partial worked step, or L4 full worked solution. Levels climb\ncontiguously from L1, one rung per turn.",
+          "type": "string"
+        },
+        {
+          "const": "closing",
+          "description": "Final tutor turn: confirms against the verified answer, states the fix\nrule in one line, sets one similar follow-up problem.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$id": "https://github.com/rmems/AI-ML-SWE-synthetic-tutor/schemas/student-attempt.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "One synthetic student-attempt artifact (schema_version 1). Student turns use the canonical dialogue-schema Turn shape; assembly splices them into DialogueRow. Regenerate with `cargo run -p tutor-schema --example print_student_attempt_schema`.",
+  "properties": {
+    "attempt_id": {
+      "description": "Stable attempt ID, unique for (problem, simulator version, attempt seed).",
+      "type": "string"
+    },
+    "correct": {
+      "description": "Whether the opening attempt is fully correct (confirmation-row material).",
+      "type": "boolean"
+    },
+    "misconception": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MisconceptionId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The one planted taxonomy ID for correction-row material; absent when\n`correct` is true."
+    },
+    "persistence": {
+      "$ref": "#/$defs/Persistence",
+      "description": "How the planted error persists across the hint ladder."
+    },
+    "problem_id": {
+      "description": "Verified problem this attempt is grounded in.",
+      "type": "string"
+    },
+    "profile": {
+      "$ref": "#/$defs/StudentProfile",
+      "description": "Sampled student profile controlling completeness and surface form."
+    },
+    "provenance": {
+      "$ref": "#/$defs/StudentAttemptProvenance",
+      "description": "Simulator identity, seed, and taxonomy version for replay."
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "student_turns": {
+      "description": "Student turns in exactly the dialogue schema's `Turn` representation.\nEvery turn is `role: \"student\", kind: \"attempt\"`. The first is the\nopening attempt; later entries are retries after tutor hint levels.",
+      "items": {
+        "$ref": "#/$defs/Turn"
+      },
+      "type": "array"
+    },
+    "teacher_variety": {
+      "$ref": "#/$defs/TeacherVariety",
+      "description": "Whether teacher surface variety was requested and how it was handled."
+    },
+    "topic": {
+      "description": "Dotted curriculum topic ID.",
+      "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$",
+      "type": "string"
+    },
+    "transformation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PlantedTransformation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Defined procedural corruption of the verified worked solution; absent\non a correct attempt."
+    }
+  },
+  "required": [
+    "schema_version",
+    "attempt_id",
+    "problem_id",
+    "topic",
+    "correct",
+    "profile",
+    "persistence",
+    "student_turns",
+    "teacher_variety",
+    "provenance"
+  ],
+  "title": "StudentAttempt",
+  "type": "object"
+}
