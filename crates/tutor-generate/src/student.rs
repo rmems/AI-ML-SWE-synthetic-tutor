@@ -1205,6 +1205,7 @@ mod tests {
         let spec = AttemptSpec {
             correct: Some(false),
             misconception: Some(MisconceptionId::DerivativesProductRule),
+            level: Some(StudentLevel::Typical),
             persistence: Some(Persistence::CorrectsAfterL1),
             ..AttemptSpec::seeded(8)
         };
