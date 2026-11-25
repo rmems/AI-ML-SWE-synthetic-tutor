@@ -224,6 +224,8 @@ fn duplicate_problem_ids_are_rejected_instead_of_duplicating_attempt_ids() {
     let rejections =
         std::fs::read_to_string(out.join("rejections.jsonl")).expect("rejections written");
     assert!(rejections.contains("duplicate_problem"));
+    let attempts = std::fs::read_to_string(out.join("attempts.jsonl")).expect("attempts written");
+    assert_eq!(attempts.lines().count(), 1);
 }
 
 #[test]

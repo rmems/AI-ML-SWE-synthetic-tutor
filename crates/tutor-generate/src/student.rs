@@ -721,7 +721,11 @@ fn simple_correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLev
         ", so ".to_owned()
     };
     if level == StudentLevel::Struggling {
-        return format!("f′({point}) = {answer}.");
+        return if verbose(style) {
+            format!("Substituting x = {point} into the derivative gives f′({point}) = {answer}.")
+        } else {
+            format!("f′({point}) = {answer}.")
+        };
     }
     format!("{derivation}f′(x) = {derivative}{substitution}f′({point}) = {answer}.")
 }
@@ -1102,6 +1106,31 @@ mod tests {
         })
     }
 
+    fn polynomial_problem() -> Problem {
+        shell(ShellFixture {
+            name: "polynomial_derivative_at_point",
+            topic: "calculus.derivatives.power_rule",
+            parameters: Parameters::PolynomialDerivativeAtPoint {
+                coefficients: vec![1, 2, 3],
+                point: 1,
+            },
+            statement: "Let f(x) = 1 + 2x + 3x^2. Compute f'(1).".to_owned(),
+            answer: 8,
+            steps: vec![
+                Step::DifferentiatePolynomial {
+                    input: vec![1, 2, 3],
+                    output: vec![2, 6],
+                },
+                Step::EvaluatePolynomial {
+                    coefficients: vec![2, 6],
+                    point: 1,
+                    value: 8,
+                },
+            ],
+            misconceptions: vec![MisconceptionId::DerivativesPowerRuleOvergeneralised],
+        })
+    }
+
     fn product_problem() -> Problem {
         let p = vec![1, 1];
         let q = vec![2, 1];
@@ -1216,6 +1245,41 @@ mod tests {
             attempt.student_turns[0]
                 .content
                 .contains("h′(1) = 1·1 = 1.")
+        );
+    }
+
+    #[test]
+    fn struggling_correct_work_still_honors_verbose_surface_style() {
+        let problem = polynomial_problem();
+        let base = AttemptSpec {
+            correct: Some(true),
+            level: Some(StudentLevel::Struggling),
+            ..AttemptSpec::seeded(11)
+        };
+        let terse = simulate(
+            &problem,
+            &AttemptSpec {
+                surface_style: Some(SurfaceStyle::Terse),
+                ..base.clone()
+            },
+        )
+        .unwrap();
+        let verbose = simulate(
+            &problem,
+            &AttemptSpec {
+                surface_style: Some(SurfaceStyle::Verbose),
+                ..base
+            },
+        )
+        .unwrap();
+        assert_ne!(
+            terse.student_turns[0].content,
+            verbose.student_turns[0].content
+        );
+        assert!(
+            verbose.student_turns[0]
+                .content
+                .contains("Substituting x = 1 into the derivative")
         );
     }
 
