@@ -113,6 +113,57 @@ fn simulate_cli_emits_schema_valid_attempts() {
 }
 
 #[test]
+fn attempt_seeds_are_stable_across_unrelated_input_lines() {
+    let problems = unique_path("problems.jsonl");
+    write_problem(&problems);
+    let shifted = unique_path("shifted-problems.jsonl");
+    let problem_text = std::fs::read_to_string(&problems).expect("read problem");
+    std::fs::write(
+        &shifted,
+        format!(
+            "not-json
+
+{problem_text}"
+        ),
+    )
+    .expect("write shifted");
+
+    let first_out = unique_path("stable-out-a");
+    let second_out = unique_path("stable-out-b");
+    let schema = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../schemas/student-attempt.schema.json"
+    );
+    for (input, out) in [(&problems, &first_out), (&shifted, &second_out)] {
+        let output = bin()
+            .args([
+                "simulate",
+                "--problems",
+                input.to_str().expect("utf-8 temp path"),
+                "--out",
+                out.to_str().expect("utf-8 temp path"),
+                "--seed-start",
+                "7",
+                "--attempts-per-problem",
+                "2",
+                "--mode",
+                "correction",
+                "--misconception",
+                "derivatives.chain_rule",
+                "--schema",
+                schema,
+            ])
+            .output()
+            .expect("runs simulation");
+        assert!(output.status.success(), "stderr: {}", stderr(&output));
+    }
+    assert_eq!(
+        std::fs::read_to_string(first_out.join("attempts.jsonl")).expect("first attempts"),
+        std::fs::read_to_string(second_out.join("attempts.jsonl")).expect("second attempts")
+    );
+}
+
+#[test]
 fn rejected_rerun_preserves_previous_attempts() {
     let problems = unique_path("problems.jsonl");
     let out = unique_path("rerun-out");

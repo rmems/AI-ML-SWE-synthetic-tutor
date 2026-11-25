@@ -429,12 +429,15 @@ fn write_simulation_output(
     batch: SimulationBatch,
 ) -> Result<(), Box<dyn std::error::Error>> {
     if batch.attempts.is_empty() {
+        for rejection in &batch.rejections {
+            eprintln!("rejected: {rejection}");
+        }
         return Err(
             "no student attempt emitted; existing simulation artifacts were left unchanged".into(),
         );
     }
     std::fs::create_dir_all(&args.out)?;
-    ensure_simulation_manifest(&args.out.join("manifest.json"))?;
+    ensure_simulation_output(&args.out)?;
     stage_jsonl(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
     stage_jsonl(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
 
@@ -493,18 +496,28 @@ where
         .map_err(|error| format!("invalid {field} {value:?}: {error}").into())
 }
 
-fn ensure_simulation_manifest(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    if !path.exists() {
+fn ensure_simulation_output(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let manifest = out.join("manifest.json");
+    if !manifest.exists()
+        && (out.join("attempts.jsonl").exists() || out.join("rejections.jsonl").exists())
+    {
+        return Err(format!(
+            "{} contains artifact files without a simulator manifest; choose a separate output directory",
+            out.display()
+        )
+        .into());
+    }
+    if !manifest.exists() {
         return Ok(());
     }
-    let text = std::fs::read_to_string(path)?;
+    let text = std::fs::read_to_string(&manifest)?;
     let existing: serde_json::Value = serde_json::from_str(&text)?;
     if existing.get("simulator") == Some(&serde_json::json!("synthetic-student-simulator")) {
         return Ok(());
     }
     Err(format!(
         "{} already contains a non-simulator manifest; choose a separate simulation output directory",
-        path.display()
+        manifest.display()
     )
     .into())
 }
@@ -514,14 +527,20 @@ fn stage_jsonl<'a>(
     rows: impl Iterator<Item = &'a serde_json::Value>,
 ) -> std::io::Result<()> {
     let tmp = staging_path(path, "jsonl");
-    write_jsonl(&tmp, rows)?;
-    publish(&tmp, path)
+    let result = write_jsonl(&tmp, rows).and_then(|_| publish(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn write_text_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     let tmp = staging_path(path, "json");
-    std::fs::write(&tmp, text)?;
-    publish(&tmp, path)
+    let result = std::fs::write(&tmp, text).and_then(|_| publish(&tmp, path));
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 fn staging_path(path: &Path, extension: &str) -> PathBuf {

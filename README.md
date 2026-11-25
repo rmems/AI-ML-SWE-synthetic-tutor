@@ -117,7 +117,9 @@ Details:
 
 The simulator is the Rust procedural core required by
 [#19](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/19). It starts
-from a verified `Problem`, never invents symbolic math in Rust, and either:
+from a verified `Problem`, never invents symbolic math in Rust, and replays
+the exact-integer problem trace before use so a stale or fabricated verification
+record cannot ship. It either:
 
 - renders the verified solution as a correct attempt for confirmation rows, or
 - applies one taxonomy misconception as a defined transformation at the worked

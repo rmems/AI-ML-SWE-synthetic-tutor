@@ -66,6 +66,14 @@ pub enum StudentError {
     /// The input problem has not passed independent verification.
     #[error("problem {0} has no verification record")]
     UnverifiedProblem(String),
+    /// The input problem's claimed answer/steps do not replay exactly.
+    #[error("problem {problem_id} does not replay as verified: {detail}")]
+    VerificationInvalid {
+        /// Problem ID.
+        problem_id: String,
+        /// Verifier rejection detail.
+        detail: String,
+    },
     /// The requested taxonomy ID is not declared for this problem.
     #[error("{} is not declared for problem {}", .misconception.as_str(), .problem_id)]
     UndeclaredMisconception {
@@ -118,6 +126,7 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
     if problem.verification.is_none() {
         return Err(StudentError::UnverifiedProblem(problem.problem_id.clone()));
     }
+    reverify_problem(problem)?;
 
     let mut rng = Pcg64::seed_from_u64(spec.seed);
     let drawn = draw_profile(spec, &mut rng);
@@ -141,6 +150,17 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
     });
     attempt.validate()?;
     Ok(attempt)
+}
+
+fn reverify_problem(problem: &Problem) -> Result<(), StudentError> {
+    let mut unverified = problem.clone();
+    unverified.verification = None;
+    tutor_verify::verify(&unverified)
+        .map(|_| ())
+        .map_err(|rejection| StudentError::VerificationInvalid {
+            problem_id: problem.problem_id.clone(),
+            detail: rejection.to_string(),
+        })
 }
 
 struct PlantedCorrection {
@@ -579,13 +599,26 @@ fn drop_one_multiplication_dot(student_turns: &mut [Turn]) -> bool {
 
 fn student_work_dot_index(content: &str) -> Option<usize> {
     const ATTEMPT_MARKER: &str = "My attempt: ";
-    if let Some(marker) = content.find(ATTEMPT_MARKER) {
-        let work_start = marker + ATTEMPT_MARKER.len();
-        return content[work_start..]
-            .find('·')
-            .map(|relative| work_start + relative);
+    let work_start = content
+        .find(ATTEMPT_MARKER)
+        .map(|marker| marker + ATTEMPT_MARKER.len())
+        .unwrap_or(0);
+    implicit_multiplication_dot(&content[work_start..]).map(|index| work_start + index)
+}
+
+fn implicit_multiplication_dot(work: &str) -> Option<usize> {
+    for (index, character) in work.char_indices() {
+        if character != '·' {
+            continue;
+        }
+        let before = work[..index].chars().next_back();
+        let after = work[index + character.len_utf8()..].chars().next();
+        if before.is_some_and(|c| !c.is_ascii_digit()) && after.is_some_and(|c| !c.is_ascii_digit())
+        {
+            return Some(index);
+        }
     }
-    content.find('·')
+    None
 }
 
 fn opening_turn(problem: &Problem, work: &str, _noise: &[NotationNoise]) -> Turn {
@@ -1178,8 +1211,24 @@ mod tests {
     }
 
     #[test]
+    fn fabricated_verification_records_do_not_trust_stale_answers() {
+        let mut problem = chain_problem();
+        problem.answer = Answer::Integer { value: 13 };
+        let spec = AttemptSpec::seeded(12);
+        assert!(matches!(
+            simulate(&problem, &spec),
+            Err(StudentError::VerificationInvalid { .. })
+        ));
+    }
+
+    #[test]
     fn unsupported_taxonomy_ids_fail_closed() {
-        let problem = chain_problem();
+        let mut problem = chain_problem();
+        problem.misconception_ids.extend([
+            MisconceptionId::DerivativesPowerRuleOvergeneralised,
+            MisconceptionId::DerivativesQuotientRule,
+            MisconceptionId::DerivativesImplicitDifferentiation,
+        ]);
         for id in [
             MisconceptionId::DerivativesPowerRuleOvergeneralised,
             MisconceptionId::DerivativesQuotientRule,
@@ -1193,7 +1242,6 @@ mod tests {
             assert!(matches!(
                 simulate(&problem, &spec),
                 Err(StudentError::IncompatibleMisconception { .. })
-                    | Err(StudentError::UndeclaredMisconception { .. })
             ));
         }
     }
@@ -1249,13 +1297,22 @@ mod tests {
     }
 
     #[test]
-    fn notation_noise_drops_a_dot_from_student_work_not_the_statement() {
+    fn notation_noise_drops_only_implicit_multiplication_in_student_work() {
         let problem = product_problem();
-        let mut turns = vec![opening_turn(&problem, "1·1 = 1.", &[])];
+        let mut turns = vec![opening_turn(&problem, "p′(u)·q′(1) = 12; 2·3 = 6.", &[])];
         assert!(drop_one_multiplication_dot(&mut turns));
         let content = &turns[0].content;
         assert!(content.contains("p(x)·q(x)"));
-        assert!(content.contains("My attempt: 11 = 1."));
+        assert!(content.contains("p′(u)q′(1) = 12"));
+        assert!(content.contains("2·3 = 6"));
+    }
+
+    #[test]
+    fn numeric_multiplication_is_not_claimed_as_notation_noise() {
+        let problem = product_problem();
+        let mut turns = vec![opening_turn(&problem, "1·1 = 1.", &[])];
+        assert!(!drop_one_multiplication_dot(&mut turns));
+        assert!(turns[0].content.contains("1·1 = 1."));
     }
 
     #[test]
