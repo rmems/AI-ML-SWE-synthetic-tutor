@@ -498,14 +498,16 @@ where
 
 fn ensure_simulation_output(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let manifest = out.join("manifest.json");
-    if !manifest.exists()
-        && (out.join("attempts.jsonl").exists() || out.join("rejections.jsonl").exists())
-    {
-        return Err(format!(
-            "{} contains artifact files without a simulator manifest; choose a separate output directory",
-            out.display()
-        )
-        .into());
+    if !manifest.exists() {
+        for artifact in ["attempts.jsonl", "rejections.jsonl"] {
+            if out.join(artifact).exists() {
+                return Err(format!(
+                    "{} contains artifact files without a simulator manifest; choose a separate output directory",
+                    out.display()
+                )
+                .into());
+            }
+        }
     }
     if !manifest.exists() {
         return Ok(());

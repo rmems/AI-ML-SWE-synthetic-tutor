@@ -588,21 +588,20 @@ fn answer_value(problem: &Problem) -> i64 {
 }
 
 fn drop_one_multiplication_dot(student_turns: &mut [Turn]) -> bool {
-    for turn in student_turns {
-        if let Some(index) = student_work_dot_index(&turn.content) {
-            turn.content.remove(index);
-            return true;
-        }
-    }
-    false
+    let Some(opening) = student_turns.first_mut() else {
+        return false;
+    };
+    let Some(index) = student_work_dot_index(&opening.content) else {
+        return false;
+    };
+    opening.content.remove(index);
+    true
 }
 
 fn student_work_dot_index(content: &str) -> Option<usize> {
     const ATTEMPT_MARKER: &str = "My attempt: ";
-    let work_start = content
-        .find(ATTEMPT_MARKER)
-        .map(|marker| marker + ATTEMPT_MARKER.len())
-        .unwrap_or(0);
+    let marker = content.find(ATTEMPT_MARKER)?;
+    let work_start = marker + ATTEMPT_MARKER.len();
     implicit_multiplication_dot(&content[work_start..]).map(|index| work_start + index)
 }
 
@@ -695,11 +694,12 @@ fn correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLevel) -> 
     }
 }
 
-fn verbose(style: SurfaceStyle, _level: StudentLevel) -> bool {
-    // Surface style controls connective detail. Level already affects the
-    // correctness mix in `draw_profile`; it must not override the style
-    // metadata recorded on the attempt.
+fn verbose(style: SurfaceStyle) -> bool {
     style == SurfaceStyle::Verbose
+}
+
+fn complete_work(level: StudentLevel) -> bool {
+    level == StudentLevel::Strong
 }
 
 fn simple_correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLevel) -> String {
@@ -709,13 +709,17 @@ fn simple_correct_work(problem: &Problem, style: SurfaceStyle, level: StudentLev
     let point = *problem.parameters.point();
     let answer = answer_value(problem);
     let derivative = format_polynomial(output);
-    if verbose(style, level) {
-        format!(
-            "Differentiate term by term with the power rule: f′(x) = {derivative}. Then substitute x = {point}, so f′({point}) = {answer}."
-        )
+    let derivation = if complete_work(level) {
+        "Differentiate term by term with the power rule: "
     } else {
-        format!("f′(x) = {derivative}, so f′({point}) = {answer}.")
-    }
+        ""
+    };
+    let substitution = if verbose(style) {
+        format!("Then substitute x = {point}, so ")
+    } else {
+        "so ".to_owned()
+    };
+    format!("{derivation}f′(x) = {derivative}, {substitution}f′({point}) = {answer}.")
 }
 
 struct ProductParts {
@@ -781,15 +785,21 @@ fn product_rule_correct_work(
     let core = format!(
         "h′({point}) = p′({point})q({point}) + p({point})q′({point}) = {p_da}·{qa} + {pa}·{q_da} = {t1} + {t2} = {sum}."
     );
-    if verbose(style, level) {
+    let rule = if verbose(style) {
+        "Use the product rule. "
+    } else {
+        ""
+    };
+    let detail = if complete_work(level) {
         format!(
-            "Use the product rule. p′(x) = {} and q′(x) = {}. {core}",
+            "p′(x) = {} and q′(x) = {}. ",
             format_polynomial(&p_d),
             format_polynomial(&q_d)
         )
     } else {
-        core
-    }
+        String::new()
+    };
+    format!("{rule}{detail}{core}")
 }
 
 fn product_rule_wrong_work(
@@ -813,15 +823,21 @@ fn product_rule_wrong_work(
         "p′({point}) = {p_da} and q′({point}) = {q_da}, so h′({point}) = {p_da}·{q_da} = {}.",
         transformation.corrupted_value
     );
-    if verbose(style, level) {
+    let rule = if verbose(style) {
+        "I differentiate each factor first. "
+    } else {
+        ""
+    };
+    let detail = if complete_work(level) {
         format!(
-            "I differentiate each factor first: p′(x) = {} and q′(x) = {}. {core}",
+            "p′(x) = {} and q′(x) = {}. ",
             format_polynomial(&p_d),
             format_polynomial(&q_d)
         )
     } else {
-        core
-    }
+        String::new()
+    };
+    format!("{rule}{detail}{core}")
 }
 
 struct ChainParts {
@@ -873,15 +889,21 @@ fn chain_rule_correct_work(problem: &Problem, style: SurfaceStyle, level: Studen
     let core = format!(
         "u = q({point}) = {u}; h′({point}) = p′(u)·q′({point}) = {outer_d_u}·{inner_d_a} = {answer}."
     );
-    if verbose(style, level) {
+    let rule = if verbose(style) {
+        "Use the chain rule. "
+    } else {
+        ""
+    };
+    let detail = if complete_work(level) {
         format!(
-            "Use the chain rule. p′(x) = {} and q′(x) = {}. {core}",
+            "p′(x) = {} and q′(x) = {}. ",
             format_polynomial(&outer_d),
             format_polynomial(&inner_d)
         )
     } else {
-        core
-    }
+        String::new()
+    };
+    format!("{rule}{detail}{core}")
 }
 
 fn chain_rule_wrong_work(
@@ -900,14 +922,17 @@ fn chain_rule_wrong_work(
         "u = q({point}) = {u}, so h′({point}) = p′(u) = {}.",
         transformation.corrupted_value
     );
-    if verbose(style, level) {
-        format!(
-            "I differentiate the outside function: p′(x) = {}. {core}",
-            format_polynomial(&outer_d)
-        )
+    let rule = if verbose(style) {
+        "I differentiate the outside function. "
     } else {
-        core
-    }
+        ""
+    };
+    let detail = if complete_work(level) {
+        format!("p′(x) = {}. ", format_polynomial(&outer_d))
+    } else {
+        String::new()
+    };
+    format!("{rule}{detail}{core}")
 }
 
 /// Render ascending-order integer coefficients in descending powers.
@@ -1348,6 +1373,23 @@ mod tests {
             verbose.student_turns[0]
                 .content
                 .contains("Use the chain rule")
+        );
+
+        let struggling_terse = simulate(
+            &problem,
+            &AttemptSpec {
+                correct: Some(true),
+                level: Some(StudentLevel::Struggling),
+                surface_style: Some(SurfaceStyle::Terse),
+                ..AttemptSpec::seeded(43)
+            },
+        )
+        .unwrap();
+        assert!(terse.student_turns[0].content.contains("p′(x) ="));
+        assert!(
+            !struggling_terse.student_turns[0]
+                .content
+                .contains("p′(x) =")
         );
     }
 
