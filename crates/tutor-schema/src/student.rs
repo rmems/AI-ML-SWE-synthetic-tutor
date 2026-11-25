@@ -25,7 +25,8 @@ pub const STUDENT_ATTEMPT_SCHEMA_VERSION: u32 = 1;
 pub struct StudentAttempt {
     /// Always [`STUDENT_ATTEMPT_SCHEMA_VERSION`].
     pub schema_version: u32,
-    /// Stable attempt ID, unique for (problem, simulator version, attempt seed).
+    /// Stable attempt ID, unique for (problem, simulator version, attempt seed,
+    /// effective configuration fingerprint).
     pub attempt_id: String,
     /// Verified problem this attempt is grounded in.
     pub problem_id: String,

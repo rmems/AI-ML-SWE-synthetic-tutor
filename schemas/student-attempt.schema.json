@@ -460,7 +460,7 @@
   "description": "One synthetic student-attempt artifact (schema_version 1). Student turns use the canonical dialogue-schema Turn shape; assembly splices them into DialogueRow. Regenerate with `cargo run -p tutor-schema --example print_student_attempt_schema`.",
   "properties": {
     "attempt_id": {
-      "description": "Stable attempt ID, unique for (problem, simulator version, attempt seed).",
+      "description": "Stable attempt ID, unique for (problem, simulator version, attempt seed,\neffective configuration fingerprint).",
       "type": "string"
     },
     "correct": {
