@@ -456,7 +456,7 @@ fn write_simulation_output(
         );
     }
 
-    let (correct_count, noise_count) = simulation_counts(&batch);
+    let counts = simulation_counts(&batch);
     // Calculate the complete bundle's digests before touching the output
     // directory. The data files are individually replaced atomically, and the
     // manifest is the commit record: it is written last and carries their
@@ -466,31 +466,41 @@ fn write_simulation_output(
         "attempts.jsonl": jsonl_metadata(batch.attempts.iter())?,
         "rejections.jsonl": jsonl_metadata(batch.rejections.iter())?,
     });
-    let manifest_text =
-        simulation_manifest_text(args, &batch, correct_count, noise_count, &bundle_artifacts)?;
+    let manifest_text = simulation_manifest_text(args, &batch, counts, &bundle_artifacts)?;
+    let publication = PublicationBundle {
+        batch: &batch,
+        artifacts: &bundle_artifacts,
+        manifest_text: &manifest_text,
+    };
 
     std::fs::create_dir_all(&args.out)?;
     let _lock = OutputLock::acquire(&args.out)?;
     let existing = ensure_simulation_output(&args.out)?;
-    publish_bundle(
-        &args.out,
-        &batch,
-        &bundle_artifacts,
-        &manifest_text,
-        &existing,
-    )?;
+    publish_bundle(&args.out, &publication, &existing)?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
         batch.attempts.len(),
-        correct_count,
-        batch.attempts.len() - correct_count,
+        counts.correct,
+        batch.attempts.len() - counts.correct,
         batch.rejections.len(),
         args.out.display()
     );
     Ok(())
 }
 
-fn simulation_counts(batch: &SimulationBatch) -> (usize, usize) {
+#[derive(Clone, Copy)]
+struct SimulationCounts {
+    correct: usize,
+    notation_noise: usize,
+}
+
+struct PublicationBundle<'a> {
+    batch: &'a SimulationBatch,
+    artifacts: &'a serde_json::Value,
+    manifest_text: &'a str,
+}
+
+fn simulation_counts(batch: &SimulationBatch) -> SimulationCounts {
     let correct_count = batch
         .attempts
         .iter()
@@ -505,14 +515,16 @@ fn simulation_counts(batch: &SimulationBatch) -> (usize, usize) {
                 .is_some_and(|noise| !noise.is_empty())
         })
         .count();
-    (correct_count, noise_count)
+    SimulationCounts {
+        correct: correct_count,
+        notation_noise: noise_count,
+    }
 }
 
 fn simulation_manifest_text(
     args: &SimulateArgs,
     batch: &SimulationBatch,
-    correct_count: usize,
-    noise_count: usize,
+    counts: SimulationCounts,
     bundle_artifacts: &serde_json::Value,
 ) -> Result<String, serde_json::Error> {
     let manifest = serde_json::json!({
@@ -528,9 +540,9 @@ fn simulation_manifest_text(
         "persistence": args.persistence,
         "surface_style": args.surface_style,
         "emitted": batch.attempts.len(),
-        "correct": correct_count,
-        "correction": batch.attempts.len() - correct_count,
-        "notation_noise": noise_count,
+        "correct": counts.correct,
+        "correction": batch.attempts.len() - counts.correct,
+        "notation_noise": counts.notation_noise,
         "rejected": batch.rejections.len(),
         "artifacts": bundle_artifacts,
     });
@@ -539,16 +551,20 @@ fn simulation_manifest_text(
 
 fn publish_bundle(
     out: &Path,
-    batch: &SimulationBatch,
-    bundle_artifacts: &serde_json::Value,
-    manifest_text: &str,
+    publication: &PublicationBundle<'_>,
     existing: &[(&'static str, serde_json::Value)],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let pending_text = pending_publish_text(bundle_artifacts, existing)?;
+    let pending_text = pending_publish_text(publication.artifacts, existing)?;
     write_text_atomic(&pending_publish_path(out), &pending_text)?;
-    write_jsonl_atomic(&out.join("attempts.jsonl"), batch.attempts.iter())?;
-    write_jsonl_atomic(&out.join("rejections.jsonl"), batch.rejections.iter())?;
-    write_text_atomic(&out.join("manifest.json"), manifest_text)?;
+    write_jsonl_atomic(
+        &out.join("attempts.jsonl"),
+        publication.batch.attempts.iter(),
+    )?;
+    write_jsonl_atomic(
+        &out.join("rejections.jsonl"),
+        publication.batch.rejections.iter(),
+    )?;
+    write_text_atomic(&out.join("manifest.json"), publication.manifest_text)?;
     let _ = std::fs::remove_file(pending_publish_path(out));
     Ok(())
 }
@@ -721,28 +737,41 @@ fn validate_existing_artifacts(
         .into());
     }
     for (artifact, actual) in existing {
-        let matches_manifest =
-            manifest.is_some_and(|record| record["artifacts"][artifact] == *actual);
-        let matches_pending = pending.is_some_and(|record| {
-            record["artifacts"][artifact] == *actual || record["replaces"][artifact] == *actual
-        });
-        if !matches_manifest && !matches_pending {
-            return Err(if manifest.is_some() {
-                format!(
-                    "{} does not match simulator artifact provenance; choose a separate output directory",
-                    out.join(artifact).display()
-                )
-                .into()
-            } else {
-                format!(
-                    "{} does not match the interrupted simulation record; choose a separate output directory",
-                    out.join(artifact).display()
-                )
-                .into()
-            });
+        if !artifact_has_provenance(artifact, actual, manifest, pending) {
+            return Err(artifact_provenance_error(out, artifact, manifest.is_some()));
         }
     }
     Ok(())
+}
+
+fn artifact_has_provenance(
+    artifact: &str,
+    actual: &serde_json::Value,
+    manifest: Option<&serde_json::Value>,
+    pending: Option<&serde_json::Value>,
+) -> bool {
+    let matches_manifest = manifest.is_some_and(|record| record["artifacts"][artifact] == *actual);
+    let matches_pending = pending.is_some_and(|record| {
+        record["artifacts"][artifact] == *actual || record["replaces"][artifact] == *actual
+    });
+    matches_manifest || matches_pending
+}
+
+fn artifact_provenance_error(
+    out: &Path,
+    artifact: &str,
+    has_manifest: bool,
+) -> Box<dyn std::error::Error> {
+    let provenance = if has_manifest {
+        "simulator artifact provenance"
+    } else {
+        "the interrupted simulation record"
+    };
+    format!(
+        "{} does not match {provenance}; choose a separate output directory",
+        out.join(artifact).display()
+    )
+    .into()
 }
 
 fn file_artifact_metadata(path: &Path) -> std::io::Result<serde_json::Value> {
