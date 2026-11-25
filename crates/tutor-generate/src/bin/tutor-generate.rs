@@ -284,6 +284,12 @@ fn simulation_options(
     })
 }
 
+struct SimulationContext<'a> {
+    attempts_per_problem: u64,
+    options: SimulationOptions,
+    validator: &'a jsonschema::Validator,
+}
+
 struct SimulationBatch {
     attempts: Vec<serde_json::Value>,
     rejections: Vec<serde_json::Value>,
@@ -301,8 +307,13 @@ fn simulate_batch(
         rejections: Vec::new(),
         next_seed: args.seed_start,
     };
+    let context = SimulationContext {
+        attempts_per_problem: args.attempts_per_problem,
+        options,
+        validator,
+    };
     for (line_number, line) in text.lines().enumerate() {
-        batch.add_problem_line(line_number, line, args, options, validator)?;
+        batch.add_problem_line(line_number, line, &context)?;
     }
     Ok(batch)
 }
@@ -312,9 +323,7 @@ impl SimulationBatch {
         &mut self,
         line_number: usize,
         line: &str,
-        args: &SimulateArgs,
-        options: SimulationOptions,
-        validator: &jsonschema::Validator,
+        context: &SimulationContext<'_>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         if line.trim().is_empty() {
             return Ok(());
@@ -330,17 +339,15 @@ impl SimulationBatch {
                 return Ok(());
             }
         };
-        self.add_problem_attempts(&problem, args, options, validator)
+        self.add_problem_attempts(&problem, context)
     }
 
     fn add_problem_attempts(
         &mut self,
         problem: &Problem,
-        args: &SimulateArgs,
-        options: SimulationOptions,
-        validator: &jsonschema::Validator,
+        context: &SimulationContext<'_>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        for _ in 0..args.attempts_per_problem {
+        for _ in 0..context.attempts_per_problem {
             let seed = self.next_seed;
             self.next_seed = self
                 .next_seed
@@ -348,14 +355,14 @@ impl SimulationBatch {
                 .ok_or("attempt seed overflow")?;
             let spec = AttemptSpec {
                 seed,
-                correct: options.correct,
-                misconception: options.misconception,
-                level: options.level,
-                persistence: options.persistence,
-                surface_style: options.surface_style,
+                correct: context.options.correct,
+                misconception: context.options.misconception,
+                level: context.options.level,
+                persistence: context.options.persistence,
+                surface_style: context.options.surface_style,
                 teacher_variety: false,
             };
-            self.add_attempt(problem, spec, validator)?;
+            self.add_attempt(problem, spec, context.validator)?;
         }
         Ok(())
     }

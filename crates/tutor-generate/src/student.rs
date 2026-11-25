@@ -118,62 +118,127 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
 
     let mut rng = Pcg64::seed_from_u64(spec.seed);
     let drawn = draw_profile(spec, &mut rng);
-    let notation_noise = if drawn.has_notation_noise {
-        vec![NotationNoise::DroppedMultiplicationDot]
-    } else {
-        Vec::new()
-    };
+    let correction = plant_correction(problem, spec.misconception, drawn.correct)?;
+    let notation_noise = notation_noise_flags(drawn.has_notation_noise);
     let mut profile = StudentProfile {
         level: drawn.level,
         surface_style: drawn.surface_style,
         notation_noise: notation_noise.clone(),
     };
+    let mut student_turns = student_turns(problem, drawn, correction.as_ref(), &notation_noise);
+    reconcile_notation_noise(&notation_noise, &mut student_turns, &mut profile);
 
-    let mut transformation = None;
-    let mut misconception = None;
-    if !drawn.correct {
-        let id = select_misconception(problem, spec.misconception)?;
-        transformation = Some(plant(problem, id)?);
-        misconception = Some(id);
+    let attempt = build_attempt(AttemptParts {
+        problem,
+        seed: spec.seed,
+        drawn,
+        correction,
+        profile,
+        student_turns,
+    });
+    attempt.validate()?;
+    Ok(attempt)
+}
+
+struct PlantedCorrection {
+    misconception: MisconceptionId,
+    transformation: PlantedTransformation,
+}
+
+struct AttemptParts<'a> {
+    problem: &'a Problem,
+    seed: u64,
+    drawn: DrawnProfile,
+    correction: Option<PlantedCorrection>,
+    profile: StudentProfile,
+    student_turns: Vec<Turn>,
+}
+
+fn plant_correction(
+    problem: &Problem,
+    requested: Option<MisconceptionId>,
+    correct: bool,
+) -> Result<Option<PlantedCorrection>, StudentError> {
+    if correct {
+        return Ok(None);
     }
+    let misconception = select_misconception(problem, requested)?;
+    let transformation = plant(problem, misconception)?;
+    Ok(Some(PlantedCorrection {
+        misconception,
+        transformation,
+    }))
+}
 
-    let mut student_turns = if drawn.correct {
-        vec![opening_turn(
+fn notation_noise_flags(has_notation_noise: bool) -> Vec<NotationNoise> {
+    if has_notation_noise {
+        vec![NotationNoise::DroppedMultiplicationDot]
+    } else {
+        Vec::new()
+    }
+}
+
+fn student_turns(
+    problem: &Problem,
+    drawn: DrawnProfile,
+    correction: Option<&PlantedCorrection>,
+    notation_noise: &[NotationNoise],
+) -> Vec<Turn> {
+    if drawn.correct {
+        return vec![opening_turn(
             problem,
             &correct_work(problem, drawn.surface_style, drawn.level),
-            &notation_noise,
-        )]
-    } else {
-        correction_turns(
-            problem,
-            transformation.as_ref().expect("checked above"),
-            drawn,
-            &notation_noise,
-        )
-    };
+            notation_noise,
+        )];
+    }
+    correction_turns(
+        problem,
+        &correction
+            .expect("incorrect attempts are planted")
+            .transformation,
+        drawn,
+        notation_noise,
+    )
+}
 
+fn reconcile_notation_noise(
+    notation_noise: &[NotationNoise],
+    student_turns: &mut [Turn],
+    profile: &mut StudentProfile,
+) {
     // Apply notation noise after composing the mathematical claim. It only
     // drops a multiplication dot; it cannot alter the claim's meaning.
     if notation_noise.contains(&NotationNoise::DroppedMultiplicationDot)
-        && !drop_one_multiplication_dot(&mut student_turns)
+        && !drop_one_multiplication_dot(student_turns)
     {
         profile.notation_noise.clear();
     }
+}
 
-    let attempt = StudentAttempt {
+fn build_attempt(parts: AttemptParts<'_>) -> StudentAttempt {
+    let (misconception, transformation) = parts
+        .correction
+        .map(|correction| {
+            (
+                Some(correction.misconception),
+                Some(correction.transformation),
+            )
+        })
+        .unwrap_or((None, None));
+    StudentAttempt {
         schema_version: STUDENT_ATTEMPT_SCHEMA_VERSION,
         attempt_id: format!(
             "{}/{}/v{}/seed-{}",
-            problem.problem_id, SIMULATOR_NAME, SIMULATOR_VERSION, spec.seed
+            parts.problem.problem_id, SIMULATOR_NAME, SIMULATOR_VERSION, parts.seed
         ),
-        problem_id: problem.problem_id.clone(),
-        topic: problem.topic.clone(),
-        correct: drawn.correct,
+        problem_id: parts.problem.problem_id.clone(),
+        topic: parts.problem.topic.clone(),
+        correct: parts.drawn.correct,
         misconception,
-        profile,
-        persistence: drawn.persistence,
+        profile: parts.profile,
+        persistence: parts.drawn.persistence,
         transformation,
-        student_turns,
+        student_turns: parts.student_turns,
         teacher_variety: TeacherVariety {
             requested: false,
             status: TeacherVarietyStatus::Disabled,
@@ -184,12 +249,10 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
                 name: SIMULATOR_NAME.to_owned(),
                 version: SIMULATOR_VERSION,
             },
-            seed: spec.seed,
+            seed: parts.seed,
             taxonomy_version: TAXONOMY_VERSION,
         },
-    };
-    attempt.validate()?;
-    Ok(attempt)
+    }
 }
 
 fn draw_profile(spec: &AttemptSpec, rng: &mut Pcg64) -> DrawnProfile {
@@ -767,15 +830,26 @@ mod tests {
         })
     }
 
-    fn shell(
-        name: &str,
-        topic: &str,
+    struct ShellFixture {
+        name: &'static str,
+        topic: &'static str,
         parameters: Parameters,
         statement: String,
         answer: i64,
         steps: Vec<Step>,
         misconceptions: Vec<MisconceptionId>,
-    ) -> Problem {
+    }
+
+    fn shell(fixture: ShellFixture) -> Problem {
+        let ShellFixture {
+            name,
+            topic,
+            parameters,
+            statement,
+            answer,
+            steps,
+            misconceptions,
+        } = fixture;
         Problem {
             schema_version: 1,
             problem_id: format!("{name}/v1/seed-1"),
@@ -808,17 +882,18 @@ mod tests {
         let u = 3;
         let outer_d = vec![0, 2];
         let inner_d = vec![2];
-        shell(
-            "chain_rule_at_point",
-            "calculus.derivatives.chain_rule",
-            Parameters::ChainRuleAtPoint {
+        shell(ShellFixture {
+            name: "chain_rule_at_point",
+            topic: "calculus.derivatives.chain_rule",
+            parameters: Parameters::ChainRuleAtPoint {
                 outer: outer.clone(),
                 inner: inner.clone(),
                 point,
             },
-            "Let p(x) = x^2 and q(x) = 1 + 2x. If h(x) = p(q(x)), compute h'(1).".to_owned(),
-            12,
-            vec![
+            statement: "Let p(x) = x^2 and q(x) = 1 + 2x. If h(x) = p(q(x)), compute h'(1)."
+                .to_owned(),
+            answer: 12,
+            steps: vec![
                 Step::EvaluatePolynomial {
                     coefficients: inner,
                     point,
@@ -847,25 +922,26 @@ mod tests {
                     value: 12,
                 },
             ],
-            vec![MisconceptionId::DerivativesChainRule],
-        )
+            misconceptions: vec![MisconceptionId::DerivativesChainRule],
+        })
     }
 
     fn product_problem() -> Problem {
         let p = vec![1, 1];
         let q = vec![2, 1];
         let point = 1;
-        shell(
-            "product_rule_at_point",
-            "calculus.derivatives.product_rule",
-            Parameters::ProductRuleAtPoint {
+        shell(ShellFixture {
+            name: "product_rule_at_point",
+            topic: "calculus.derivatives.product_rule",
+            parameters: Parameters::ProductRuleAtPoint {
                 p: p.clone(),
                 q: q.clone(),
                 point,
             },
-            "Let p(x) = 1 + x and q(x) = 2 + x. If h(x) = p(x)·q(x), compute h'(1).".to_owned(),
-            5,
-            vec![
+            statement: "Let p(x) = 1 + x and q(x) = 2 + x. If h(x) = p(x)·q(x), compute h'(1)."
+                .to_owned(),
+            answer: 5,
+            steps: vec![
                 Step::DifferentiatePolynomial {
                     input: p,
                     output: vec![1],
@@ -907,8 +983,8 @@ mod tests {
                     value: 5,
                 },
             ],
-            vec![MisconceptionId::DerivativesProductRule],
-        )
+            misconceptions: vec![MisconceptionId::DerivativesProductRule],
+        })
     }
 
     #[test]
