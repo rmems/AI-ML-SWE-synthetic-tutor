@@ -97,6 +97,16 @@ pub enum StudentError {
     InvalidAttempt(#[from] tutor_schema::SchemaError),
 }
 
+/// Profile fields drawn from the attempt seed unless explicitly requested.
+#[derive(Debug, Clone, Copy)]
+struct DrawnProfile {
+    correct: bool,
+    level: StudentLevel,
+    persistence: Persistence,
+    surface_style: SurfaceStyle,
+    has_notation_noise: bool,
+}
+
 /// Draw profile fields and simulate one seeded student attempt.
 pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt, StudentError> {
     if spec.teacher_variety {
@@ -107,6 +117,82 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
     }
 
     let mut rng = Pcg64::seed_from_u64(spec.seed);
+    let drawn = draw_profile(spec, &mut rng);
+    let notation_noise = if drawn.has_notation_noise {
+        vec![NotationNoise::DroppedMultiplicationDot]
+    } else {
+        Vec::new()
+    };
+    let mut profile = StudentProfile {
+        level: drawn.level,
+        surface_style: drawn.surface_style,
+        notation_noise: notation_noise.clone(),
+    };
+
+    let mut transformation = None;
+    let mut misconception = None;
+    if !drawn.correct {
+        let id = select_misconception(problem, spec.misconception)?;
+        transformation = Some(plant(problem, id)?);
+        misconception = Some(id);
+    }
+
+    let mut student_turns = if drawn.correct {
+        vec![opening_turn(
+            problem,
+            &correct_work(problem, drawn.surface_style, drawn.level),
+            &notation_noise,
+        )]
+    } else {
+        correction_turns(
+            problem,
+            transformation.as_ref().expect("checked above"),
+            drawn,
+            &notation_noise,
+        )
+    };
+
+    // Apply notation noise after composing the mathematical claim. It only
+    // drops a multiplication dot; it cannot alter the claim's meaning.
+    if notation_noise.contains(&NotationNoise::DroppedMultiplicationDot)
+        && !drop_one_multiplication_dot(&mut student_turns)
+    {
+        profile.notation_noise.clear();
+    }
+
+    let attempt = StudentAttempt {
+        schema_version: STUDENT_ATTEMPT_SCHEMA_VERSION,
+        attempt_id: format!(
+            "{}/{}/v{}/seed-{}",
+            problem.problem_id, SIMULATOR_NAME, SIMULATOR_VERSION, spec.seed
+        ),
+        problem_id: problem.problem_id.clone(),
+        topic: problem.topic.clone(),
+        correct: drawn.correct,
+        misconception,
+        profile,
+        persistence: drawn.persistence,
+        transformation,
+        student_turns,
+        teacher_variety: TeacherVariety {
+            requested: false,
+            status: TeacherVarietyStatus::Disabled,
+            teacher: None,
+        },
+        provenance: StudentAttemptProvenance {
+            generator: NamedVersion {
+                name: SIMULATOR_NAME.to_owned(),
+                version: SIMULATOR_VERSION,
+            },
+            seed: spec.seed,
+            taxonomy_version: TAXONOMY_VERSION,
+        },
+    };
+    attempt.validate()?;
+    Ok(attempt)
+}
+
+fn draw_profile(spec: &AttemptSpec, rng: &mut Pcg64) -> DrawnProfile {
     let level = spec.level.unwrap_or_else(|| match rng.random_range(0..3) {
         0 => StudentLevel::Struggling,
         1 => StudentLevel::Typical,
@@ -135,108 +221,57 @@ pub fn simulate(problem: &Problem, spec: &AttemptSpec) -> Result<StudentAttempt,
         }
     });
     // Style noise is deliberately rare (5%) and always flagged in the artifact.
-    let notation_noise = if rng.random_bool(0.05) {
-        vec![NotationNoise::DroppedMultiplicationDot]
-    } else {
-        Vec::new()
-    };
-    let mut profile = StudentProfile {
-        level,
-        surface_style,
-        notation_noise: notation_noise.clone(),
-    };
-
-    let mut transformation = None;
-    let mut misconception = None;
-    if !correct {
-        let id = select_misconception(problem, spec.misconception)?;
-        transformation = Some(plant(problem, id)?);
-        misconception = Some(id);
-    }
-
-    let mut student_turns = if correct {
-        vec![opening_turn(
-            problem,
-            &correct_work(problem, surface_style, level),
-            &notation_noise,
-        )]
-    } else {
-        let planted = transformation.as_ref().expect("checked above");
-        let wrong_work = wrong_work(problem, planted, surface_style, level);
-        let correct_final = correct_work(problem, surface_style, level);
-        let mut turns = vec![opening_turn(problem, &wrong_work, &notation_noise)];
-        // A correction dialogue always has a tutor diagnosis between the
-        // opening attempt and L1. Since student/tutor turns strictly alternate,
-        // the student answers that diagnosis before the first hint; persistence
-        // then controls how many hint levels are needed before the correct retry.
-        turns.push(retry_turn(&diagnosis_response(planted), &notation_noise));
-        match persistence {
-            Persistence::CorrectsAfterL1 => {
-                turns.push(retry_turn(
-                    &correct_response(&correct_final),
-                    &notation_noise,
-                ));
-            }
-            Persistence::CorrectsAfterL2 => {
-                turns.push(retry_turn(&repeated_response(planted), &notation_noise));
-                turns.push(retry_turn(
-                    &correct_response(&correct_final),
-                    &notation_noise,
-                ));
-            }
-            Persistence::NeedsL3 => {
-                turns.push(retry_turn(&repeated_response(planted), &notation_noise));
-                turns.push(retry_turn(
-                    &uncertain_repeat_response(planted),
-                    &notation_noise,
-                ));
-                turns.push(retry_turn(
-                    &correct_response(&correct_final),
-                    &notation_noise,
-                ));
-            }
-        }
-        turns
-    };
-
-    // Apply notation noise after composing the mathematical claim. It only
-    // drops a multiplication dot; it cannot alter the claim's meaning.
-    if notation_noise.contains(&NotationNoise::DroppedMultiplicationDot)
-        && !drop_one_multiplication_dot(&mut student_turns)
-    {
-        profile.notation_noise.clear();
-    }
-
-    let attempt = StudentAttempt {
-        schema_version: STUDENT_ATTEMPT_SCHEMA_VERSION,
-        attempt_id: format!(
-            "{}/{}/v{}/seed-{}",
-            problem.problem_id, SIMULATOR_NAME, SIMULATOR_VERSION, spec.seed
-        ),
-        problem_id: problem.problem_id.clone(),
-        topic: problem.topic.clone(),
+    let has_notation_noise = rng.random_bool(0.05);
+    DrawnProfile {
         correct,
-        misconception,
-        profile,
+        level,
         persistence,
-        transformation,
-        student_turns,
-        teacher_variety: TeacherVariety {
-            requested: false,
-            status: TeacherVarietyStatus::Disabled,
-            teacher: None,
-        },
-        provenance: StudentAttemptProvenance {
-            generator: NamedVersion {
-                name: SIMULATOR_NAME.to_owned(),
-                version: SIMULATOR_VERSION,
-            },
-            seed: spec.seed,
-            taxonomy_version: TAXONOMY_VERSION,
-        },
-    };
-    attempt.validate()?;
-    Ok(attempt)
+        surface_style,
+        has_notation_noise,
+    }
+}
+
+fn correction_turns(
+    problem: &Problem,
+    planted: &PlantedTransformation,
+    drawn: DrawnProfile,
+    notation_noise: &[NotationNoise],
+) -> Vec<Turn> {
+    let wrong_work = wrong_work(problem, planted, drawn.surface_style, drawn.level);
+    let correct_final = correct_work(problem, drawn.surface_style, drawn.level);
+    let mut turns = vec![opening_turn(problem, &wrong_work, notation_noise)];
+    // A correction dialogue always has a tutor diagnosis between the opening
+    // attempt and L1. Since student/tutor turns strictly alternate, the student
+    // answers that diagnosis before the first hint; persistence then controls
+    // how many hint levels are needed before the correct retry.
+    turns.push(retry_turn(&diagnosis_response(planted), notation_noise));
+    match drawn.persistence {
+        Persistence::CorrectsAfterL1 => {
+            turns.push(retry_turn(
+                &correct_response(&correct_final),
+                notation_noise,
+            ));
+        }
+        Persistence::CorrectsAfterL2 => {
+            turns.push(retry_turn(&repeated_response(planted), notation_noise));
+            turns.push(retry_turn(
+                &correct_response(&correct_final),
+                notation_noise,
+            ));
+        }
+        Persistence::NeedsL3 => {
+            turns.push(retry_turn(&repeated_response(planted), notation_noise));
+            turns.push(retry_turn(
+                &uncertain_repeat_response(planted),
+                notation_noise,
+            ));
+            turns.push(retry_turn(
+                &correct_response(&correct_final),
+                notation_noise,
+            ));
+        }
+    }
+    turns
 }
 
 fn select_misconception(
@@ -244,17 +279,17 @@ fn select_misconception(
     requested: Option<MisconceptionId>,
 ) -> Result<MisconceptionId, StudentError> {
     if let Some(id) = requested {
-        if !problem.misconception_ids.contains(&id) {
-            return Err(StudentError::UndeclaredMisconception {
+        return problem
+            .misconception_ids
+            .contains(&id)
+            .then_some(id)
+            .ok_or_else(|| StudentError::UndeclaredMisconception {
                 problem_id: problem.problem_id.clone(),
                 misconception: id,
             });
-        }
-        return Ok(id);
     }
-    // Prefer exact derivative-rule transformations; algebra.sign_error is the
-    // fallback for simple polynomial evaluation because the taxonomy entry also
-    // covers mishandled signs while distributing/evaluating a negative term.
+    // Prefer the exact derivative-rule transformations. Any other declared ID
+    // is attempted next so unsupported shapes still fail closed in `plant`.
     for id in [
         MisconceptionId::DerivativesProductRule,
         MisconceptionId::DerivativesChainRule,
@@ -687,35 +722,32 @@ pub fn format_polynomial(coefficients: &[i64]) -> String {
     }
     let mut parts = Vec::new();
     for (power, coefficient) in coefficients.iter().copied().enumerate().rev() {
-        if coefficient == 0 {
-            continue;
-        }
-        let variable = match power {
-            0 => String::new(),
-            1 => "x".to_owned(),
-            _ => format!("x^{power}"),
-        };
-        let magnitude = coefficient.unsigned_abs();
-        let body = if power > 0 && magnitude == 1 {
-            variable
-        } else {
-            format!("{magnitude}{variable}")
-        };
-        if parts.is_empty() {
-            parts.push(if coefficient < 0 {
-                format!("-{body}")
-            } else {
-                body
-            });
-        } else {
-            parts.push(if coefficient < 0 {
-                format!("- {body}")
-            } else {
-                format!("+ {body}")
-            });
+        if coefficient != 0 {
+            push_polynomial_term(&mut parts, power, coefficient);
         }
     }
     parts.join(" ")
+}
+
+fn push_polynomial_term(parts: &mut Vec<String>, power: usize, coefficient: i64) {
+    let variable = match power {
+        0 => String::new(),
+        1 => "x".to_owned(),
+        _ => format!("x^{power}"),
+    };
+    let magnitude = coefficient.unsigned_abs();
+    let body = if power > 0 && magnitude == 1 {
+        variable
+    } else {
+        format!("{magnitude}{variable}")
+    };
+    let separator = match (parts.is_empty(), coefficient < 0) {
+        (true, true) => "-",
+        (true, false) => "",
+        (false, true) => "- ",
+        (false, false) => "+ ",
+    };
+    parts.push(format!("{separator}{body}"));
 }
 
 #[cfg(test)]

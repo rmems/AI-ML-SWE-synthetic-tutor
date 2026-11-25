@@ -87,18 +87,8 @@ enum Command {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
-    match cli.command {
-        Command::List => {
-            for g in GENERATORS {
-                let backend = match g.backend {
-                    tutor_generate::Backend::Rust => "rust",
-                    tutor_generate::Backend::Julia => "julia",
-                };
-                println!("{}\tv{}\t{}\t{}", g.name, g.version, backend, g.split);
-            }
-            Ok(())
-        }
+    match Cli::parse().command {
+        Command::List => list_generators(),
         Command::Run {
             generators,
             seed_start,
@@ -107,48 +97,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout_secs,
             schema,
             out,
-        } => {
-            let mut specs: Vec<_> = if generators.is_empty() {
-                GENERATORS.iter().collect()
-            } else {
-                generators
-                    .iter()
-                    .map(|name| spec(name).ok_or_else(|| format!("unknown generator {name:?}")))
-                    .collect::<Result<_, String>>()?
-            };
-            specs.sort_by_key(|s| s.name);
-            specs.dedup_by_key(|s| s.name);
-            let endpoint = endpoint.or_else(|| std::env::var("TUTOR_MATH_ENDPOINT").ok());
-            let endpoint = endpoint.unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
-            let schema_json: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&schema)?)?;
-            let report = run(&RunConfig {
-                generators: specs,
-                seed_start,
-                count,
-                endpoint,
-                timeout: Duration::from_secs(timeout_secs),
-                out_dir: out.clone(),
-                schema_json,
-                schema: schema.display().to_string(),
-            })?;
-            for (name, counts) in &report.generators {
-                println!(
-                    "{name}: {} generated, {} verified, {} rejected",
-                    counts.generated, counts.verified, counts.rejected
-                );
-            }
-            println!(
-                "total: {} verified, {} rejected -> {}",
-                report.total_verified,
-                report.total_rejected,
-                out.display()
-            );
-            if report.total_verified == 0 {
-                return Err("no problem verified".into());
-            }
-            Ok(())
-        }
+        } => run_generation(GenerateArgs {
+            generators,
+            seed_start,
+            count,
+            endpoint,
+            timeout_secs,
+            schema,
+            out,
+        }),
         Command::Simulate {
             problems,
             out,
@@ -177,6 +134,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn list_generators() -> Result<(), Box<dyn std::error::Error>> {
+    for generator in GENERATORS {
+        let backend = match generator.backend {
+            tutor_generate::Backend::Rust => "rust",
+            tutor_generate::Backend::Julia => "julia",
+        };
+        println!(
+            "{}\tv{}\t{}\t{}",
+            generator.name, generator.version, backend, generator.split
+        );
+    }
+    Ok(())
+}
+
+struct GenerateArgs {
+    generators: Vec<String>,
+    seed_start: u64,
+    count: u64,
+    endpoint: Option<String>,
+    timeout_secs: u64,
+    schema: PathBuf,
+    out: PathBuf,
+}
+
+fn run_generation(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
+    let mut specs: Vec<_> = if args.generators.is_empty() {
+        GENERATORS.iter().collect()
+    } else {
+        args.generators
+            .iter()
+            .map(|name| spec(name).ok_or_else(|| format!("unknown generator {name:?}")))
+            .collect::<Result<_, String>>()?
+    };
+    specs.sort_by_key(|spec| spec.name);
+    specs.dedup_by_key(|spec| spec.name);
+
+    let endpoint = args
+        .endpoint
+        .or_else(|| std::env::var("TUTOR_MATH_ENDPOINT").ok())
+        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_owned());
+    let schema_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&args.schema)?)?;
+    let report = run(&RunConfig {
+        generators: specs,
+        seed_start: args.seed_start,
+        count: args.count,
+        endpoint,
+        timeout: Duration::from_secs(args.timeout_secs),
+        out_dir: args.out.clone(),
+        schema_json,
+        schema: args.schema.display().to_string(),
+    })?;
+    print_generation_report(&report, &args.out);
+    if report.total_verified == 0 {
+        return Err("no problem verified".into());
+    }
+    Ok(())
+}
+
+fn print_generation_report(report: &tutor_generate::RunReport, out: &Path) {
+    for (name, counts) in &report.generators {
+        println!(
+            "{name}: {} generated, {} verified, {} rejected",
+            counts.generated, counts.verified, counts.rejected
+        );
+    }
+    println!(
+        "total: {} verified, {} rejected -> {}",
+        report.total_verified,
+        report.total_rejected,
+        out.display()
+    );
+}
+
 struct SimulateArgs {
     problems: PathBuf,
     out: PathBuf,
@@ -191,10 +222,32 @@ struct SimulateArgs {
     schema: PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct SimulationOptions {
+    correct: Option<bool>,
+    misconception: Option<MisconceptionId>,
+    level: Option<StudentLevel>,
+    persistence: Option<Persistence>,
+    surface_style: Option<SurfaceStyle>,
+}
+
 fn run_simulation(args: SimulateArgs) -> Result<(), Box<dyn std::error::Error>> {
     if args.teacher_variety {
         return Err("teacher surface variety is flag-gated but no allowed teacher lane is wired; rerun without --teacher-variety for procedural output".into());
     }
+    let options = simulation_options(&args)?;
+    let schema_json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&args.schema)?)?;
+    let validator = jsonschema::validator_for(&schema_json)
+        .map_err(|error| format!("student-attempt schema does not compile: {error}"))?;
+    let text = std::fs::read_to_string(&args.problems)?;
+    let batch = simulate_batch(&text, &args, options, &validator)?;
+    write_simulation_output(&args, batch)
+}
+
+fn simulation_options(
+    args: &SimulateArgs,
+) -> Result<SimulationOptions, Box<dyn std::error::Error>> {
     let correct = match args.mode.as_str() {
         "mixed" => None,
         "correction" => Some(false),
@@ -206,91 +259,162 @@ fn run_simulation(args: SimulateArgs) -> Result<(), Box<dyn std::error::Error>> 
             .into());
         }
     };
-    let misconception = args
-        .misconception
-        .as_deref()
-        .map(|value| parse_snake_enum::<MisconceptionId>(value, "misconception"))
-        .transpose()?;
-    let level = args
-        .level
-        .as_deref()
-        .map(|value| parse_snake_enum::<StudentLevel>(value, "level"))
-        .transpose()?;
-    let persistence = args
-        .persistence
-        .as_deref()
-        .map(|value| parse_snake_enum::<Persistence>(value, "persistence"))
-        .transpose()?;
-    let surface_style = args
-        .surface_style
-        .as_deref()
-        .map(|value| parse_snake_enum::<SurfaceStyle>(value, "surface style"))
-        .transpose()?;
+    Ok(SimulationOptions {
+        correct,
+        misconception: args
+            .misconception
+            .as_deref()
+            .map(|value| parse_snake_enum::<MisconceptionId>(value, "misconception"))
+            .transpose()?,
+        level: args
+            .level
+            .as_deref()
+            .map(|value| parse_snake_enum::<StudentLevel>(value, "level"))
+            .transpose()?,
+        persistence: args
+            .persistence
+            .as_deref()
+            .map(|value| parse_snake_enum::<Persistence>(value, "persistence"))
+            .transpose()?,
+        surface_style: args
+            .surface_style
+            .as_deref()
+            .map(|value| parse_snake_enum::<SurfaceStyle>(value, "surface style"))
+            .transpose()?,
+    })
+}
 
-    let schema_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&args.schema)?)?;
-    let validator = jsonschema::validator_for(&schema_json)
-        .map_err(|error| format!("student-attempt schema does not compile: {error}"))?;
-    let text = std::fs::read_to_string(&args.problems)?;
-    let mut attempts = Vec::new();
-    let mut rejections = Vec::new();
-    let mut next_seed = args.seed_start;
+struct SimulationBatch {
+    attempts: Vec<serde_json::Value>,
+    rejections: Vec<serde_json::Value>,
+    next_seed: u64,
+}
+
+fn simulate_batch(
+    text: &str,
+    args: &SimulateArgs,
+    options: SimulationOptions,
+    validator: &jsonschema::Validator,
+) -> Result<SimulationBatch, Box<dyn std::error::Error>> {
+    let mut batch = SimulationBatch {
+        attempts: Vec::new(),
+        rejections: Vec::new(),
+        next_seed: args.seed_start,
+    };
     for (line_number, line) in text.lines().enumerate() {
+        batch.add_problem_line(line_number, line, args, options, validator)?;
+    }
+    Ok(batch)
+}
+
+impl SimulationBatch {
+    fn add_problem_line(
+        &mut self,
+        line_number: usize,
+        line: &str,
+        args: &SimulateArgs,
+        options: SimulationOptions,
+        validator: &jsonschema::Validator,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if line.trim().is_empty() {
-            continue;
+            return Ok(());
         }
         let problem = match Problem::from_json(line) {
             Ok(problem) => problem,
             Err(error) => {
-                rejections.push(serde_json::json!({
+                self.rejections.push(serde_json::json!({
                     "line": line_number + 1,
                     "stage": "parse_problem",
                     "detail": error.to_string(),
                 }));
-                continue;
+                return Ok(());
             }
         };
+        self.add_problem_attempts(&problem, args, options, validator)
+    }
+
+    fn add_problem_attempts(
+        &mut self,
+        problem: &Problem,
+        args: &SimulateArgs,
+        options: SimulationOptions,
+        validator: &jsonschema::Validator,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         for _ in 0..args.attempts_per_problem {
-            let seed = next_seed;
-            next_seed = next_seed.checked_add(1).ok_or("attempt seed overflow")?;
+            let seed = self.next_seed;
+            self.next_seed = self
+                .next_seed
+                .checked_add(1)
+                .ok_or("attempt seed overflow")?;
             let spec = AttemptSpec {
                 seed,
-                correct,
-                misconception,
-                level,
-                persistence,
-                surface_style,
+                correct: options.correct,
+                misconception: options.misconception,
+                level: options.level,
+                persistence: options.persistence,
+                surface_style: options.surface_style,
                 teacher_variety: false,
             };
-            match simulate(&problem, &spec) {
-                Ok(attempt) => {
-                    let value = serde_json::to_value(&attempt)?;
-                    if validator.is_valid(&value) {
-                        attempts.push(value);
-                    } else {
-                        rejections.push(serde_json::json!({
-                            "problem_id": problem.problem_id,
-                            "seed": seed,
-                            "stage": "schema",
-                            "detail": validator.iter_errors(&value).map(|error| error.to_string()).take(5).collect::<Vec<_>>().join("; "),
-                        }));
-                    }
-                }
-                Err(error) => rejections.push(serde_json::json!({
+            self.add_attempt(problem, spec, validator)?;
+        }
+        Ok(())
+    }
+
+    fn add_attempt(
+        &mut self,
+        problem: &Problem,
+        spec: AttemptSpec,
+        validator: &jsonschema::Validator,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let seed = spec.seed;
+        let attempt = match simulate(problem, &spec) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                self.rejections.push(serde_json::json!({
                     "problem_id": problem.problem_id,
                     "seed": seed,
                     "stage": "simulate",
                     "detail": error.to_string(),
-                })),
+                }));
+                return Ok(());
             }
+        };
+        let value = serde_json::to_value(&attempt)?;
+        if validator.is_valid(&value) {
+            self.attempts.push(value);
+        } else {
+            let detail = validator
+                .iter_errors(&value)
+                .map(|error| error.to_string())
+                .take(5)
+                .collect::<Vec<_>>()
+                .join("; ");
+            self.rejections.push(serde_json::json!({
+                "problem_id": problem.problem_id,
+                "seed": seed,
+                "stage": "schema",
+                "detail": detail,
+            }));
         }
+        Ok(())
     }
+}
 
+fn write_simulation_output(
+    args: &SimulateArgs,
+    batch: SimulationBatch,
+) -> Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir_all(&args.out)?;
-    write_jsonl(&args.out.join("attempts.jsonl"), attempts.iter())?;
-    write_jsonl(&args.out.join("rejections.jsonl"), rejections.iter())?;
-    let correct_count = attempts.iter().filter(|row| row["correct"] == true).count();
-    let noise_count = attempts
+    write_jsonl(&args.out.join("attempts.jsonl"), batch.attempts.iter())?;
+    write_jsonl(&args.out.join("rejections.jsonl"), batch.rejections.iter())?;
+
+    let correct_count = batch
+        .attempts
+        .iter()
+        .filter(|row| row["correct"] == true)
+        .count();
+    let noise_count = batch
+        .attempts
         .iter()
         .filter(|row| {
             row["profile"]["notation_noise"]
@@ -306,11 +430,11 @@ fn run_simulation(args: SimulateArgs) -> Result<(), Box<dyn std::error::Error>> 
         "seed_start": args.seed_start,
         "attempts_per_problem": args.attempts_per_problem,
         "mode": args.mode,
-        "emitted": attempts.len(),
+        "emitted": batch.attempts.len(),
         "correct": correct_count,
-        "correction": attempts.len() - correct_count,
+        "correction": batch.attempts.len() - correct_count,
         "notation_noise": noise_count,
-        "rejected": rejections.len(),
+        "rejected": batch.rejections.len(),
     });
     std::fs::write(
         args.out.join("manifest.json"),
@@ -318,13 +442,13 @@ fn run_simulation(args: SimulateArgs) -> Result<(), Box<dyn std::error::Error>> 
     )?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
-        attempts.len(),
+        batch.attempts.len(),
         correct_count,
-        attempts.len() - correct_count,
-        rejections.len(),
+        batch.attempts.len() - correct_count,
+        batch.rejections.len(),
         args.out.display()
     );
-    if attempts.is_empty() {
+    if batch.attempts.is_empty() {
         return Err("no student attempt emitted".into());
     }
     Ok(())

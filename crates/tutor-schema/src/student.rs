@@ -259,15 +259,7 @@ impl StudentAttempt {
     }
 
     fn validate_turns(&self) -> Result<(), SchemaError> {
-        let expected = if self.correct {
-            1
-        } else {
-            match self.persistence {
-                Persistence::CorrectsAfterL1 => 3,
-                Persistence::CorrectsAfterL2 => 4,
-                Persistence::NeedsL3 => 5,
-            }
-        };
+        let expected = self.expected_student_turn_count();
         if self.student_turns.len() != expected {
             return Err(invalid(
                 "student_turns",
@@ -278,21 +270,20 @@ impl StudentAttempt {
             ));
         }
         for turn in &self.student_turns {
-            if turn.role != Role::Student || turn.kind != Some(TurnKind::Attempt) {
-                return Err(invalid(
-                    "student_turns",
-                    "every turn must be a dialogue-schema student attempt turn",
-                ));
-            }
-            require_non_empty("student_turns.content", &turn.content)?;
-            if turn.hint_level.is_some() || turn.reveals_final_answer {
-                return Err(invalid(
-                    "student_turns",
-                    "student attempts carry no hint level and never reveal the verified answer flag",
-                ));
-            }
+            validate_student_turn_shape(turn)?;
         }
         Ok(())
+    }
+
+    fn expected_student_turn_count(&self) -> usize {
+        if self.correct {
+            return 1;
+        }
+        match self.persistence {
+            Persistence::CorrectsAfterL1 => 3,
+            Persistence::CorrectsAfterL2 => 4,
+            Persistence::NeedsL3 => 5,
+        }
     }
 
     fn validate_teacher_variety(&self) -> Result<(), SchemaError> {
@@ -310,6 +301,23 @@ impl StudentAttempt {
             )),
         }
     }
+}
+
+fn validate_student_turn_shape(turn: &Turn) -> Result<(), SchemaError> {
+    if turn.role != Role::Student || turn.kind != Some(TurnKind::Attempt) {
+        return Err(invalid(
+            "student_turns",
+            "every turn must be a dialogue-schema student attempt turn",
+        ));
+    }
+    require_non_empty("student_turns.content", &turn.content)?;
+    if turn.hint_level.is_some() || turn.reveals_final_answer {
+        return Err(invalid(
+            "student_turns",
+            "student attempts carry no hint level and never reveal the verified answer flag",
+        ));
+    }
+    Ok(())
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), SchemaError> {
