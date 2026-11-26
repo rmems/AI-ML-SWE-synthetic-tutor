@@ -277,3 +277,50 @@ fn provenance_seed_must_remain_json_exact() {
     let value = serde_json::to_value(attempt).expect("attempt serializes");
     assert!(!json_validator().is_valid(&value));
 }
+
+#[test]
+fn rust_non_empty_validation_matches_ecmascript_whitespace_semantics() {
+    // JSON Schema regexes follow ECMA-262, whose whitespace escapes treat U+FEFF as
+    // whitespace but not U+0085 (NEL); Unicode `White_Space` (Rust's
+    // `char::is_whitespace`) does the reverse. Semantic validation must match
+    // the schema's ECMAScript semantics exactly.
+    let mut feff_id = correction_attempt();
+    feff_id.attempt_id = "\u{FEFF}".to_owned();
+    assert!(
+        feff_id.validate().is_err(),
+        "U+FEFF-only IDs are blank as ECMA-262 whitespace"
+    );
+
+    let nel_id = {
+        let mut attempt = correction_attempt();
+        attempt.attempt_id = "\u{0085}".to_owned();
+        attempt
+    };
+    nel_id
+        .validate()
+        .expect("U+0085 NEL is not ECMAScript whitespace, so the non-empty check passes");
+
+    let mut feff_generator = correction_attempt();
+    feff_generator.provenance.generator.name = "\u{FEFF}".to_owned();
+    assert!(
+        feff_generator.validate().is_err(),
+        "U+FEFF-only generator names are blank as ECMA-262 whitespace"
+    );
+
+    let mut feff_work = correction_attempt();
+    feff_work.student_turns[0].content = "\u{FEFF}".to_owned();
+    assert!(
+        feff_work.validate().is_err(),
+        "U+FEFF-only student work is blank as ECMA-262 whitespace"
+    );
+
+    let ascii_whitespace_id = {
+        let mut attempt = correction_attempt();
+        attempt.attempt_id = " \t\n\u{000B}\u{000C}\r".to_owned();
+        attempt
+    };
+    assert!(
+        ascii_whitespace_id.validate().is_err(),
+        "ASCII whitespace-only IDs remain blank"
+    );
+}

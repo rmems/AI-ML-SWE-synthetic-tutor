@@ -236,7 +236,7 @@ impl StudentAttempt {
     }
 
     fn validate_provenance(&self) -> Result<(), SchemaError> {
-        if self.provenance.generator.name.trim().is_empty() {
+        if is_ecmascript_blank(&self.provenance.generator.name) {
             return Err(invalid("provenance.generator.name", "must not be empty"));
         }
         if self.provenance.generator.version == 0 {
@@ -351,10 +351,35 @@ fn validate_student_turn_shape(turn: &Turn) -> Result<(), SchemaError> {
 }
 
 fn require_non_empty(field: &'static str, value: &str) -> Result<(), SchemaError> {
-    if value.trim().is_empty() {
+    if is_ecmascript_blank(value) {
         return Err(invalid(field, "must be non-empty"));
     }
     Ok(())
+}
+
+/// Blankness matching the schema `.*\S.*` pattern. JSON Schema regexes use
+/// ECMA-262 semantics, whose `\s` differs from Unicode `White_Space`:
+/// ECMAScript treats U+FEFF as whitespace but not U+0085 (NEL); Unicode does
+/// the reverse. Validation must match the schema exactly.
+fn is_ecmascript_blank(value: &str) -> bool {
+    !value.chars().any(|c| !is_ecmascript_whitespace(c))
+}
+
+fn is_ecmascript_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'..='\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
 }
 
 /// JSON Schema for [`StudentAttempt`].
