@@ -162,7 +162,9 @@ is killed while publishing, confirm no writer is still active, remove the
 orphaned `.simulate.lock`, and rerun the command. Use a simulation output
 directory separate from the problem-run root; the command refuses to replace
 a non-simulator `manifest.json` or artifact files without matching simulator
-provenance.
+provenance. If validation rejects every candidate, the command fails before
+publication and leaves any previous bundle unchanged; those rejections are
+reported on stderr rather than committing an empty attempt batch.
 `--seed-start` is mixed with the problem ID and per-problem attempt index, so
 a problem's attempts stay stable when unrelated input lines change. Seeds are
 capped at `2^53 - 1` so JSON consumers can replay them exactly. Use

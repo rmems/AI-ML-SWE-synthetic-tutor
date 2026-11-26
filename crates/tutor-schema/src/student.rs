@@ -384,8 +384,14 @@ pub fn student_attempt_json_schema() -> serde_json::Value {
         "type": "string",
         "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$"
     });
+    schema["properties"]["attempt_id"] = non_empty_string_schema(
+        "Stable attempt ID, unique for problem, simulator version, attempt seed, and configuration.",
+    );
+    schema["properties"]["problem_id"] =
+        non_empty_string_schema("Verified problem this attempt is grounded in.");
 
     tighten_provenance_schema(&mut schema);
+    tighten_student_turn_schema(&mut schema);
     schema["allOf"] = serde_json::Value::Array(semantic_attempt_constraints());
     schema
 }
@@ -404,6 +410,33 @@ fn tighten_provenance_schema(schema: &mut serde_json::Value) {
     schema["$defs"]["NamedVersion"]["properties"]["version"]["minimum"] = serde_json::json!(1);
 }
 
+fn non_empty_string_schema(description: &str) -> serde_json::Value {
+    serde_json::json!({
+        "description": description,
+        "type": "string",
+        "minLength": 1,
+        "pattern": ".*\\S.*"
+    })
+}
+
+fn tighten_student_turn_schema(schema: &mut serde_json::Value) {
+    schema["properties"]["student_turns"]["items"] = serde_json::json!({
+        "$ref": "#/$defs/Turn",
+        "properties": {
+            "role": {"const": "student"},
+            "kind": {"const": "attempt"},
+            "content": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": ".*\\S.*"
+            },
+            "hint_level": {"type": "null"},
+            "reveals_final_answer": {"const": false}
+        },
+        "required": ["kind"]
+    });
+}
+
 fn semantic_attempt_constraints() -> Vec<serde_json::Value> {
     let mut constraints = vec![correctness_shape_constraint()];
     constraints.extend(MisconceptionId::ALL.iter().map(|id| {
@@ -414,6 +447,7 @@ fn semantic_attempt_constraints() -> Vec<serde_json::Value> {
             },
             "then": {
                 "properties": {
+                    "topic": {"enum": id.topics()},
                     "transformation": {
                         "properties": {
                             "misconception": {"const": id.as_str()}

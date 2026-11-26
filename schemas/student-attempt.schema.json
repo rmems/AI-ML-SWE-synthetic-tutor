@@ -577,6 +577,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "algebra.distributive_property",
+              "algebra.polynomial_expansion"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -603,6 +609,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "algebra.exponent_rules",
+              "algebra.polynomial_operations"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -629,6 +641,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "algebra.combining_like_terms",
+              "algebra.linear_equations"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -655,6 +673,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "algebra.linear_equations",
+              "algebra.multi_step_equations"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -681,6 +705,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "calculus.derivatives.chain_rule",
+              "calculus.derivatives.composite_functions"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -707,6 +737,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "calculus.derivatives.implicit_differentiation",
+              "calculus.derivatives.chain_rule"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -733,6 +769,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "calculus.derivatives.exponential_derivatives",
+              "calculus.derivatives.power_rule"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -759,6 +801,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "calculus.derivatives.product_rule",
+              "calculus.derivatives.trigonometric_derivatives"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -785,6 +833,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "calculus.derivatives.quotient_rule",
+              "calculus.derivatives.rational_functions"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -811,6 +865,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "functions.composition",
+              "functions.function_notation"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -837,6 +897,13 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "functions.domain",
+              "functions.range",
+              "functions.rational_functions"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -863,6 +930,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "functions.inverse_functions",
+              "functions.function_notation"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -889,6 +962,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "integrals.power_rule",
+              "integrals.basic_antiderivatives"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -915,6 +994,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "integrals.indefinite_integrals",
+              "integrals.antiderivatives"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -941,6 +1026,12 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "integrals.definite_integrals",
+              "integrals.fundamental_theorem_of_calculus"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -967,6 +1058,13 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "limits.indeterminate_forms",
+              "limits.limit_evaluation",
+              "algebra.rational_expressions"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -993,6 +1091,13 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "limits.indeterminate_forms",
+              "limits.limit_laws",
+              "limits.limits_at_infinity"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -1019,6 +1124,13 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "limits.one_sided_limits",
+              "limits.limit_existence",
+              "functions.piecewise_functions"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -1045,6 +1157,13 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "trig.identities",
+              "trig.tangent",
+              "trig.pythagorean_identity"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -1071,6 +1190,13 @@
       },
       "then": {
         "properties": {
+          "topic": {
+            "enum": [
+              "trig.unit_circle",
+              "trig.trigonometric_functions",
+              "trig.special_angles"
+            ]
+          },
           "transformation": {
             "properties": {
               "misconception": {
@@ -1088,7 +1214,9 @@
   "description": "One synthetic student-attempt artifact (schema_version 1). Student turns use the canonical dialogue-schema Turn shape; assembly splices them into DialogueRow. Regenerate with `cargo run -p tutor-schema --example print_student_attempt_schema`.",
   "properties": {
     "attempt_id": {
-      "description": "Stable attempt ID, unique for (problem, simulator version, attempt seed,\neffective configuration fingerprint).",
+      "description": "Stable attempt ID, unique for problem, simulator version, attempt seed, and configuration.",
+      "minLength": 1,
+      "pattern": ".*\\S.*",
       "type": "string"
     },
     "correct": {
@@ -1112,6 +1240,8 @@
     },
     "problem_id": {
       "description": "Verified problem this attempt is grounded in.",
+      "minLength": 1,
+      "pattern": ".*\\S.*",
       "type": "string"
     },
     "profile": {
@@ -1128,7 +1258,29 @@
     "student_turns": {
       "description": "Student turns in exactly the dialogue schema's `Turn` representation.\nEvery turn is `role: \"student\", kind: \"attempt\"`. The first is the\nopening attempt; later entries are retries after tutor hint levels.",
       "items": {
-        "$ref": "#/$defs/Turn"
+        "$ref": "#/$defs/Turn",
+        "properties": {
+          "content": {
+            "minLength": 1,
+            "pattern": ".*\\S.*",
+            "type": "string"
+          },
+          "hint_level": {
+            "type": "null"
+          },
+          "kind": {
+            "const": "attempt"
+          },
+          "reveals_final_answer": {
+            "const": false
+          },
+          "role": {
+            "const": "student"
+          }
+        },
+        "required": [
+          "kind"
+        ]
       },
       "type": "array"
     },

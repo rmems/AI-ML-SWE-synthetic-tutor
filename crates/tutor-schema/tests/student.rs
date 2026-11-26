@@ -214,6 +214,46 @@ fn generated_schema_accepts_null_labels_on_a_confirmation() {
 }
 
 #[test]
+fn generated_schema_rejects_non_attempt_student_turns() {
+    let mut answer_request = correction_attempt();
+    answer_request.student_turns[0].kind = Some(TurnKind::AnswerRequest);
+    let value = serde_json::to_value(answer_request).expect("attempt serializes");
+    assert!(!json_validator().is_valid(&value));
+
+    let mut tutor_turn = correction_attempt();
+    tutor_turn.student_turns[0].role = Role::Tutor;
+    tutor_turn.student_turns[0].kind = Some(TurnKind::Diagnosis);
+    let value = serde_json::to_value(tutor_turn).expect("attempt serializes");
+    assert!(!json_validator().is_valid(&value));
+}
+
+#[test]
+fn generated_schema_rejects_empty_ids_and_blank_student_work() {
+    let value = serde_json::to_value(correction_attempt()).expect("attempt serializes");
+    for field in ["attempt_id", "problem_id"] {
+        for empty in ["", "   "] {
+            let mut invalid_value = value.clone();
+            invalid_value[field] = serde_json::json!(empty);
+            assert!(
+                !json_validator().is_valid(&invalid_value),
+                "empty {field} must not validate"
+            );
+        }
+    }
+    let mut blank_work = value;
+    blank_work["student_turns"][0]["content"] = serde_json::json!("   ");
+    assert!(!json_validator().is_valid(&blank_work));
+}
+
+#[test]
+fn generated_schema_rejects_a_topic_outside_the_label_taxonomy() {
+    let mut attempt = correction_attempt();
+    attempt.topic = "calculus.derivatives.product_rule".to_owned();
+    let value = serde_json::to_value(attempt).expect("attempt serializes");
+    assert!(!json_validator().is_valid(&value));
+}
+
+#[test]
 fn generated_schema_rejects_null_correction_labels() {
     let value = serde_json::to_value(correction_attempt()).expect("attempt serializes");
     for field in ["misconception", "transformation"] {
