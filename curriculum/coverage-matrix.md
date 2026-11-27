@@ -26,9 +26,9 @@ Two extra columns are kept because the generation-spec form needs them at a
 glance: `generators / verification` (the independent check each problem type
 must pass — always on the opposite side of the Rust↔Julia ZMQ boundary from
 the generator, so a generator never grades itself) and `family / slice`
-(which GitHub issue owns the row). Every row cites its family and/or slice
-issue; the [family / slice index](#family--slice-index) below links the same
-issues back.
+(which GitHub issue owns the row when a family or slice lane exists). Rows
+without an owning lane are explicitly unscoped; the [family / slice
+index](#family--slice-index) below links the issues that do exist back.
 
 ## Status vocabulary
 
