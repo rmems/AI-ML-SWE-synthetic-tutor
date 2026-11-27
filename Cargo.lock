@@ -1639,6 +1639,16 @@ name = "tutor-build"
 version = "0.1.0"
 
 [[package]]
+name = "tutor-ci"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde_json",
+ "tutor-schema",
+ "tutor-verify",
+]
+
+[[package]]
 name = "tutor-generate"
 version = "0.1.0"
 dependencies = [

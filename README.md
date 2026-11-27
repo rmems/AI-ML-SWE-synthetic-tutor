@@ -211,6 +211,7 @@ Cargo.toml, Cargo.lock, rust-toolchain.toml   Rust workspace (Rust 1.99.1, editi
 crates/
   tutor-schema/     problem, student-attempt, and dialogue row types and validation (mirrors schemas/)
   tutor-validate/   dialogue row validator CLI (JSON schema + policy checks)
+  tutor-ci/         PR-time taxonomy, rights, and verification-smoke wiring
   tutor-wire/       ZMQ REQ client for the Julia worker (tutor-math/1 JSON envelope)
   tutor-verify/     independent answer verification + Rust<->Julia bridge proof test
   tutor-generate/   seeded problem generators (#18) and the procedural student simulator (#19)
