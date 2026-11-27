@@ -365,6 +365,12 @@ struct SimulationContext<'a> {
 
 /// Derive a stable attempt seed from the caller's seed stream, problem ID, and
 /// per-problem attempt index, so unrelated input lines do not reseed a problem.
+/// The exact recipe [`stable_attempt_seed`] implements, recorded in the run
+/// log so a batch's seeds can be reproduced from the entry alone.
+const SEED_DERIVATION: &str = "u64::from_le_bytes(sha256(seed_start as u64 little-endian || \
+     problem_id as UTF-8 || 0xff || attempt_index as u64 little-endian)[0..8]) & MAX_SEED \
+     (MAX_SEED = 2^53 - 1)";
+
 fn stable_attempt_seed(seed_start: u64, problem_id: &str, attempt_index: u64) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(seed_start.to_le_bytes());
@@ -547,7 +553,7 @@ fn write_simulation_output(
     tutor_runlog::ensure_log_path_is_clear(&log_path, &reserved_log_paths(args))?;
     let record = simulation_run_record(args, &batch, &manifest_text);
     let log = RunLog::at(&log_path);
-    let locked = log.lock()?;
+    let mut locked = log.lock()?;
     locked.check(&record)?;
 
     let existing = ensure_simulation_output(&args.out)?;
@@ -690,9 +696,7 @@ fn simulation_run_record(
             seeds: SeedUse {
                 start: args.seed_start,
                 end: None,
-                derivation: Some(
-                    "sha256(seed_start, problem_id, attempt_index) & MAX_SEED".to_owned(),
-                ),
+                derivation: Some(SEED_DERIVATION.to_owned()),
             },
             parameter_ranges: simulation_parameter_ranges(args),
         }],
@@ -1016,4 +1020,27 @@ fn atomic_write_with(
             ))
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_attempt_seed_follows_the_logged_derivation() {
+        // Recompute by hand exactly as SEED_DERIVATION states it.
+        let (seed_start, problem_id, attempt_index) =
+            (7_u64, "chain_rule_at_point/v1/seed-1", 3_u64);
+        let mut bytes = seed_start.to_le_bytes().to_vec();
+        bytes.extend_from_slice(problem_id.as_bytes());
+        bytes.push(0xff);
+        bytes.extend_from_slice(&attempt_index.to_le_bytes());
+        let digest = Sha256::digest(&bytes);
+        let expected = u64::from_le_bytes(digest[..8].try_into().unwrap()) & ((1_u64 << 53) - 1);
+        assert_eq!(
+            stable_attempt_seed(seed_start, problem_id, attempt_index),
+            expected
+        );
+        assert!(SEED_DERIVATION.contains("0xff") && SEED_DERIVATION.contains("[0..8]"));
+    }
 }
