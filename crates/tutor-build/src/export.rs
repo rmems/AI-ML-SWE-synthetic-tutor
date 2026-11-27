@@ -75,9 +75,9 @@ pub struct ExportProvenance {
     pub rights_entry: String,
     /// How the answer was checked, and the pass/fail record.
     pub verification: VerificationRecord,
-    /// `unreviewed`, `sampled_and_passed`, or `human_reviewed`. Generated
-    /// rows default to `unreviewed` until QA runs; hand-written exemplars
-    /// ship as `human_reviewed` since a human authored and checked them.
+    /// `unreviewed`, `sampled_and_passed`, or `human_reviewed`. Only `gold`
+    /// exemplars ship as `human_reviewed` — a human authored and checked
+    /// them; every other row is `unreviewed` until QA runs.
     pub qa_status: QaStatus,
 }
 
@@ -160,9 +160,10 @@ fn provenance(row: &CheckedRow) -> ExportProvenance {
             result: "pass",
         },
     };
-    let qa_status = match row.row.provenance.source {
-        RowSource::HandWritten => QaStatus::HumanReviewed,
-        RowSource::Generated => QaStatus::Unreviewed,
+    let qa_status = if row.row.gold {
+        QaStatus::HumanReviewed
+    } else {
+        QaStatus::Unreviewed
     };
     ExportProvenance {
         problem_id: row.row.problem_id.clone(),

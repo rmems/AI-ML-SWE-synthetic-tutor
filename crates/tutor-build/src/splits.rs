@@ -94,6 +94,8 @@ pub struct Assigner {
     previous_rows: HashMap<String, Split>,
     previous_problems: HashMap<String, Split>,
     current: Assignments,
+    /// Frozen constraints that could not all be satisfied, in input order.
+    conflicts: Vec<String>,
 }
 
 impl Assigner {
@@ -143,6 +145,7 @@ impl Assigner {
             previous_problems: parse_assignments(&assignments["problems"])
                 .map_err(|e| fail(format!("assignments.problems: {e}")))?,
             current: Assignments::default(),
+            conflicts: Vec::new(),
         })
     }
 
@@ -150,26 +153,43 @@ impl Assigner {
     /// problem assignment (current release first, then previous), else a
     /// deterministic hash draw. The row-level freeze wins over the
     /// problem-level rule because "a row already assigned never moves" is
-    /// the explicit contract.
+    /// the explicit contract. When a frozen row split disagrees with the
+    /// split its problem resolves to, the row still keeps its frozen split
+    /// and the disagreement is recorded in [`Assigner::conflicts`]: the
+    /// build fails rather than shipping one problem in two splits.
     pub fn assign(&mut self, row_id: &str, problem_id: &str) -> Split {
-        let split = if let Some(split) = self.previous_rows.get(row_id) {
-            *split
-        } else if let Some(split) = self
+        let problem_split = self
             .current
             .problems
             .get(problem_id)
             .or_else(|| self.previous_problems.get(problem_id))
+            .copied();
+        let row_split = self.previous_rows.get(row_id).copied();
+        if let (Some(row_split), Some(problem_split)) = (row_split, problem_split)
+            && row_split != problem_split
         {
-            *split
-        } else {
-            hash_split(problem_id)
-        };
+            self.conflicts.push(format!(
+                "row {row_id:?} is frozen to {} but problem {problem_id:?} resolves to {}",
+                row_split.as_str(),
+                problem_split.as_str()
+            ));
+        }
+        let split = row_split
+            .or(problem_split)
+            .unwrap_or_else(|| hash_split(problem_id));
         self.current
             .problems
             .entry(problem_id.to_owned())
             .or_insert(split);
         self.current.rows.insert(row_id.to_owned(), split);
         split
+    }
+
+    /// Frozen constraints that could not all be satisfied. Non-empty means
+    /// some row kept a frozen split that disagrees with its problem's split;
+    /// publishing either silently moves a frozen row or splits one problem.
+    pub fn conflicts(&self) -> &[String] {
+        &self.conflicts
     }
 
     /// This release's assignments, for the manifest.
@@ -222,6 +242,7 @@ mod tests {
             previous_rows: HashMap::from([("row-a".to_owned(), Split::Test)]),
             previous_problems: HashMap::new(),
             current: Assignments::default(),
+            conflicts: Vec::new(),
         };
         let mut assigner = previous;
         // The frozen row keeps its split even though the hash says otherwise.
@@ -240,8 +261,28 @@ mod tests {
             previous_rows: HashMap::new(),
             previous_problems: HashMap::from([("p".to_owned(), Split::Validation)]),
             current: Assignments::default(),
+            conflicts: Vec::new(),
         };
         assert_eq!(assigner.assign("row-x", "p"), Split::Validation);
         assert_eq!(assigner.assign("row-y", "p"), Split::Validation);
+    }
+
+    #[test]
+    fn assigner_flags_conflicting_frozen_splits() {
+        // Version 1 froze row-a to train and row-b (problem p) to test.
+        // Version 2 repoints row-a at p: the freezes cannot both hold.
+        let mut assigner = Assigner {
+            previous_rows: HashMap::from([
+                ("row-a".to_owned(), Split::Train),
+                ("row-b".to_owned(), Split::Test),
+            ]),
+            previous_problems: HashMap::from([("p".to_owned(), Split::Test)]),
+            current: Assignments::default(),
+            conflicts: Vec::new(),
+        };
+        assert_eq!(assigner.assign("row-b", "p"), Split::Test);
+        assert_eq!(assigner.assign("row-a", "p"), Split::Train);
+        assert_eq!(assigner.conflicts().len(), 1);
+        assert!(assigner.conflicts()[0].contains("row-a"));
     }
 }

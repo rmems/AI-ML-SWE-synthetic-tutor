@@ -103,10 +103,15 @@ fn valid_family(family: &str) -> Result<(), String> {
     if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
         return Err("must start with [a-z0-9]".to_owned());
     }
-    if !chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_') {
+    if !chars.all(valid_family_char) {
         return Err("only [a-z0-9_-] characters are allowed".to_owned());
     }
     Ok(())
+}
+
+/// One allowed `family` character after the first: `[a-z0-9_-]`.
+fn valid_family_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_'
 }
 
 fn print_report(report: &BuildReport) {

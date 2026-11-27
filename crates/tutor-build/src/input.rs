@@ -31,7 +31,7 @@ pub struct InputLine {
 ///
 /// # Errors
 /// [`BuildError::Input`] when a file cannot be read, has another extension,
-/// or a single row exceeds [`MAX_ROW_BYTES`].
+/// or a single row exceeds `MAX_ROW_BYTES` (16 MiB).
 pub fn load_rows(paths: &[PathBuf]) -> Result<Vec<InputLine>, BuildError> {
     let mut rows = Vec::new();
     for path in paths {

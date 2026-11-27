@@ -12,11 +12,13 @@
 //!    given: the referenced problem must exist, carry a verification record,
 //!    match the row's topic, and have its answer confirmed in the closing
 //!    turn.
-//! 2. **Dedup** ([`dedup`]) — exact and near-duplicate rejection on the
-//!    normalized problem text and dialogue text.
-//! 3. **Decontamination** ([`decontam`]) — exact and near matching against
+//! 2. **Decontamination** ([`decontam`]) — exact and near matching against
 //!    every record under `evals/heldout/` (or `--heldout`). The held-out set
 //!    is input-only: nothing here generates against it or tunes to it.
+//!    Decontamination runs before dedup so a contaminated row cannot keep a
+//!    clean near-duplicate of itself out of the release.
+//! 3. **Dedup** ([`dedup`]) — exact and near-duplicate rejection on the
+//!    normalized problem text and dialogue text.
 //! 4. **Splits** ([`splits`]) — deterministic SHA-256 hash assignment to
 //!    train / validation / test. With `--previous-manifest` an already
 //!    assigned row or problem never moves; new rows fill the next release.
@@ -46,6 +48,7 @@ pub mod manifest;
 pub mod splits;
 
 use std::collections::{BTreeMap, HashSet};
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -68,10 +71,10 @@ pub(crate) const MAX_ROW_BYTES: u64 = 16 * 1024 * 1024;
 pub enum Stage {
     /// Stage 1: schema, policy, and provenance checks.
     DialogueChecks,
-    /// Stage 2: exact and near-duplicate detection.
-    Dedup,
-    /// Stage 3: decontamination against the held-out set.
+    /// Stage 2: decontamination against the held-out set.
     Decontamination,
+    /// Stage 3: exact and near-duplicate detection.
+    Dedup,
 }
 
 impl Stage {
@@ -186,6 +189,10 @@ pub enum BuildError {
         /// What is wrong with it.
         reason: String,
     },
+    /// A frozen row assignment cannot be satisfied together with its
+    /// problem's split.
+    #[error("conflicting frozen split assignments: {0}")]
+    FrozenConflict(String),
     /// The generated dialogue JSON Schema does not compile.
     #[error("generated dialogue schema does not compile: {0}")]
     SchemaCompile(String),
@@ -246,19 +253,29 @@ pub fn build(config: &BuildConfig) -> Result<BuildReport, BuildError> {
     let rows = input::load_rows(&config.rows)?;
 
     let (checked, mut rejected) = run_checks(&rows, problems.as_ref(), &validator);
-    let kept = dedup::run(checked, &mut rejected);
-    let clean = decontam::run(kept, &heldout, &mut rejected);
+    let fingerprinted: Vec<Fingerprinted> = checked.into_iter().map(dedup::fingerprinted).collect();
+    let clean = decontam::run(fingerprinted, &heldout, &mut rejected);
+    let kept = dedup::run(clean, &mut rejected);
 
     let mut assigner =
         splits::Assigner::load_previous(config.previous_manifest.as_deref(), &config.family)?;
     let mut by_split: BTreeMap<Split, Vec<Fingerprinted>> = BTreeMap::new();
-    for row in clean {
+    for row in kept {
         let split = assigner.assign(&row.checked.row.row_id, &row.checked.row.problem_id);
         by_split.entry(split).or_default().push(row);
     }
+    if !assigner.conflicts().is_empty() {
+        return Err(BuildError::FrozenConflict(assigner.conflicts().join("; ")));
+    }
 
     let inputs = collect_inputs(config, &heldout)?;
-    let outputs = write_outputs(config, &by_split, &rejected, &assigner, inputs)?;
+    let outputs = write_outputs(ReleaseBundle {
+        config,
+        by_split: &by_split,
+        rejected: &rejected,
+        assigner: &assigner,
+        inputs,
+    })?;
 
     Ok(BuildReport {
         accepted: by_split.values().map(Vec::len).sum(),
@@ -307,6 +324,11 @@ fn collect_inputs(config: &BuildConfig, heldout: &HeldOut) -> Result<manifest::I
             .iter()
             .map(|p| file_meta(p))
             .collect::<Result<_, _>>()?,
+        previous_manifest: config
+            .previous_manifest
+            .iter()
+            .map(|p| file_meta(p))
+            .collect::<Result<_, _>>()?,
     })
 }
 
@@ -316,35 +338,122 @@ struct Outputs {
     manifest_sha256: String,
 }
 
+/// Everything `write_outputs` needs to publish one release bundle.
+struct ReleaseBundle<'a> {
+    config: &'a BuildConfig,
+    by_split: &'a BTreeMap<Split, Vec<Fingerprinted>>,
+    rejected: &'a [RejectedRow],
+    assigner: &'a splits::Assigner,
+    inputs: manifest::Inputs,
+}
+
+/// Accepted-row tallies for the manifest's `counts` section.
+#[derive(Default)]
+struct SplitCounts {
+    splits: BTreeMap<String, usize>,
+    topics: BTreeMap<String, BTreeMap<String, usize>>,
+    taxonomy: BTreeMap<String, BTreeMap<String, usize>>,
+}
+
 /// Write split JSONL files, `rejected/rejected.jsonl`, then the manifest
 /// last (atomically), then its `.sha256` sidecar.
-fn write_outputs(
-    config: &BuildConfig,
-    by_split: &BTreeMap<Split, Vec<Fingerprinted>>,
-    rejected: &[RejectedRow],
-    assigner: &splits::Assigner,
-    inputs: manifest::Inputs,
-) -> Result<Outputs, BuildError> {
+fn write_outputs(bundle: ReleaseBundle<'_>) -> Result<Outputs, BuildError> {
+    let _lock = prepare_out_dir(bundle.config)?;
+    let (mut artifacts, counts) = write_split_files(&bundle)?;
+
+    let rejected_dir = bundle.config.out_dir.join("rejected");
+    let rejected_meta = write_jsonl(
+        &rejected_dir.join("rejected.jsonl"),
+        bundle.rejected.iter().map(serde_json::to_value),
+    )?;
+    artifacts.insert(
+        "rejected/rejected.jsonl".to_owned(),
+        manifest::Artifact {
+            sha256: rejected_meta.sha256,
+            bytes: rejected_meta.bytes,
+            rows: bundle.rejected.len(),
+        },
+    );
+
+    write_manifest(bundle, artifacts, counts)
+}
+
+/// Create the output directory and claim it for this build: refuse a
+/// `manifest.json` written by another producer, refuse overlap with the
+/// held-out input tree, and hold a `.tutor-build.lock` file so a second
+/// concurrent build of the same directory fails fast instead of
+/// interleaving artifacts. The lock is advisory: a crashed build leaves it
+/// behind and it must be removed by hand.
+fn prepare_out_dir(config: &BuildConfig) -> Result<LockGuard, BuildError> {
     std::fs::create_dir_all(&config.out_dir)
         .map_err(|e| BuildError::output(&config.out_dir, e.to_string()))?;
     let rejected_dir = config.out_dir.join("rejected");
     std::fs::create_dir_all(&rejected_dir)
         .map_err(|e| BuildError::output(&rejected_dir, e.to_string()))?;
 
-    let mut artifacts: BTreeMap<String, manifest::Artifact> = BTreeMap::new();
-    let mut split_counts: BTreeMap<String, usize> = BTreeMap::new();
-    let mut topics: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
-    let mut taxonomy: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let out = std::fs::canonicalize(&config.out_dir)
+        .map_err(|e| BuildError::output(&config.out_dir, e.to_string()))?;
+    let heldout = std::fs::canonicalize(&config.heldout_dir)
+        .map_err(|e| BuildError::output(&config.heldout_dir, e.to_string()))?;
+    if out.starts_with(&heldout) || heldout.starts_with(&out) {
+        return Err(BuildError::output(
+            &config.out_dir,
+            "output directory overlaps the held-out tree, which is input-only",
+        ));
+    }
+
+    let manifest_path = config.out_dir.join("manifest.json");
+    if let Ok(text) = std::fs::read_to_string(&manifest_path) {
+        let owned = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|doc| doc["tool"]["name"].as_str().map(str::to_owned))
+            .is_some_and(|name| name == "tutor-build");
+        if !owned {
+            return Err(BuildError::output(
+                &manifest_path,
+                "exists and was not written by tutor-build; refusing to overwrite it",
+            ));
+        }
+    }
+
+    let lock_path = config.out_dir.join(".tutor-build.lock");
+    match std::fs::File::create_new(&lock_path) {
+        Ok(_) => Ok(LockGuard(lock_path)),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(BuildError::output(
+            &lock_path,
+            "another tutor-build run may be writing here; remove the stale lock file if none is",
+        )),
+        Err(error) => Err(BuildError::output(&lock_path, error.to_string())),
+    }
+}
+
+/// Deletes the build's lock file when the write finishes or fails.
+struct LockGuard(PathBuf);
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Write one `<split>.jsonl` export per split and return the artifact
+/// digests plus the accepted-row tallies.
+fn write_split_files(
+    bundle: &ReleaseBundle<'_>,
+) -> Result<(BTreeMap<String, manifest::Artifact>, SplitCounts), BuildError> {
+    let mut artifacts = BTreeMap::new();
+    let mut counts = SplitCounts::default();
     for split in Split::ALL {
-        let rows = by_split
+        let rows = bundle
+            .by_split
             .get(&split)
             .map_or(&[] as &[Fingerprinted], Vec::as_slice);
         let mut export_rows: Vec<_> = rows.iter().map(|r| export::to_export(r, split)).collect();
         export_rows.sort_by(|a, b| a.row_id.cmp(&b.row_id));
-        count_rows(rows, split, &mut topics, &mut taxonomy);
+        count_rows(rows, split, &mut counts);
         let name = format!("{}.jsonl", split.as_str());
         let meta = write_jsonl(
-            &config.out_dir.join(&name),
+            &bundle.config.out_dir.join(&name),
             export_rows.iter().map(serde_json::to_value),
         )?;
         artifacts.insert(
@@ -355,41 +464,45 @@ fn write_outputs(
                 rows: export_rows.len(),
             },
         );
-        split_counts.insert(split.as_str().to_owned(), export_rows.len());
+        counts
+            .splits
+            .insert(split.as_str().to_owned(), export_rows.len());
     }
+    Ok((artifacts, counts))
+}
 
-    let rejected_meta = write_jsonl(
-        &rejected_dir.join("rejected.jsonl"),
-        rejected.iter().map(serde_json::to_value),
-    )?;
-    artifacts.insert(
-        "rejected/rejected.jsonl".to_owned(),
-        manifest::Artifact {
-            sha256: rejected_meta.sha256,
-            bytes: rejected_meta.bytes,
-            rows: rejected.len(),
+/// Assemble the manifest, write it atomically, then its `.sha256` sidecar.
+fn write_manifest(
+    bundle: ReleaseBundle<'_>,
+    artifacts: BTreeMap<String, manifest::Artifact>,
+    counts: SplitCounts,
+) -> Result<Outputs, BuildError> {
+    let document = manifest::SplitManifest::new(
+        bundle.config,
+        manifest::ManifestData {
+            inputs: bundle.inputs,
+            artifacts,
+            counts: manifest::Counts::of(
+                counts.splits.clone(),
+                counts.topics,
+                counts.taxonomy,
+                bundle.rejected,
+            ),
+            assignments: bundle.assigner.assignments(),
         },
     );
-
-    let document = manifest::SplitManifest::new(
-        config,
-        inputs,
-        artifacts,
-        manifest::Counts::of(split_counts.clone(), topics, taxonomy, rejected),
-        assigner.assignments(),
-    );
     let manifest_text = serde_json::to_string_pretty(&document)
-        .map_err(|e| BuildError::output(&config.out_dir, e.to_string()))?;
-    let manifest_path = config.out_dir.join("manifest.json");
+        .map_err(|e| BuildError::output(&bundle.config.out_dir, e.to_string()))?;
+    let manifest_path = bundle.config.out_dir.join("manifest.json");
     manifest::write_atomic(&manifest_path, manifest_text.as_bytes())
         .map_err(|e| BuildError::output(&manifest_path, e.to_string()))?;
     let digest = format!("{:x}", Sha256::digest(manifest_text.as_bytes()));
-    let sidecar = config.out_dir.join("manifest.json.sha256");
+    let sidecar = bundle.config.out_dir.join("manifest.json.sha256");
     manifest::write_atomic(&sidecar, format!("{digest}  manifest.json\n").as_bytes())
         .map_err(|e| BuildError::output(&sidecar, e.to_string()))?;
 
     Ok(Outputs {
-        split_counts,
+        split_counts: counts.splits,
         manifest_path,
         manifest_sha256: digest,
     })
@@ -397,19 +510,16 @@ fn write_outputs(
 
 /// Tally accepted rows per topic and per taxonomy id (`none` for
 /// confirmation rows).
-fn count_rows(
-    rows: &[Fingerprinted],
-    split: Split,
-    topics: &mut BTreeMap<String, BTreeMap<String, usize>>,
-    taxonomy: &mut BTreeMap<String, BTreeMap<String, usize>>,
-) {
+fn count_rows(rows: &[Fingerprinted], split: Split, counts: &mut SplitCounts) {
     for row in rows {
-        *topics
+        *counts
+            .topics
             .entry(row.checked.row.topic.clone())
             .or_default()
             .entry(split.as_str().to_owned())
             .or_insert(0) += 1;
-        *taxonomy
+        *counts
+            .taxonomy
             .entry(export::taxonomy_id(&row.checked))
             .or_default()
             .entry(split.as_str().to_owned())
@@ -417,26 +527,29 @@ fn count_rows(
     }
 }
 
-/// Serialize `rows` as JSONL, write atomically, and return its SHA-256 and
-/// byte length.
+/// Serialize `rows` as JSONL, stream them through an atomic temporary file,
+/// and return the file's SHA-256 and byte length. The artifact is never
+/// held in memory in full.
 fn write_jsonl(
     path: &Path,
     rows: impl Iterator<Item = serde_json::Result<serde_json::Value>>,
 ) -> Result<manifest::FileDigest, BuildError> {
-    let mut text = String::new();
     let mut hasher = Sha256::new();
-    for row in rows {
-        let value = row.map_err(|e| BuildError::output(path, e.to_string()))?;
-        let mut line =
-            serde_json::to_string(&value).map_err(|e| BuildError::output(path, e.to_string()))?;
-        line.push('\n');
-        hasher.update(line.as_bytes());
-        text.push_str(&line);
-    }
-    manifest::write_atomic(path, text.as_bytes())
-        .map_err(|e| BuildError::output(path, e.to_string()))?;
+    let mut bytes = 0_u64;
+    manifest::write_atomic_with(path, |file| {
+        for row in rows {
+            let value = row.map_err(std::io::Error::other)?;
+            let mut line = serde_json::to_string(&value).map_err(std::io::Error::other)?;
+            line.push('\n');
+            file.write_all(line.as_bytes())?;
+            hasher.update(line.as_bytes());
+            bytes += line.len() as u64;
+        }
+        Ok(())
+    })
+    .map_err(|e| BuildError::output(path, e.to_string()))?;
     Ok(manifest::FileDigest {
         sha256: format!("{:x}", hasher.finalize()),
-        bytes: text.len() as u64,
+        bytes,
     })
 }

@@ -74,6 +74,9 @@ pub struct Inputs {
     pub problems: Vec<FileMeta>,
     /// Every held-out file used for decontamination.
     pub heldout: Vec<FileMeta>,
+    /// The `--previous-manifest` file that supplied frozen assignments, when
+    /// given.
+    pub previous_manifest: Vec<FileMeta>,
 }
 
 /// One written artifact's digest and row count.
@@ -172,15 +175,24 @@ pub struct AssignmentsDoc {
     pub problems: BTreeMap<String, String>,
 }
 
+/// The data [`SplitManifest::new`] assembles into the manifest document:
+/// everything the release records besides the tool/family/release identity
+/// taken from the [`BuildConfig`].
+#[derive(Debug)]
+pub struct ManifestData<'a> {
+    /// Input file digests.
+    pub inputs: Inputs,
+    /// Output file digests.
+    pub artifacts: BTreeMap<String, Artifact>,
+    /// Accepted/rejected tallies.
+    pub counts: Counts,
+    /// Frozen split assignments for this release.
+    pub assignments: &'a splits::Assignments,
+}
+
 impl SplitManifest {
     /// Assemble the manifest for a finished build.
-    pub fn new(
-        config: &BuildConfig,
-        inputs: Inputs,
-        artifacts: BTreeMap<String, Artifact>,
-        counts: Counts,
-        assignments: &splits::Assignments,
-    ) -> Self {
+    pub fn new(config: &BuildConfig, data: ManifestData<'_>) -> Self {
         Self {
             tool: Tool {
                 name: "tutor-build",
@@ -195,16 +207,18 @@ impl SplitManifest {
                 ("test".to_owned(), 5.0),
             ]),
             near_duplicate_threshold: NEAR_DUPLICATE_THRESHOLD,
-            counts,
-            inputs,
-            artifacts,
+            counts: data.counts,
+            inputs: data.inputs,
+            artifacts: data.artifacts,
             assignments: AssignmentsDoc {
-                rows: assignments
+                rows: data
+                    .assignments
                     .rows
                     .iter()
                     .map(|(id, split)| (id.clone(), split.as_str().to_owned()))
                     .collect(),
-                problems: assignments
+                problems: data
+                    .assignments
                     .problems
                     .iter()
                     .map(|(id, split)| (id.clone(), split.as_str().to_owned()))
@@ -221,11 +235,24 @@ impl SplitManifest {
 /// # Errors
 /// The underlying `std::io::Error` when the write or rename fails.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    write_atomic_with(path, |file| file.write_all(contents))
+}
+
+/// Like [`write_atomic`], but `write` streams the contents to the temporary
+/// file: the whole artifact never has to be held in memory.
+///
+/// # Errors
+/// The closure's or the underlying `std::io::Error` when the write or
+/// rename fails; the temporary file is discarded either way.
+pub fn write_atomic_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
         std::io::Error::other(format!("{} has no parent directory", path.display()))
     })?;
     AtomicFile::new_with_tmpdir(path, AllowOverwrite, parent)
-        .write(|file| file.write_all(contents))
+        .write(write)
         .map_err(|error| {
             std::io::Error::other(format!(
                 "atomic write to {} failed: {error:?}",

@@ -1,4 +1,4 @@
-//! Stage 3 — decontamination against the held-out eval set.
+//! Stage 2 — decontamination against the held-out eval set.
 //!
 //! Every `.json` / `.jsonl` record under the `--heldout` directory
 //! (default `evals/heldout/`) is fingerprinted the same way candidate rows
@@ -37,6 +37,11 @@ pub struct HeldOutItem {
     pub problem_ids: BTreeSet<String>,
     /// Normalized-text fingerprint of all the record's string leaves.
     pub fingerprint: dedup::Fingerprint,
+    /// Fingerprint of the record's `statement` field alone, when it has one.
+    /// A held-out problem record carries metadata a dialogue never has, so
+    /// the whole-document comparison can miss an identical statement filed
+    /// under a different `problem_id`.
+    pub statement: Option<dedup::Fingerprint>,
 }
 
 /// Read and fingerprint every held-out record under `dir`.
@@ -49,6 +54,7 @@ pub fn load(dir: &std::path::Path) -> Result<HeldOut, BuildError> {
     let files = input::heldout_files(dir)?;
     let mut items = Vec::new();
     for file in &files {
+        let before = items.len();
         let text = std::fs::read_to_string(file)
             .map_err(|e| BuildError::heldout(file, format!("cannot read: {e}")))?;
         for (index, line) in text.lines().enumerate() {
@@ -70,6 +76,11 @@ pub fn load(dir: &std::path::Path) -> Result<HeldOut, BuildError> {
                 break;
             }
         }
+        if items.len() == before {
+            // A held-out file with no record looks like a truncated corpus;
+            // fail closed rather than silently shrinking it.
+            return Err(BuildError::heldout(file, "file contains no records"));
+        }
     }
     Ok(HeldOut { items, files })
 }
@@ -83,6 +94,10 @@ impl HeldOutItem {
             origin: file.display().to_string(),
             problem_ids,
             fingerprint: dedup::fingerprint(&text),
+            statement: value
+                .get("statement")
+                .and_then(serde_json::Value::as_str)
+                .map(dedup::fingerprint),
         }
     }
 }
@@ -160,14 +175,35 @@ fn contamination(row: &dedup::Fingerprinted, heldout: &HeldOut) -> Option<(&'sta
             format!("normalized text matches {}", item.origin),
         ));
     }
+    // An identical problem statement under a different `problem_id` still
+    // contaminates; compare statements directly when both records have one.
+    let statement = row
+        .checked
+        .problem
+        .as_ref()
+        .map(|problem| dedup::fingerprint(&problem.statement));
+    if let Some(fingerprint) = &statement
+        && let Some(item) = heldout.items.iter().find(|item| {
+            item.statement
+                .as_ref()
+                .is_some_and(|s| s.document == fingerprint.document)
+        })
+    {
+        return Some((
+            "heldout_exact_match",
+            format!("problem statement matches {}", item.origin),
+        ));
+    }
     heldout
         .items
         .iter()
         .map(|item| {
-            (
-                item,
-                dedup::jaccard(&item.fingerprint.shingles, &row.fingerprint.shingles),
-            )
+            let mut similarity =
+                dedup::jaccard(&item.fingerprint.shingles, &row.fingerprint.shingles);
+            if let (Some(held), Some(candidate)) = (&item.statement, &statement) {
+                similarity = similarity.max(dedup::jaccard(&held.shingles, &candidate.shingles));
+            }
+            (item, similarity)
         })
         .filter(|(_, similarity)| *similarity >= dedup::NEAR_DUPLICATE_THRESHOLD)
         .max_by(|a, b| a.1.total_cmp(&b.1))
@@ -192,6 +228,64 @@ fn is_jsonl(path: &std::path::Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::CheckedRow;
+    use tutor_schema::{DialogueRow, Problem};
+
+    const GOLD_CONFIRM: &str = include_str!("../../../datasets/gold/gold-confirmation.json");
+    const PROBLEM: &str = include_str!("../../tutor-schema/tests/fixtures/problem.json");
+
+    /// A candidate row grounded in the fixture problem.
+    fn candidate() -> dedup::Fingerprinted {
+        let row = DialogueRow::from_json(GOLD_CONFIRM).unwrap();
+        let problem = Problem::from_json(PROBLEM).unwrap();
+        let checked = CheckedRow {
+            file: PathBuf::from("rows.jsonl"),
+            line: None,
+            row,
+            raw: serde_json::Value::Null,
+            problem: Some(problem),
+        };
+        let fingerprint = dedup::fingerprint(&dedup::document(&checked));
+        dedup::Fingerprinted {
+            checked,
+            fingerprint,
+        }
+    }
+
+    fn heldout_with(value: serde_json::Value) -> HeldOut {
+        HeldOut {
+            items: vec![HeldOutItem::new(
+                std::path::Path::new("heldout.json"),
+                &value,
+            )],
+            files: vec![],
+        }
+    }
+
+    #[test]
+    fn identical_statement_under_different_id_contaminates() {
+        let row = candidate();
+        let statement = &row.checked.problem.as_ref().unwrap().statement;
+        // The whole dialogue document barely overlaps a problem record's
+        // metadata, so only the statement-level check can catch this.
+        let heldout = heldout_with(serde_json::json!({
+            "problem_id": "different-id",
+            "statement": statement,
+            "generator": {"name": "other", "version": 1}
+        }));
+        let (code, _) = contamination(&row, &heldout).expect("statement leak is flagged");
+        assert_eq!(code, "heldout_exact_match");
+    }
+
+    #[test]
+    fn unrelated_record_does_not_contaminate() {
+        let row = candidate();
+        let heldout = heldout_with(serde_json::json!({
+            "problem_id": "different-id",
+            "statement": "Prove that the sum of angles in a triangle is 180 degrees."
+        }));
+        assert!(contamination(&row, &heldout).is_none());
+    }
 
     #[test]
     fn collect_strings_gathers_leaves_and_problem_ids() {

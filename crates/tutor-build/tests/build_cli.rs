@@ -70,30 +70,12 @@ fn read_jsonl(path: &Path) -> Vec<serde_json::Value> {
         .collect()
 }
 
-#[test]
-fn build_end_to_end() {
-    let dir = unique_dir("e2e");
-    let out = dir.join("out");
-    // A second rows file with an unparseable line (kept out of the committed
-    // fixtures so fixture lint never sees malformed JSON).
-    let broken = dir.join("broken.jsonl");
-    let mut file = std::fs::File::create(&broken).unwrap();
-    writeln!(file, "{{not json").unwrap();
-    drop(file);
-
-    let output = run_build(&out, &[broken.to_str().unwrap().to_owned()], &[]);
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Split exports exist and contain only the three accepted rows.
+/// Assert the split exports exist, contain only the expected row ids, and
+/// carry the export shape (chat messages + provenance).
+fn assert_split_exports(out: &Path, expected_ids: &[&str]) {
     let mut accepted_ids = Vec::new();
-    let mut total = 0usize;
     for split in ["train", "validation", "test"] {
         let rows = read_jsonl(&out.join(format!("{split}.jsonl")));
-        total += rows.len();
         for row in rows {
             assert!(row["messages"].as_array().unwrap().len() >= 3);
             assert_eq!(row["messages"][0]["role"], "system");
@@ -103,36 +85,25 @@ fn build_end_to_end() {
         }
     }
     accepted_ids.sort();
-    assert_eq!(
-        accepted_ids,
-        [
-            "fx-confirmation-power-0001",
-            "fx-correction-power-0001",
-            "fx-handwritten-sign-0001"
-        ]
-    );
-    assert_eq!(total, 3);
+    assert_eq!(accepted_ids, expected_ids);
+}
 
-    // Rejections carry stable reason codes per stage.
+/// Assert the rejection log carries stable reason codes per stage.
+fn assert_rejections(out: &Path, expected_codes: &[&str]) {
     let rejected = read_jsonl(&out.join("rejected/rejected.jsonl"));
     let mut codes: Vec<String> = rejected
         .iter()
         .map(|r| r["code"].as_str().unwrap().to_owned())
         .collect();
     codes.sort();
-    assert_eq!(
-        codes,
-        [
-            "exact_duplicate",
-            "heldout_exact_match",
-            "invalid_json",
-            "near_duplicate",
-            "schema_constraint"
-        ]
-    );
+    assert_eq!(codes, expected_codes);
     assert!(rejected.iter().all(|r| r["stage"].as_str().is_some()));
+}
 
-    // The manifest is written last and self-describing.
+/// Assert the manifest is self-describing: identity, counts, input and
+/// artifact digests, assignments, and a matching `.sha256` sidecar the
+/// generation run log (#7) can pick up.
+fn assert_manifest(out: &Path, stdout: &str) -> serde_json::Value {
     let manifest_path = out.join("manifest.json");
     let manifest: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
@@ -159,24 +130,29 @@ fn build_end_to_end() {
         3
     );
 
-    // The printed hash and the sidecar both record the manifest's SHA-256,
-    // so the generation run log (#7) can pick it up.
     let digest = format!(
         "{:x}",
         Sha256::digest(std::fs::read(&manifest_path).unwrap())
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains(&format!("manifest sha256: {digest}")),
         "{stdout}"
     );
     let sidecar = std::fs::read_to_string(out.join("manifest.json.sha256")).unwrap();
     assert!(sidecar.starts_with(&digest));
+    manifest
+}
 
-    // A second release frozen against this manifest keeps every assignment.
+/// Assert a second release frozen against `manifest_path` keeps every
+/// assignment and records the previous manifest as an input.
+fn assert_frozen_rerun(dir: &Path, manifest: &serde_json::Value, manifest_path: &Path) {
     let out2 = dir.join("out2");
     let previous = manifest_path.to_str().unwrap().to_owned();
-    let output2 = run_build(&out2, &[], &["--previous-manifest".to_owned(), previous]);
+    let output2 = run_build(
+        &out2,
+        &[],
+        &["--previous-manifest".to_owned(), previous.clone()],
+    );
     assert!(
         output2.status.success(),
         "stderr: {}",
@@ -193,6 +169,53 @@ fn build_end_to_end() {
         manifest["assignments"]["problems"], manifest2["assignments"]["problems"],
         "frozen problems must not move between releases"
     );
+    assert_eq!(
+        manifest2["inputs"]["previous_manifest"][0]["path"]
+            .as_str()
+            .unwrap(),
+        previous,
+        "the freeze source must be recorded in release provenance"
+    );
+}
+
+#[test]
+fn build_end_to_end() {
+    let dir = unique_dir("e2e");
+    let out = dir.join("out");
+    // A second rows file with an unparseable line (kept out of the committed
+    // fixtures so fixture lint never sees malformed JSON).
+    let broken = dir.join("broken.jsonl");
+    let mut file = std::fs::File::create(&broken).unwrap();
+    writeln!(file, "{{not json").unwrap();
+    drop(file);
+
+    let output = run_build(&out, &[broken.to_str().unwrap().to_owned()], &[]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert_split_exports(
+        &out,
+        &[
+            "fx-confirmation-power-0001",
+            "fx-correction-power-0001",
+            "fx-handwritten-sign-0001",
+        ],
+    );
+    assert_rejections(
+        &out,
+        &[
+            "exact_duplicate",
+            "heldout_exact_match",
+            "invalid_json",
+            "near_duplicate",
+            "schema_constraint",
+        ],
+    );
+    let manifest = assert_manifest(&out, &String::from_utf8_lossy(&output.stdout));
+    assert_frozen_rerun(&dir, &manifest, &out.join("manifest.json"));
 }
 
 #[test]
@@ -249,5 +272,104 @@ fn generated_rows_require_problems_for_full_provenance() {
             .iter()
             .any(|r| r["code"] == "provenance_missing_problem"),
         "expected a provenance_missing_problem rejection: {rejected:?}"
+    );
+}
+
+#[test]
+fn build_refuses_to_overwrite_a_foreign_manifest() {
+    // `--out` pointed at a directory another producer owns (e.g. a
+    // generation run): the build must fail instead of replacing its
+    // manifest.
+    let dir = unique_dir("foreign-manifest");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let manifest_path = out.join("manifest.json");
+    let foreign = r#"{"schema":"problem.schema.json","seeds":"0..10"}"#;
+    std::fs::write(&manifest_path, foreign).unwrap();
+
+    let output = run_build(&out, &[], &[]);
+    assert!(
+        !output.status.success(),
+        "expected failure, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&manifest_path).unwrap(),
+        foreign,
+        "the foreign manifest must be left untouched"
+    );
+}
+
+#[test]
+fn build_fails_on_conflicting_frozen_splits() {
+    // A stale manifest froze row-a to train and row-b to test; both now
+    // ground the same problem, so the freezes cannot all hold.
+    let dir = unique_dir("frozen-conflict");
+    let out = dir.join("out");
+    let rows_path = dir.join("rows.jsonl");
+    let fixture_rows = std::fs::read_to_string(fixture(&["rows", "valid.jsonl"])).unwrap();
+    let mut lines = fixture_rows.lines();
+    let mut row_a: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+    let mut row_b = row_a.clone();
+    row_a["row_id"] = serde_json::json!("row-a");
+    row_b["row_id"] = serde_json::json!("row-b");
+    // Give row-b a different dialogue so it is not a dedup duplicate.
+    row_b["turns"][1]["content"] = serde_json::json!(
+        "Let f(x) = 2x^3 + x. Compute f'(1).\n\nMy attempt: f'(x) = 2x^3, so f'(1) = 2."
+    );
+    row_b["turns"][2]["content"] = serde_json::json!(
+        "You brought the exponent down on the cubic term but dropped the +x term entirely. What does the power rule give for the x term?"
+    );
+    row_b["turns"][3]["content"] =
+        serde_json::json!("The x term differentiates to 1, so f'(x) = 6x^2 + 1 and f'(1) = 7.");
+    row_b["turns"][4]["content"] =
+        serde_json::json!("Each term differentiates separately, including a lone x.");
+    row_b["turns"][5]["content"] = serde_json::json!("Right, f'(1) = 6 + 1 = 7.");
+    row_b["turns"][6]["content"] = serde_json::json!("Confirmed: f'(1) = 7.");
+    std::fs::write(&rows_path, format!("{}\n{}\n", row_a, row_b)).unwrap();
+    let previous = dir.join("previous.json");
+    std::fs::write(
+        &previous,
+        serde_json::json!({
+            "tool": {"name": "tutor-build", "version": "0.1.0"},
+            "family": "fx-test",
+            "assignments": {
+                "rows": {"row-a": "train", "row-b": "test"},
+                "problems": {}
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let output = bin()
+        .args([
+            "build",
+            "--family",
+            "fx-test",
+            "--release",
+            "v2",
+            "--rows",
+            rows_path.to_str().unwrap(),
+            "--problems",
+            fixture(&["problems", "problems.jsonl"]).to_str().unwrap(),
+            "--heldout",
+            fixture(&["heldout"]).to_str().unwrap(),
+            "--out",
+            out.to_str().unwrap(),
+            "--previous-manifest",
+            previous.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "expected failure, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("conflicting frozen split assignments"),
+        "stderr should name the conflict: {stderr}"
     );
 }

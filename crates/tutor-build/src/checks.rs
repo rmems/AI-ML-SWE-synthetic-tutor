@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
-use tutor_schema::{Answer, DialogueRow, Problem, RowSource};
+use tutor_schema::{Answer, DialogueRow, MAX_HINT_LEVEL, Problem, Role, RowSource, TurnKind};
 
 use crate::{RejectedRow, Stage, input::InputLine};
 
@@ -103,6 +103,11 @@ pub fn check(
             return Err(fail(error.code(), detail, Some(value)));
         }
     };
+    let problem = problems.and_then(|index| index.get(&row.problem_id));
+    check_provenance(&row, problems.is_some(), problem)
+        .map_err(|(code, detail)| fail(code, detail, Some(value.clone())))?;
+    // A row that failed earlier checks must not reserve its `row_id`: a
+    // corrected copy later in the input is not a duplicate of the draft.
     if !seen_row_ids.insert(row.row_id.clone()) {
         return Err(fail(
             "duplicate_row_id",
@@ -110,9 +115,6 @@ pub fn check(
             Some(value),
         ));
     }
-    let problem = problems.and_then(|index| index.get(&row.problem_id));
-    check_provenance(&row, problems.is_some(), problem)
-        .map_err(|(code, detail)| fail(code, detail, Some(value.clone())))?;
     Ok(CheckedRow {
         file: input.file.clone(),
         line: input.line,
@@ -128,27 +130,46 @@ fn check_provenance(
     problems_given: bool,
     problem: Option<&Problem>,
 ) -> Result<(), (&'static str, String)> {
-    // A `generated` row's seed, parameters, and verification record live on
-    // its problem; without `--problems` (or a matching entry) the row cannot
-    // carry full provenance and does not ship.
-    if row.provenance.source == RowSource::Generated && !problems_given {
+    check_generated(row, problems_given, problem)?;
+    let Some(problem) = problem else {
+        // Hand-written row with no matching problem: its provenance is the
+        // hand-written record itself.
+        return Ok(());
+    };
+    check_grounding(row, problem)
+}
+
+/// A `generated` row's seed, parameters, and verification record live on
+/// its problem; without `--problems` (or a matching entry) the row cannot
+/// carry full provenance and does not ship.
+fn check_generated(
+    row: &DialogueRow,
+    problems_given: bool,
+    problem: Option<&Problem>,
+) -> Result<(), (&'static str, String)> {
+    if row.provenance.source != RowSource::Generated {
+        return Ok(());
+    }
+    if !problems_given {
         return Err((
             "provenance_missing_problem",
             "generated rows require --problems so seed, parameters, and verification provenance can ship"
                 .to_owned(),
         ));
     }
-    if row.provenance.source == RowSource::Generated && problem.is_none() {
+    if problem.is_none() {
         return Err((
             "provenance_missing_problem",
             format!("no problem {:?} in the problems file", row.problem_id),
         ));
     }
-    let Some(problem) = problem else {
-        // Hand-written row with no matching problem: its provenance is the
-        // hand-written record itself.
-        return Ok(());
-    };
+    Ok(())
+}
+
+/// Cross-checks against the verified problem the row names: a verification
+/// record, the same topic, a closing turn that asserts the verified answer,
+/// and no earlier tutor turn that asserts it.
+fn check_grounding(row: &DialogueRow, problem: &Problem) -> Result<(), (&'static str, String)> {
     if problem.verification.is_none() {
         return Err((
             "provenance_unverified_problem",
@@ -167,6 +188,15 @@ fn check_provenance(
             ),
         ));
     }
+    if let Some(index) = early_answer_reveal(row, &problem.answer) {
+        return Err((
+            "early_answer_reveal",
+            format!(
+                "tutor turn {index} states the verified answer for problem {:?} before the closing turn",
+                problem.problem_id
+            ),
+        ));
+    }
     if !closing_states_answer(row, &problem.answer) {
         return Err((
             "verified_answer_mismatch",
@@ -179,34 +209,104 @@ fn check_provenance(
     Ok(())
 }
 
+/// The index of the first tutor turn that asserts the verified answer
+/// where the policy forbids it — every turn before the closing except an
+/// L4 worked-solution `hint`, which may show the answer. `None` when no
+/// early turn asserts it.
+fn early_answer_reveal(row: &DialogueRow, answer: &Answer) -> Option<usize> {
+    let Answer::Integer { value } = answer;
+    let last = row.turns.len() - 1;
+    row.turns.iter().enumerate().find_map(|(index, turn)| {
+        let reveal_allowed = index == last
+            || turn.role != Role::Tutor
+            || (turn.kind == Some(TurnKind::Hint) && turn.hint_level == Some(MAX_HINT_LEVEL));
+        (!reveal_allowed && asserted_ints(&turn.content).contains(value)).then_some(index)
+    })
+}
+
 /// The closing turn must confirm the verified answer. For the integer
-/// answers the schema currently models, that means the answer's digits
-/// appear in the closing content as a standalone token (not inside a longer
-/// number).
+/// answers the schema currently models, the closing's last asserted value
+/// (the integer after `=`, `:`, or the word `is`/`equals`) must equal it —
+/// an intermediate mention or a signed lookalike (`-10` for `10`) does not
+/// count as confirmation.
 fn closing_states_answer(row: &DialogueRow, answer: &Answer) -> bool {
     let Some(closing) = row.turns.last() else {
         return false;
     };
     match answer {
-        Answer::Integer { value } => contains_int_token(&closing.content, *value),
+        Answer::Integer { value } => asserted_ints(&closing.content).last() == Some(value),
     }
 }
 
-/// Whether `value` appears in `text` as a digit string not glued to more
-/// digits on either side.
-fn contains_int_token(text: &str, value: i64) -> bool {
-    let needle = value.to_string();
-    text.match_indices(&needle).any(|(index, _)| {
-        let before_ok = text[..index]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !c.is_ascii_digit());
-        let after_ok = text[index + needle.len()..]
-            .chars()
-            .next()
-            .is_none_or(|c| !c.is_ascii_digit());
-        before_ok && after_ok
-    })
+/// Every integer `text` asserts: a signed digit token that immediately
+/// follows `=`, `:`, or the word `is`/`equals`, in order.
+fn asserted_ints(text: &str) -> Vec<i64> {
+    int_tokens(text)
+        .into_iter()
+        .filter(|(start, _)| follows_assertion(&text[..*start]))
+        .map(|(_, value)| value)
+        .collect()
+}
+
+/// Whether `prefix` ends with an assertion marker: `=`, `:`, or the word
+/// `is`/`equals` (the formats every shipped closing uses: `f'(2) = 20`,
+/// `the answer is 7`, `answer: 12`).
+fn follows_assertion(prefix: &str) -> bool {
+    let prefix = prefix.trim_end();
+    if prefix.ends_with('=') || prefix.ends_with(':') {
+        return true;
+    }
+    prefix
+        .rsplit(|c: char| !c.is_ascii_alphabetic())
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("is") || word.eq_ignore_ascii_case("equals"))
+}
+
+/// Signed integer tokens in `text` as `(byte index, value)`: a run of ASCII
+/// digits with an optional leading `+`/`-`, not glued to other alphanumeric
+/// characters on either side — `x10` and `10x` are not the token `10`, and
+/// `-20` is not `20`. Tokens that overflow `i64` are dropped.
+fn int_tokens(text: &str) -> Vec<(usize, i64)> {
+    let bytes = text.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let (negative, digits) = match bytes[index] {
+            b'-' => (true, index + 1),
+            b'+' => (false, index + 1),
+            b'0'..=b'9' => (false, index),
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        if (index > 0 && bytes[index - 1].is_ascii_alphanumeric())
+            || digits >= bytes.len()
+            || !bytes[digits].is_ascii_digit()
+        {
+            index += 1;
+            continue;
+        }
+        let mut value = Some(0_i64);
+        let mut end = digits;
+        while end < bytes.len() && bytes[end].is_ascii_digit() {
+            if let Some(v) = value {
+                value = v
+                    .checked_mul(10)
+                    .and_then(|v| v.checked_add(i64::from(bytes[end] - b'0')));
+            }
+            end += 1;
+        }
+        if end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
+            index += 1;
+            continue;
+        }
+        if let Some(v) = value {
+            tokens.push((index, if negative { -v } else { v }));
+        }
+        index = end;
+    }
+    tokens
 }
 
 #[cfg(test)]
@@ -340,6 +440,88 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(rejected.code, "verified_answer_mismatch");
+
+        // A signed lookalike is not the answer either.
+        row["turns"][2]["content"] = serde_json::json!("Confirmed: f'(2) = -10.");
+        let mut seen = HashSet::new();
+        let rejected = check(
+            &line(&row.to_string()),
+            Some(&index),
+            &validator(),
+            &mut seen,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.code, "verified_answer_mismatch");
+
+        // An intermediate mention does not confirm a different result.
+        row["turns"][2]["content"] =
+            serde_json::json!("The intermediate value is 10, so the derivative is 12.");
+        let mut seen = HashSet::new();
+        let rejected = check(
+            &line(&row.to_string()),
+            Some(&index),
+            &validator(),
+            &mut seen,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.code, "verified_answer_mismatch");
+    }
+
+    #[test]
+    fn unflagged_early_answer_reveal_is_rejected() {
+        // A correction row grounded in the fixture problem (answer 10): the
+        // diagnosis asserts the answer without the reveal flag.
+        let index = problems();
+        let problem = index.values().next().unwrap();
+        let fixture = include_str!("../tests/fixtures/rows/valid.jsonl");
+        let mut row: serde_json::Value =
+            serde_json::from_str(fixture.lines().next().unwrap()).unwrap();
+        row["problem_id"] = serde_json::json!(problem.problem_id);
+        row["turns"][2]["content"] = serde_json::json!("The answer is 10, you forgot the +1 term.");
+        row["turns"][6]["content"] = serde_json::json!("Confirmed: f'(1) = 10.");
+        let mut seen = HashSet::new();
+        let rejected = check(
+            &line(&row.to_string()),
+            Some(&index),
+            &validator(),
+            &mut seen,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.code, "early_answer_reveal");
+    }
+
+    #[test]
+    fn rejected_row_does_not_reserve_its_row_id() {
+        let index = problems();
+        let mut row: serde_json::Value = serde_json::from_str(GOLD_CONFIRM).unwrap();
+        row["row_id"] = serde_json::json!("draft-1");
+        row["problem_id"] = serde_json::json!("missing-problem");
+        row["gold"] = serde_json::json!(false);
+        row["provenance"] = serde_json::json!({
+            "source": "generated",
+            "taxonomy_version": 1,
+            "generator": {"name": "dialogue_writer", "version": 1}
+        });
+        let mut seen = HashSet::new();
+        let rejected = check(
+            &line(&row.to_string()),
+            Some(&index),
+            &validator(),
+            &mut seen,
+        )
+        .unwrap_err();
+        assert_eq!(rejected.code, "provenance_missing_problem");
+
+        // The corrected copy under the same row_id is not a duplicate.
+        row["problem_id"] = serde_json::json!("gold-pd-power-rule-0001");
+        row["provenance"] = serde_json::json!({"source": "hand_written", "taxonomy_version": 1});
+        check(
+            &line(&row.to_string()),
+            Some(&index),
+            &validator(),
+            &mut seen,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -362,11 +544,23 @@ mod tests {
     }
 
     #[test]
-    fn contains_int_token_respects_boundaries() {
-        assert!(contains_int_token("answer: 10.", 10));
-        assert!(contains_int_token("= -4 done", -4));
-        assert!(!contains_int_token("answer 100", 10));
-        assert!(contains_int_token("x10", 10));
-        assert!(!contains_int_token("nothing", 10));
+    fn int_tokens_respect_boundaries_and_signs() {
+        assert_eq!(
+            int_tokens("answer: 10. x10 10x -4 100"),
+            [(8, 10), (20, -4), (23, 100)]
+        );
+        assert!(int_tokens("nothing").is_empty());
+        assert_eq!(int_tokens("= -20"), [(2, -20)]);
+    }
+
+    #[test]
+    fn asserted_ints_find_assertions() {
+        assert_eq!(asserted_ints("Confirmed: f'(2) = 20."), [20]);
+        assert_eq!(asserted_ints("The answer is 7, you forgot a term."), [7]);
+        assert_eq!(asserted_ints("answer: 12"), [12]);
+        assert_eq!(asserted_ints("value is 10, so the result is 12"), [10, 12]);
+        // `x10` is not an assertion of 10, and a bare mention asserts nothing.
+        assert!(asserted_ints("x10").is_empty());
+        assert!(asserted_ints("it could be 10").is_empty());
     }
 }

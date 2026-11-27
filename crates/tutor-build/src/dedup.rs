@@ -1,5 +1,7 @@
-//! Stage 2 — deterministic exact and near-duplicate detection over the
-//! problem text and the dialogue text together.
+//! Stage 3 — deterministic exact and near-duplicate detection over the
+//! problem text and the dialogue text together. It runs after
+//! decontamination so a contaminated row can never suppress a clean
+//! near-duplicate of it.
 //!
 //! Each row's *document* is its problem text (the verified problem's
 //! `statement` when `--problems` matched, else the `problem_id`) followed by
@@ -44,17 +46,25 @@ pub struct Fingerprinted {
     pub fingerprint: Fingerprint,
 }
 
+/// Fingerprint a checked row for the decontamination and dedup stages.
+pub fn fingerprinted(row: CheckedRow) -> Fingerprinted {
+    let fingerprint = fingerprint(&document(&row));
+    Fingerprinted {
+        checked: row,
+        fingerprint,
+    }
+}
+
 /// Keep rows whose document is neither an exact nor a near duplicate of a
 /// kept row; reject the rest with `exact_duplicate` / `near_duplicate`.
-pub fn run(checked: Vec<CheckedRow>, rejected: &mut Vec<RejectedRow>) -> Vec<Fingerprinted> {
+pub fn run(candidates: Vec<Fingerprinted>, rejected: &mut Vec<RejectedRow>) -> Vec<Fingerprinted> {
     let mut kept: Vec<Fingerprinted> = Vec::new();
-    for row in checked {
-        let fingerprint = fingerprint(&document(&row));
+    for row in candidates {
         if let Some(other) = kept
             .iter()
-            .find(|k| k.fingerprint.document == fingerprint.document)
+            .find(|k| k.fingerprint.document == row.fingerprint.document)
         {
-            rejected.push(row.rejected(
+            rejected.push(row.checked.rejected(
                 Stage::Dedup,
                 "exact_duplicate",
                 format!("same normalized text as row {:?}", other.checked.row.row_id),
@@ -63,11 +73,16 @@ pub fn run(checked: Vec<CheckedRow>, rejected: &mut Vec<RejectedRow>) -> Vec<Fin
         }
         if let Some((other, similarity)) = kept
             .iter()
-            .map(|k| (k, jaccard(&k.fingerprint.shingles, &fingerprint.shingles)))
+            .map(|k| {
+                (
+                    k,
+                    jaccard(&k.fingerprint.shingles, &row.fingerprint.shingles),
+                )
+            })
             .filter(|(_, similarity)| *similarity >= NEAR_DUPLICATE_THRESHOLD)
             .max_by(|a, b| a.1.total_cmp(&b.1))
         {
-            rejected.push(row.rejected(
+            rejected.push(row.checked.rejected(
                 Stage::Dedup,
                 "near_duplicate",
                 format!(
@@ -77,10 +92,7 @@ pub fn run(checked: Vec<CheckedRow>, rejected: &mut Vec<RejectedRow>) -> Vec<Fin
             ));
             continue;
         }
-        kept.push(Fingerprinted {
-            checked: row,
-            fingerprint,
-        });
+        kept.push(row);
     }
     kept
 }
