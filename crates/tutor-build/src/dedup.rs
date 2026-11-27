@@ -236,8 +236,13 @@ pub fn math_signature(document: &str) -> Vec<&str> {
                 .is_some_and(|t| {
                     t.chars().count() == 1 && t.chars().all(|ch| ch.is_ascii_alphabetic())
                 });
+            let after_function_at = index >= 2
+                && tokens[index - 1] == "at"
+                && tokens[index - 2].chars().count() == 1
+                && tokens[index - 2].chars().all(|ch| ch.is_ascii_alphabetic());
             is_operator(token)
-                || (token.chars().any(|ch| ch.is_ascii_digit()) && (near_operator || near_function))
+                || (token.chars().any(|ch| ch.is_ascii_digit())
+                    && (near_operator || near_function || after_function_at))
         })
         .map(|index| tokens[index])
         .collect()

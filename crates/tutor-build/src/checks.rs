@@ -280,8 +280,24 @@ fn clause_started_as_question(prefix: &str) -> bool {
         .map_or(0, |(index, _)| index + 1);
     let clause = prefix[start..].trim_start().to_ascii_lowercase();
     [
-        "is ", "are ", "does ", "do ", "did ", "can ", "could ", "should ", "would ", "what ",
-        "why ", "how ",
+        "is ",
+        "are ",
+        "does ",
+        "do ",
+        "did ",
+        "can ",
+        "could ",
+        "should ",
+        "would ",
+        "what is ",
+        "what are ",
+        "what does ",
+        "what do ",
+        "why is ",
+        "why does ",
+        "how is ",
+        "how does ",
+        "how do ",
     ]
     .iter()
     .any(|opening| clause.starts_with(opening))
