@@ -25,7 +25,7 @@ pub use entry::{
     Counts, Environment, Gate, GatePauseRecord, GeneratorUse, OutputRef, QaSummary,
     RUN_LOG_SCHEMA_VERSION, Record, RunLogEntry, RunRecord, SeedUse, Stage, TeacherUse,
 };
-pub use log::{RunLog, RunLogError, new_run_id, sha256_hex};
+pub use log::{RunLog, RunLogError, ensure_log_path_is_clear, new_run_id, sha256_hex};
 
 /// The rustc version that built this crate; recorded as
 /// [`Environment::rustc_version`].
@@ -37,9 +37,13 @@ pub const CARGO_VERSION: &str = env!("TUTOR_RUNLOG_CARGO_VERSION");
 
 /// Capture the local toolchain environment for a run entry.
 ///
-/// `git_commit` comes from `git rev-parse HEAD` when the pipeline runs inside
-/// a worktree (`null` otherwise); Julia fields are `None` — callers that use
-/// the math worker set them from its `ping` reply.
+/// `git_commit` is `git rev-parse HEAD` of the pipeline source checkout,
+/// captured by the build script when `tutor-runlog` was compiled (`null`
+/// when it was built outside a git worktree or git was unavailable). It is
+/// recorded at build time — not from the caller's working directory — so it
+/// names the code that produced the batch even when the CLI runs from an
+/// unrelated repository. Julia fields are `None` — callers that use the
+/// math worker set them from its `ping` reply.
 pub fn environment() -> Environment {
     Environment {
         git_commit: git_head(),
@@ -52,21 +56,16 @@ pub fn environment() -> Environment {
 }
 
 fn git_head() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (!head.is_empty()).then_some(head)
+    option_env!("TUTOR_RUNLOG_GIT_COMMIT").map(str::to_owned)
 }
 
 /// The JSON Schema for [`RunLogEntry`], generated from the types.
 ///
 /// Post-processing pins `log_version` to [`RUN_LOG_SCHEMA_VERSION`], which
-/// `schemars` cannot express. Regenerate `schemas/run-log.schema.json` with
+/// `schemars` cannot express, and marks every declared property `required`:
+/// a field the run could not have known is emitted as explicit `null`,
+/// never omitted, and the schema enforces that. Regenerate
+/// `schemas/run-log.schema.json` with
 /// `cargo run -p tutor-runlog --example print_run_log_schema`.
 pub fn run_log_json_schema() -> serde_json::Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(RunLogEntry))
@@ -86,14 +85,44 @@ pub fn run_log_json_schema() -> serde_json::Value {
              tutor_runlog::RunLogEntry; regenerate with `cargo run -p tutor-runlog \
              --example print_run_log_schema`. The schema expresses shape; the \
              hash chain, `replaces` resolution, and run-id uniqueness are \
-             enforced by crates/tutor-runlog, not by JSON Schema."
+             enforced by crates/tutor-runlog, not by JSON Schema. Every declared \
+             property is required: unknown-at-runtime fields are explicit \
+             `null`, never omitted."
                 .to_owned(),
         ),
     );
     schema["properties"]["log_version"] = serde_json::json!({
         "const": RUN_LOG_SCHEMA_VERSION
     });
+    require_all_properties(&mut schema);
     schema
+}
+
+/// Mark every `properties` object in `schema` as requiring all of its
+/// declared keys, recursively. `schemars` leaves `Option` fields out of
+/// `required` (serde defaults them), but the run-log contract records them
+/// as explicit `null`, so the schema requires their presence.
+fn require_all_properties(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            if let Some(properties) = map.get("properties").and_then(|p| p.as_object()) {
+                let required = properties
+                    .keys()
+                    .map(|key| serde_json::Value::String(key.clone()))
+                    .collect();
+                map.insert("required".to_owned(), serde_json::Value::Array(required));
+            }
+            for value in map.values_mut() {
+                require_all_properties(value);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for value in items {
+                require_all_properties(value);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

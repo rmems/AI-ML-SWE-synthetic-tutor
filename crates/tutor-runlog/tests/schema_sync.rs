@@ -18,7 +18,7 @@ fn committed_schema_matches_generated() {
 fn schema_enforces_null_semantics() {
     let validator = jsonschema::validator_for(&run_log_json_schema()).expect("schema compiles");
     // Not-yet-known fields may be null but may not disappear.
-    let mut entry = serde_json::json!({
+    let entry = serde_json::json!({
         "log_version": 1,
         "recorded_at": "2026-11-27T09:30:00Z",
         "prev_entry_sha256": null,
@@ -57,6 +57,32 @@ fn schema_enforces_null_semantics() {
             .map(|e| e.to_string())
             .collect::<Vec<_>>()
     );
-    entry.as_object_mut().unwrap().remove("recorded_at");
-    assert!(!validator.is_valid(&entry), "missing recorded_at must fail");
+    let mut missing_required = entry.clone();
+    missing_required
+        .as_object_mut()
+        .unwrap()
+        .remove("recorded_at");
+    assert!(
+        !validator.is_valid(&missing_required),
+        "missing recorded_at must fail"
+    );
+    // Nullable fields are emitted as explicit `null`, never omitted.
+    let mut missing_link = entry.clone();
+    missing_link
+        .as_object_mut()
+        .unwrap()
+        .remove("prev_entry_sha256");
+    assert!(
+        !validator.is_valid(&missing_link),
+        "missing prev_entry_sha256 must fail"
+    );
+    let mut missing_nullable = entry.clone();
+    missing_nullable["record"]
+        .as_object_mut()
+        .unwrap()
+        .remove("split_manifest_sha256");
+    assert!(
+        !validator.is_valid(&missing_nullable),
+        "missing split_manifest_sha256 must fail"
+    );
 }

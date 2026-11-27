@@ -127,6 +127,9 @@ impl RunRecord {
         }
         self.counts.validate()?;
         non_empty("output.directory", &self.output.directory)?;
+        if let Some(sha) = &self.output.manifest_sha256 {
+            sha256_field("output.manifest_sha256", sha)?;
+        }
         if let Some(sha) = &self.split_manifest_sha256 {
             sha256_field("split_manifest_sha256", sha)?;
         }
@@ -217,8 +220,9 @@ pub enum Gate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Environment {
-    /// `git rev-parse HEAD` of the pipeline checkout; `null` when the run
-    /// happened outside a git worktree or git was unavailable.
+    /// `git rev-parse HEAD` of the pipeline source checkout, captured when
+    /// `tutor-runlog` was built; `null` when the pipeline was built outside
+    /// a git worktree or git was unavailable.
     pub git_commit: Option<String>,
     /// `rustc --version` that built the pipeline.
     pub rustc_version: String,

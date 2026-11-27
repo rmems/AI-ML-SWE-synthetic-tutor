@@ -60,10 +60,13 @@
         }
       },
       "required": [
+        "decontaminated",
+        "deduplicated",
+        "exported",
         "generated",
-        "verified",
         "rejected",
-        "rejected_by_reason"
+        "rejected_by_reason",
+        "verified"
       ],
       "type": "object"
     },
@@ -76,7 +79,7 @@
           "type": "string"
         },
         "git_commit": {
-          "description": "`git rev-parse HEAD` of the pipeline checkout; `null` when the run\nhappened outside a git worktree or git was unavailable.",
+          "description": "`git rev-parse HEAD` of the pipeline source checkout, captured when\n`tutor-runlog` was built; `null` when the pipeline was built outside\na git worktree or git was unavailable.",
           "type": [
             "string",
             "null"
@@ -106,9 +109,12 @@
         }
       },
       "required": [
-        "rustc_version",
         "cargo_version",
-        "pipeline_version"
+        "git_commit",
+        "julia_version",
+        "julia_worker_version",
+        "pipeline_version",
+        "rustc_version"
       ],
       "type": "object"
     },
@@ -186,11 +192,11 @@
         }
       },
       "required": [
-        "name",
-        "version",
         "language",
+        "name",
+        "parameter_ranges",
         "seeds",
-        "parameter_ranges"
+        "version"
       ],
       "type": "object"
     },
@@ -211,7 +217,8 @@
         }
       },
       "required": [
-        "directory"
+        "directory",
+        "manifest_sha256"
       ],
       "type": "object"
     },
@@ -331,13 +338,19 @@
             }
           },
           "required": [
-            "kind",
-            "run_id",
-            "stage",
-            "environment",
-            "generators",
             "counts",
-            "output"
+            "environment",
+            "family",
+            "generators",
+            "kind",
+            "output",
+            "qa",
+            "replaces",
+            "run_id",
+            "spec",
+            "split_manifest_sha256",
+            "stage",
+            "teacher"
           ],
           "type": "object"
         },
@@ -375,11 +388,12 @@
             }
           },
           "required": [
-            "kind",
+            "detail",
+            "evidence",
             "family",
             "gate",
-            "detail",
-            "evidence"
+            "kind",
+            "run_id"
           ],
           "type": "object"
         }
@@ -413,6 +427,8 @@
         }
       },
       "required": [
+        "derivation",
+        "end",
         "start"
       ],
       "type": "object"
@@ -461,8 +477,8 @@
       },
       "required": [
         "name",
-        "version",
-        "rights_entry"
+        "rights_entry",
+        "version"
       ],
       "type": "object"
     }
@@ -470,7 +486,7 @@
   "$id": "https://github.com/rmems/AI-ML-SWE-synthetic-tutor/schemas/run-log.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One append-only generation run-log entry (log_version 1). Mirrors tutor_runlog::RunLogEntry; regenerate with `cargo run -p tutor-runlog --example print_run_log_schema`. The schema expresses shape; the hash chain, `replaces` resolution, and run-id uniqueness are enforced by crates/tutor-runlog, not by JSON Schema.",
+  "description": "One append-only generation run-log entry (log_version 1). Mirrors tutor_runlog::RunLogEntry; regenerate with `cargo run -p tutor-runlog --example print_run_log_schema`. The schema expresses shape; the hash chain, `replaces` resolution, and run-id uniqueness are enforced by crates/tutor-runlog, not by JSON Schema. Every declared property is required: unknown-at-runtime fields are explicit `null`, never omitted.",
   "properties": {
     "log_version": {
       "const": 1
@@ -493,8 +509,9 @@
   },
   "required": [
     "log_version",
-    "recorded_at",
-    "record"
+    "prev_entry_sha256",
+    "record",
+    "recorded_at"
   ],
   "title": "RunLogEntry",
   "type": "object"

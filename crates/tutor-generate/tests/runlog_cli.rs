@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
+use sha2::{Digest, Sha256};
 use tutor_runlog::{Record, RunLog, Stage};
 
 fn bin() -> Command {
@@ -206,30 +207,40 @@ fn a_rerun_replaces_nothing_unless_replaces_is_passed() {
     assert_eq!(third.replaces.as_deref(), Some(first_run_id.as_str()));
 }
 
+/// Arguments for a `run` pinned to a closed endpoint so the outcome never
+/// depends on whether a math worker happens to be running: every candidate
+/// rejects with `verify_verifier_unavailable`.
+fn run_args(out: &std::path::Path) -> Vec<String> {
+    vec![
+        "run".to_owned(),
+        "--generator".to_owned(),
+        "binomial_derivative_at_point".to_owned(),
+        "--count".to_owned(),
+        "1".to_owned(),
+        "--timeout-secs".to_owned(),
+        "1".to_owned(),
+        "--endpoint".to_owned(),
+        "tcp://127.0.0.1:1".to_owned(),
+        "--out".to_owned(),
+        out.to_str().expect("utf-8 temp path").to_owned(),
+        "--schema".to_owned(),
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../schemas/problem.schema.json"
+        )
+        .to_owned(),
+    ]
+}
+
 #[test]
 fn a_fully_rejected_run_still_leaves_a_log_entry() {
     let out = unique_path("rejected-run-out");
-    // No math worker is running in the test environment: the binomial
+    // No math worker answers on the pinned closed endpoint: the binomial
     // generator produces a problem but remote verification times out, so the
     // run commits only rejections + manifest and the CLI fails — the entry is
     // still appended because a rejected-everything run is still a run.
     let output = bin()
-        .args([
-            "run",
-            "--generator",
-            "binomial_derivative_at_point",
-            "--count",
-            "1",
-            "--timeout-secs",
-            "1",
-            "--out",
-            out.to_str().expect("utf-8 temp path"),
-            "--schema",
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../schemas/problem.schema.json"
-            ),
-        ])
+        .args(run_args(&out))
         .output()
         .expect("runs tutor-generate run");
     assert!(!output.status.success(), "run without worker must fail");
@@ -255,6 +266,97 @@ fn a_fully_rejected_run_still_leaves_a_log_entry() {
         run.generators[0].language,
         tutor_schema::GeneratorLanguage::Rust
     );
+}
+
+#[test]
+fn a_rerun_with_an_unknown_replaces_leaves_the_bundle_untouched() {
+    let problems = unique_path("doomed-replaces-problems.jsonl");
+    let out = unique_path("doomed-replaces-out");
+    write_problem(&problems);
+    let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    let manifest = std::fs::read(out.join("manifest.json")).expect("manifest");
+    let attempts = std::fs::read(out.join("attempts.jsonl")).expect("attempts");
+    let log = std::fs::read(out.join("run-log.jsonl")).expect("run log");
+
+    let output = run_simulation(
+        &problems,
+        &out,
+        &[
+            "--mode",
+            "correction",
+            "--misconception",
+            "derivatives.chain_rule",
+            "--replaces",
+            "run-nope",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("run-nope"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    // The doomed rerun never touched the batch it would have replaced.
+    assert_eq!(std::fs::read(out.join("manifest.json")).unwrap(), manifest);
+    assert_eq!(std::fs::read(out.join("attempts.jsonl")).unwrap(), attempts);
+    assert_eq!(std::fs::read(out.join("run-log.jsonl")).unwrap(), log);
+}
+
+#[test]
+fn a_run_log_aliasing_an_output_artifact_is_rejected() {
+    let problems = unique_path("alias-problems.jsonl");
+    let out = unique_path("alias-out");
+    write_problem(&problems);
+    // Zero rejections: without the guard the log write would land inside the
+    // empty committed rejections file and corrupt it after publication.
+    let rejections = out.join("rejections.jsonl");
+    let output = run_simulation(
+        &problems,
+        &out,
+        &[
+            "--mode",
+            "confirmation",
+            "--run-log",
+            rejections.to_str().expect("utf-8 temp path"),
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("aliases the batch artifact"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert!(!rejections.exists(), "no bundle was published");
+}
+
+#[test]
+fn the_generation_manifest_binds_artifact_contents() {
+    let out = unique_path("manifest-binding-out");
+    // The closed endpoint rejects every candidate, but the manifest and
+    // rejections file are still committed.
+    let output = bin()
+        .args(run_args(&out))
+        .output()
+        .expect("runs tutor-generate run");
+    assert!(!output.status.success());
+
+    let manifest: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(out.join("manifest.json")).expect("manifest written"),
+    )
+    .expect("manifest parses");
+    let rejections = std::fs::read(out.join("rejected/rejections.jsonl")).expect("rejections");
+    let digest = Sha256::digest(&rejections);
+    assert_eq!(
+        manifest["artifacts"]["rejected/rejections.jsonl"]["sha256"],
+        serde_json::json!(format!("{digest:x}"))
+    );
+    assert_eq!(
+        manifest["artifacts"]["rejected/rejections.jsonl"]["bytes"],
+        serde_json::json!(rejections.len())
+    );
+    // No verified batch was committed, so none is described.
+    assert!(manifest["artifacts"]["verified/problems.jsonl"].is_null());
 }
 
 fn stderr(output: &Output) -> String {

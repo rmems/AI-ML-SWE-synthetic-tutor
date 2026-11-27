@@ -87,6 +87,17 @@ fn verify_accepts_a_chained_log() {
 }
 
 #[test]
+fn verify_fails_when_the_log_is_missing() {
+    let path = unique_path("missing.jsonl");
+    let output = verify(&path);
+    assert!(
+        !output.status.success(),
+        "verifying a nonexistent log must fail, stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
 fn verify_fails_on_tampered_history() {
     let path = unique_path("tampered.jsonl");
     let log = RunLog::at(&path);

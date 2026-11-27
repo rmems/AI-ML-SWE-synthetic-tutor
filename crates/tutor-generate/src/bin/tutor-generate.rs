@@ -534,11 +534,22 @@ fn write_simulation_output(
         manifest_text: &manifest_text,
     };
 
+    // Prove the run-log write can commit before any artifact is replaced:
+    // the destination must not alias a batch file, and the append — chain,
+    // `replaces`, record format — must validate against the log as it
+    // stands. A bad --run-log or a mistyped --replaces fails here, while the
+    // previous bundle is still intact.
+    let log_path = run_log_path(args);
+    tutor_runlog::ensure_log_path_is_clear(&log_path, &reserved_log_paths(args))?;
+    let record = simulation_run_record(args, &batch, &manifest_text);
+    let log = RunLog::at(&log_path);
+    log.check(&record)?;
+
     std::fs::create_dir_all(&args.out)?;
     let _lock = OutputLock::acquire(&args.out)?;
     let existing = ensure_simulation_output(&args.out)?;
     publish_bundle(&args.out, &publication, &existing)?;
-    append_simulation_log_entry(args, &batch, &manifest_text)?;
+    log.append(record)?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
         batch.attempts.len(),
@@ -631,14 +642,70 @@ fn publish_bundle(
     Ok(())
 }
 
-/// Append this simulation's entry to the generation run log after the bundle
-/// is committed: counts from the batch that was written, and the manifest
-/// digest of the text just published.
-fn append_simulation_log_entry(
+/// Where this simulation's run-log entry is appended (`--run-log` or
+/// `<out>/run-log.jsonl`).
+fn run_log_path(args: &SimulateArgs) -> PathBuf {
+    args.run_log
+        .clone()
+        .unwrap_or_else(|| args.out.join("run-log.jsonl"))
+}
+
+/// Files a run log must never overwrite: the bundle artifacts, the
+/// publication-control files, and this simulation's input.
+fn reserved_log_paths(args: &SimulateArgs) -> Vec<PathBuf> {
+    ARTIFACT_FILES
+        .iter()
+        .map(|name| args.out.join(name))
+        .chain([
+            args.out.clone(),
+            args.out.join("manifest.json"),
+            pending_publish_path(&args.out),
+            args.out.join(LOCK_FILE),
+            args.problems.clone(),
+        ])
+        .collect()
+}
+
+/// This simulation's entry for the generation run log: counts from the batch
+/// being committed, and the manifest digest of the text about to publish.
+fn simulation_run_record(
     args: &SimulateArgs,
     batch: &SimulationBatch,
     manifest_text: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Record {
+    Record::Run(Box::new(RunRecord {
+        run_id: tutor_runlog::new_run_id(),
+        family: args.family.clone(),
+        spec: args.spec.clone(),
+        stage: Stage::Simulate,
+        replaces: args.replaces.clone(),
+        environment: tutor_runlog::environment(),
+        generators: vec![GeneratorUse {
+            name: SIMULATOR_NAME.to_owned(),
+            version: SIMULATOR_VERSION,
+            language: tutor_schema::GeneratorLanguage::Rust,
+            seeds: SeedUse {
+                start: args.seed_start,
+                end: None,
+                derivation: Some(
+                    "sha256(seed_start, problem_id, attempt_index) & MAX_SEED".to_owned(),
+                ),
+            },
+            parameter_ranges: simulation_parameter_ranges(args),
+        }],
+        teacher: None,
+        counts: simulation_record_counts(batch),
+        output: OutputRef {
+            directory: args.out.display().to_string(),
+            manifest_sha256: Some(tutor_runlog::sha256_hex(manifest_text.as_bytes())),
+        },
+        split_manifest_sha256: None,
+        qa: None,
+    }))
+}
+
+/// Outcome counts for the entry, measured from the batch being committed.
+fn simulation_record_counts(batch: &SimulationBatch) -> Counts {
     let mut rejected_by_reason = std::collections::BTreeMap::new();
     for rejection in &batch.rejections {
         let reason = rejection["stage"].as_str().unwrap_or("unknown");
@@ -651,7 +718,23 @@ fn append_simulation_log_entry(
             .iter()
             .filter(|rejection| rejection["stage"] == "schema")
             .count();
-    let parameter_ranges = std::collections::BTreeMap::from([
+    Counts {
+        generated: produced as u64,
+        verified: batch.attempts.len() as u64,
+        rejected: batch.rejections.len() as u64,
+        rejected_by_reason,
+        deduplicated: None,
+        decontaminated: None,
+        exported: None,
+    }
+}
+
+/// The pinned options the simulator drew under, as the entry's
+/// `parameter_ranges`.
+fn simulation_parameter_ranges(
+    args: &SimulateArgs,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    std::collections::BTreeMap::from([
         (
             "attempts_per_problem".to_owned(),
             serde_json::json!(args.attempts_per_problem),
@@ -670,50 +753,7 @@ fn append_simulation_log_entry(
             "surface_style".to_owned(),
             serde_json::json!(args.surface_style),
         ),
-    ]);
-    let record = Record::Run(Box::new(RunRecord {
-        run_id: tutor_runlog::new_run_id(),
-        family: args.family.clone(),
-        spec: args.spec.clone(),
-        stage: Stage::Simulate,
-        replaces: args.replaces.clone(),
-        environment: tutor_runlog::environment(),
-        generators: vec![GeneratorUse {
-            name: SIMULATOR_NAME.to_owned(),
-            version: SIMULATOR_VERSION,
-            language: tutor_schema::GeneratorLanguage::Rust,
-            seeds: SeedUse {
-                start: args.seed_start,
-                end: None,
-                derivation: Some(
-                    "sha256(seed_start, problem_id, attempt_index) & MAX_SEED".to_owned(),
-                ),
-            },
-            parameter_ranges,
-        }],
-        teacher: None,
-        counts: Counts {
-            generated: produced as u64,
-            verified: batch.attempts.len() as u64,
-            rejected: batch.rejections.len() as u64,
-            rejected_by_reason,
-            deduplicated: None,
-            decontaminated: None,
-            exported: None,
-        },
-        output: OutputRef {
-            directory: args.out.display().to_string(),
-            manifest_sha256: Some(tutor_runlog::sha256_hex(manifest_text.as_bytes())),
-        },
-        split_manifest_sha256: None,
-        qa: None,
-    }));
-    let path = args
-        .run_log
-        .clone()
-        .unwrap_or_else(|| args.out.join("run-log.jsonl"));
-    RunLog::at(path).append(record)?;
-    Ok(())
+    ])
 }
 
 fn pending_publish_text(
@@ -755,9 +795,11 @@ struct OutputLock {
     path: PathBuf,
 }
 
+const LOCK_FILE: &str = ".simulate.lock";
+
 impl OutputLock {
     fn acquire(out: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let path = out.join(".simulate.lock");
+        let path = out.join(LOCK_FILE);
         let mut file = match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)

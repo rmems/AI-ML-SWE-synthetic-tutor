@@ -31,7 +31,12 @@ otherwise.
   serialized line, so an edited, reordered, or mid-truncated log fails
   `tutor-runlog verify <log>` (also available as
   `tutor_runlog::RunLog::entries`, which refuses a partial read). Appending
-  itself refuses to extend a log whose chain does not verify.
+  itself refuses to extend a log whose chain does not verify, holds a
+  `<log>.lock` lock file so two writers sharing a log cannot interleave
+  (a stale lock from a killed append is removed manually), and is proven
+  out before a batch replaces the previous one: a `--run-log` path that
+  aliases a batch artifact, or a `replaces` naming no earlier run, fails
+  before anything is overwritten.
 - **Reruns:** a rerun is a new entry. When it supersedes an earlier batch it
   names that run in `replaces` — passed explicitly via `--replaces <run-id>`
   (or `RunConfig::replaces`), never inferred by the log, so a new batch is

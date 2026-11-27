@@ -96,6 +96,11 @@ pub enum RunLogError {
         /// What is wrong with it.
         reason: String,
     },
+    /// Another append holds the log's lock file. The lock survives a killed
+    /// append, so a writer that stopped mid-append leaves it for manual
+    /// removal — a stuck lock is recoverable where a forked chain is not.
+    #[error("run log is locked by another append; remove {0} if that append stopped mid-write")]
+    LockBusy(PathBuf),
 }
 
 /// An append-only, hash-chained generation run log: one [`RunLogEntry`] per
@@ -123,6 +128,27 @@ impl RunLog {
         verify_lines(&text)
     }
 
+    /// Read and verify an existing log: unlike [`entries`](Self::entries), a
+    /// missing file is an error. Verification commands use this so a mistyped
+    /// path fails instead of reporting `ok (0 entries)`; appends keep the
+    /// missing-file-means-new-log fallback.
+    pub fn entries_strict(&self) -> Result<Vec<RunLogEntry>, RunLogError> {
+        verify_lines(&std::fs::read_to_string(&self.path)?)
+    }
+
+    /// Check that `record` could be appended right now — the existing chain
+    /// verifies, the record validates, and its references resolve — without
+    /// writing anything. Callers run this before replacing output artifacts
+    /// so a doomed append (e.g. a `replaces` naming no earlier run) fails
+    /// while the previous batch is still intact. [`append`](Self::append)
+    /// re-checks under its lock before writing.
+    pub fn check(&self, record: &Record) -> Result<(), RunLogError> {
+        let text = self.read_text()?;
+        let entries = verify_lines(&text)?;
+        record.validate()?;
+        check_references(&entries, record, entries.len() + 1)
+    }
+
     /// Append `record` and return the committed entry.
     ///
     /// Fills the envelope (`log_version`, `recorded_at`, `prev_entry_sha256`).
@@ -132,16 +158,29 @@ impl RunLog {
     /// entry records that it replaces nothing. When set, `replaces` must
     /// resolve to a run earlier in this log.
     ///
-    /// Appending is one write call so readers never see a partial line, but
-    /// concurrent writers to the same path are not serialized — callers
-    /// sharing an output directory must serialize themselves (as
-    /// `tutor-generate simulate` does with `.simulate.lock`).
+    /// The read–verify–link–write sequence runs under a `<log>.lock` sibling
+    /// file so two processes sharing a log cannot interleave an append — the
+    /// second fails with [`RunLogError::LockBusy`] instead of linking to the
+    /// wrong predecessor. A writer killed mid-append leaves the lock for
+    /// manual removal, the same trade `.simulate.lock` makes. The entry
+    /// itself is still one write call, so readers never see a partial line.
     pub fn append(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
-        let text = self.read_text()?;
+        let _lock = AppendLock::acquire(&self.path)?;
+        let mut text = self.read_text()?;
         // Refuse to extend a log whose history does not verify.
         let entries = verify_lines(&text)?;
         record.validate()?;
         check_references(&entries, &record, entries.len() + 1)?;
+        // A valid log may end without a newline (the last line still parses).
+        // Separating the new entry with a newline here keeps the two JSON
+        // values on distinct lines; pushing it into `text` first means
+        // `prev_entry_sha256` hashes the previous line exactly as the reader
+        // will see it (a trailing `\r` joins the CRLF terminator, not the
+        // line's bytes).
+        let unterminated = !text.is_empty() && !text.ends_with('\n');
+        if unterminated {
+            text.push('\n');
+        }
         let entry = RunLogEntry {
             log_version: RUN_LOG_SCHEMA_VERSION,
             recorded_at: now_rfc3339_utc(),
@@ -152,12 +191,10 @@ impl RunLog {
             line: entries.len() + 1,
             source: err,
         })?;
-        line.push('\n');
-        if let Some(parent) = self.path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent)?;
+        if unterminated {
+            line.insert(0, '\n');
         }
+        line.push('\n');
         let mut file = std::fs::OpenOptions::new()
             .append(true)
             .create(true)
@@ -174,6 +211,127 @@ impl RunLog {
             Err(error) => Err(error.into()),
         }
     }
+}
+
+/// Serialize writers to one log path across processes: a `<log>.lock`
+/// sibling created with `create_new` guards the whole append. Removed on
+/// drop; a killed append leaves it behind for manual removal.
+struct AppendLock {
+    path: PathBuf,
+}
+
+impl AppendLock {
+    fn acquire(log: &Path) -> Result<Self, RunLogError> {
+        let path = lock_path(log);
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(RunLogError::LockBusy(path));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let lock = Self { path };
+        let result = writeln!(file, "pid {}", std::process::id());
+        drop(file);
+        result?;
+        Ok(lock)
+    }
+}
+
+impl Drop for AppendLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// `<log>` with `.lock` appended to its file name.
+fn lock_path(log: &Path) -> PathBuf {
+    let mut name = log
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_else(|| "run-log".into());
+    name.push(".lock");
+    log.with_file_name(name)
+}
+
+/// Refuse `log` as a run-log destination when it aliases one of `reserved` —
+/// the batch's artifacts or publication-control files — or is an existing
+/// directory, so a misplaced `--run-log` cannot overwrite the output it
+/// should only describe.
+pub fn ensure_log_path_is_clear(log: &Path, reserved: &[PathBuf]) -> Result<(), RunLogError> {
+    if log.is_dir() {
+        return Err(RunLogError::Invalid {
+            field: "run_log.path",
+            reason: format!("{} is a directory", log.display()),
+        });
+    }
+    for artifact in reserved {
+        if paths_alias(log, artifact) {
+            return Err(RunLogError::Invalid {
+                field: "run_log.path",
+                reason: format!(
+                    "{} aliases the batch artifact {}",
+                    log.display(),
+                    artifact.display()
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// True when `a` and `b` name the same filesystem location, resolving `.`,
+/// `..`, and symlinks of existing ancestors. Files that do not exist yet are
+/// normalized lexically, so a would-be artifact path still compares equal.
+fn paths_alias(a: &Path, b: &Path) -> bool {
+    let (a, b) = (normalized_path(a), normalized_path(b));
+    if a == b {
+        return true;
+    }
+    // Windows filesystems are case-insensitive.
+    cfg!(windows)
+        && a.to_string_lossy()
+            .eq_ignore_ascii_case(&b.to_string_lossy())
+}
+
+fn normalized_path(path: &Path) -> PathBuf {
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    // Canonicalizing resolves symlinks and `..` but needs the target to
+    // exist; a not-yet-written artifact falls back to its canonicalized
+    // parent plus its file name.
+    if let Ok(canonical) = std::fs::canonicalize(&absolute) {
+        return canonical;
+    }
+    match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
+            Ok(parent) => normalize_lexically(&parent.join(name)),
+            Err(_) => normalize_lexically(&absolute),
+        },
+        _ => normalize_lexically(&absolute),
+    }
+}
+
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Parse and chain-verify every line of a run-log file's text.
@@ -449,54 +607,163 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// Append `runs` entries to a fresh log, rewrite it with `corrupt`, and
+    /// assert that verification fails with `expected`.
+    fn corrupted_log_fails_verify(
+        name: &str,
+        runs: usize,
+        corrupt: impl FnOnce(&str) -> String,
+        expected: impl FnOnce(&RunLogError) -> bool,
+    ) {
+        let path = temp_path(name);
+        let log = RunLog::at(&path);
+        for index in 0..runs {
+            log.append(run_record(&format!("run-{index}"), Stage::Generate))
+                .unwrap();
+        }
+        let original = std::fs::read_to_string(&path).unwrap();
+        let corrupted = corrupt(&original);
+        assert_ne!(corrupted, original, "corruption must change the log");
+        std::fs::write(&path, corrupted).unwrap();
+        let result = log.entries();
+        assert!(
+            matches!(result, Err(ref error) if expected(error)),
+            "unexpected verification result: {result:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn tampered_history_is_detected() {
-        let path = temp_path("tampered.jsonl");
-        let log = RunLog::at(&path);
-        log.append(run_record("run-a", Stage::Generate)).unwrap();
-        log.append(run_record("run-b", Stage::Generate)).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let tampered = text.replace("\"generated\":40", "\"generated\":41");
-        assert_ne!(tampered, text);
-        std::fs::write(&path, tampered).unwrap();
-        assert!(matches!(
-            log.entries(),
-            Err(RunLogError::BrokenChain { line: 2 })
-        ));
-        let _ = std::fs::remove_file(&path);
+        corrupted_log_fails_verify(
+            "tampered.jsonl",
+            2,
+            |text| text.replace("\"generated\":40", "\"generated\":41"),
+            |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
+        );
     }
 
     #[test]
     fn reordered_history_is_detected() {
-        let path = temp_path("reordered.jsonl");
+        corrupted_log_fails_verify(
+            "reordered.jsonl",
+            2,
+            |text| {
+                let lines: Vec<_> = text.lines().collect();
+                format!("{}\n{}\n", lines[1], lines[0])
+            },
+            |error| matches!(error, RunLogError::FirstEntryLinks { line: 1 }),
+        );
+    }
+
+    #[test]
+    fn deleted_middle_entry_is_detected() {
+        corrupted_log_fails_verify(
+            "deleted.jsonl",
+            3,
+            |text| {
+                let lines: Vec<_> = text.lines().collect();
+                format!("{}\n{}\n", lines[0], lines[2])
+            },
+            |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
+        );
+    }
+
+    #[test]
+    fn append_to_an_unterminated_log_keeps_entries_on_separate_lines() {
+        for (name, tail) in [("no-newline.jsonl", ""), ("trailing-cr.jsonl", "\r")] {
+            let path = temp_path(name);
+            let log = RunLog::at(&path);
+            log.append(run_record("run-a", Stage::Generate)).unwrap();
+            // Drop the trailing newline (and leave a bare CR in the second
+            // case): the file still parses as a one-entry log.
+            let mut text = std::fs::read_to_string(&path).unwrap();
+            text.pop();
+            text.push_str(tail);
+            std::fs::write(&path, text).unwrap();
+            assert_eq!(log.entries().unwrap().len(), 1);
+
+            log.append(run_record("run-b", Stage::Generate)).unwrap();
+            let entries = log.entries().expect("log still verifies");
+            assert_eq!(entries.len(), 2);
+            assert_eq!(
+                std::fs::read_to_string(&path).unwrap().lines().count(),
+                2,
+                "{name}: the appended entry must not merge into the previous line"
+            );
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+
+    #[test]
+    fn entries_strict_refuses_a_missing_log() {
+        let path = temp_path("missing.jsonl");
         let log = RunLog::at(&path);
-        log.append(run_record("run-a", Stage::Generate)).unwrap();
-        log.append(run_record("run-b", Stage::Generate)).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<_> = text.lines().collect();
-        std::fs::write(&path, format!("{}\n{}\n", lines[1], lines[0])).unwrap();
+        assert_eq!(log.entries().unwrap().len(), 0);
         assert!(matches!(
-            log.entries(),
-            Err(RunLogError::FirstEntryLinks { line: 1 })
+            log.entries_strict(),
+            Err(RunLogError::Io(ref error)) if error.kind() == std::io::ErrorKind::NotFound
+        ));
+    }
+
+    #[test]
+    fn output_manifest_sha256_must_be_a_digest() {
+        let path = temp_path("bad-sha.jsonl");
+        let log = RunLog::at(&path);
+        let mut record = run_record("run-a", Stage::Generate);
+        let Record::Run(run) = &mut record else {
+            panic!("run record");
+        };
+        run.output.manifest_sha256 = Some("not-a-digest".to_owned());
+        assert!(matches!(
+            log.append(record),
+            Err(RunLogError::Invalid {
+                field: "output.manifest_sha256",
+                ..
+            })
         ));
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
-    fn deleted_middle_entry_is_detected() {
-        let path = temp_path("deleted.jsonl");
+    fn a_stale_append_lock_blocks_writers_until_removed() {
+        let path = temp_path("locked.jsonl");
         let log = RunLog::at(&path);
-        log.append(run_record("run-a", Stage::Generate)).unwrap();
-        log.append(run_record("run-b", Stage::Generate)).unwrap();
-        log.append(run_record("run-c", Stage::Generate)).unwrap();
-        let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<_> = text.lines().collect();
-        std::fs::write(&path, format!("{}\n{}\n", lines[0], lines[2])).unwrap();
+        std::fs::write(lock_path(&path), "pid 0").unwrap();
         assert!(matches!(
-            log.entries(),
-            Err(RunLogError::BrokenChain { line: 2 })
+            log.append(run_record("run-a", Stage::Generate)),
+            Err(RunLogError::LockBusy(_))
         ));
+        std::fs::remove_file(lock_path(&path)).unwrap();
+        log.append(run_record("run-a", Stage::Generate)).unwrap();
+        assert!(
+            !lock_path(&path).exists(),
+            "the lock is released when append returns"
+        );
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn run_log_paths_must_not_alias_artifacts() {
+        let out = temp_path("artifact-out");
+        std::fs::create_dir_all(&out).unwrap();
+        let artifact = out.join("rejections.jsonl");
+        // Direct hit, `..` components, and an existing directory all refuse.
+        assert!(ensure_log_path_is_clear(&artifact, std::slice::from_ref(&artifact)).is_err());
+        assert!(
+            ensure_log_path_is_clear(
+                &out.join("sub").join("..").join("rejections.jsonl"),
+                std::slice::from_ref(&artifact)
+            )
+            .is_err()
+        );
+        assert!(ensure_log_path_is_clear(&out, std::slice::from_ref(&artifact)).is_err());
+        // An unrelated log name next to the artifacts is fine.
+        assert!(
+            ensure_log_path_is_clear(&out.join("run-log.jsonl"), std::slice::from_ref(&artifact))
+                .is_ok()
+        );
+        let _ = std::fs::remove_dir_all(&out);
     }
 
     #[test]
