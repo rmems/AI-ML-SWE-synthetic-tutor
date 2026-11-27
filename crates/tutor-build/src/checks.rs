@@ -239,13 +239,31 @@ fn closing_states_answer(row: &DialogueRow, answer: &Answer) -> bool {
 }
 
 /// Every integer `text` asserts: a signed digit token that immediately
-/// follows `=`, `:`, or the word `is`/`equals`, in order.
+/// follows `=`, `:`, or the word `is`/`equals`, in order. Tokens inside a
+/// question (`Is f'(1) = 7? Substitute to check.`) are not assertions: a
+/// tutor asking the student to verify a value does not confirm it.
 fn asserted_ints(text: &str) -> Vec<i64> {
     int_tokens(text)
         .into_iter()
-        .filter(|(start, _)| follows_assertion(&text[..*start]))
+        .filter(|(start, _)| follows_assertion(&text[..*start]) && !in_question(&text[*start..]))
         .map(|(_, value)| value)
         .collect()
+}
+
+/// Whether the sentence that `rest` continues ends in `?`. A sentence ends
+/// at `?`, `!`, a newline, or a `.` followed by whitespace or the end of the
+/// text (so the decimal point in `7.5` does not end it).
+fn in_question(rest: &str) -> bool {
+    let bytes = rest.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        match byte {
+            b'?' => return true,
+            b'!' | b'\n' => return false,
+            b'.' if bytes.get(index + 1).is_none_or(u8::is_ascii_whitespace) => return false,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Whether `prefix` ends with an assertion marker: `=`, `:`, or the word
@@ -271,42 +289,51 @@ fn int_tokens(text: &str) -> Vec<(usize, i64)> {
     let mut tokens = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
-        let (negative, digits) = match bytes[index] {
-            b'-' => (true, index + 1),
-            b'+' => (false, index + 1),
-            b'0'..=b'9' => (false, index),
-            _ => {
-                index += 1;
-                continue;
-            }
+        let Some((end, value)) = int_token_at(bytes, index) else {
+            index += 1;
+            continue;
         };
-        if (index > 0 && bytes[index - 1].is_ascii_alphanumeric())
-            || digits >= bytes.len()
-            || !bytes[digits].is_ascii_digit()
-        {
-            index += 1;
-            continue;
-        }
-        let mut value = Some(0_i64);
-        let mut end = digits;
-        while end < bytes.len() && bytes[end].is_ascii_digit() {
-            if let Some(v) = value {
-                value = v
-                    .checked_mul(10)
-                    .and_then(|v| v.checked_add(i64::from(bytes[end] - b'0')));
-            }
-            end += 1;
-        }
-        if end < bytes.len() && bytes[end].is_ascii_alphanumeric() {
-            index += 1;
-            continue;
-        }
-        if let Some(v) = value {
-            tokens.push((index, if negative { -v } else { v }));
+        if let Some(value) = value {
+            tokens.push((index, value));
         }
         index = end;
     }
     tokens
+}
+
+/// The standalone integer token starting at `index`, as its end and value
+/// (`None` when it overflows `i64`); `None` when no token starts there.
+fn int_token_at(bytes: &[u8], index: usize) -> Option<(usize, Option<i64>)> {
+    if index > 0 && bytes[index - 1].is_ascii_alphanumeric() {
+        return None;
+    }
+    let (negative, digits) = match bytes[index] {
+        b'-' => (true, index + 1),
+        b'+' => (false, index + 1),
+        b'0'..=b'9' => (false, index),
+        _ => return None,
+    };
+    let end = digits_end(bytes, digits);
+    if end == digits || bytes.get(end).is_some_and(u8::is_ascii_alphanumeric) {
+        return None;
+    }
+    let magnitude = parse_magnitude(&bytes[digits..end]);
+    Some((end, magnitude.map(|v| if negative { -v } else { v })))
+}
+
+/// The index just past the run of ASCII digits starting at `start`.
+fn digits_end(bytes: &[u8], start: usize) -> usize {
+    bytes
+        .get(start..)
+        .and_then(|rest| rest.iter().position(|b| !b.is_ascii_digit()))
+        .map_or(bytes.len(), |offset| start + offset)
+}
+
+/// The value of an ASCII digit run, or `None` when it overflows `i64`.
+fn parse_magnitude(digits: &[u8]) -> Option<i64> {
+    digits.iter().try_fold(0_i64, |value, digit| {
+        value.checked_mul(10)?.checked_add(i64::from(digit - b'0'))
+    })
 }
 
 #[cfg(test)]
@@ -562,5 +589,11 @@ mod tests {
         // `x10` is not an assertion of 10, and a bare mention asserts nothing.
         assert!(asserted_ints("x10").is_empty());
         assert!(asserted_ints("it could be 10").is_empty());
+        // A verification question is not an assertion; the same equation
+        // stated affirmatively is.
+        assert!(asserted_ints("Is f'(1) = 7? Substitute 1 to check.").is_empty());
+        assert_eq!(asserted_ints("So f'(1) = 7. Substitute 1 to check."), [7]);
+        assert!(asserted_ints("You got = 7.5, is that right?").is_empty());
+        assert_eq!(asserted_ints("f'(1) = 7\nDoes that match?"), [7]);
     }
 }
