@@ -86,3 +86,26 @@ fn schema_enforces_null_semantics() {
         "missing split_manifest_sha256 must fail"
     );
 }
+
+#[test]
+fn schema_requires_gate_pause_evidence() {
+    let validator = jsonschema::validator_for(&run_log_json_schema()).expect("schema compiles");
+    let pause = |evidence: Value| {
+        serde_json::json!({
+            "log_version": 1,
+            "recorded_at": "2026-11-27T09:30:00Z",
+            "prev_entry_sha256": null,
+            "record": {
+                "kind": "gate_pause",
+                "family": "derivative_misconceptions",
+                "gate": "verification",
+                "run_id": null,
+                "detail": "rejection rate above the family gate",
+                "evidence": evidence
+            }
+        })
+    };
+    assert!(validator.is_valid(&pause(serde_json::json!({"verify_answer_mismatch": 12}))));
+    // The runtime validator rejects an empty map; the schema must agree.
+    assert!(!validator.is_valid(&pause(serde_json::json!({}))));
+}

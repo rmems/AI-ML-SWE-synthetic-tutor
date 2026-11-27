@@ -245,7 +245,7 @@ mod tests {
                 gate: Gate::EvalSpotCheck,
                 run_id: None,
                 detail: "eval spot-check regression".to_owned(),
-                evidence: BTreeMap::new(),
+                evidence: BTreeMap::from([("pass_rate".to_owned(), serde_json::json!(0.62))]),
             }),
         ] {
             let entry = RunLogEntry {

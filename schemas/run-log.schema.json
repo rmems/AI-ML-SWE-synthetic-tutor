@@ -364,7 +364,8 @@
             },
             "evidence": {
               "additionalProperties": true,
-              "description": "Machine-readable evidence backing the pause: reason-code counts,\nverdict summaries, file digests — whatever the gate measured.",
+              "description": "Machine-readable evidence backing the pause: reason-code counts,\nverdict summaries, file digests — whatever the gate measured. Never\nempty: a pause without evidence cannot be reviewed.",
+              "minProperties": 1,
               "type": "object"
             },
             "family": {

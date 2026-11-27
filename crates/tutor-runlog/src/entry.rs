@@ -169,7 +169,9 @@ pub struct GatePauseRecord {
     /// Why the gate failed, in human terms.
     pub detail: String,
     /// Machine-readable evidence backing the pause: reason-code counts,
-    /// verdict summaries, file digests — whatever the gate measured.
+    /// verdict summaries, file digests — whatever the gate measured. Never
+    /// empty: a pause without evidence cannot be reviewed.
+    #[schemars(extend("minProperties" = 1))]
     pub evidence: BTreeMap<String, serde_json::Value>,
 }
 
@@ -409,15 +411,16 @@ fn optional_non_empty(field: &'static str, value: &Option<String>) -> Result<(),
 }
 
 fn sha256_field(field: &'static str, value: &str) -> Result<(), RunLogError> {
-    if value.len() == 64
-        && value
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    if value.len() == 64 && value.bytes().all(is_lower_hex) {
         Ok(())
     } else {
         Err(invalid(field, "must be a lowercase-hex SHA-256 digest"))
     }
+}
+
+/// `0-9` or `a-f`: the digits of a lowercase-hex digest.
+fn is_lower_hex(byte: u8) -> bool {
+    matches!(byte, b'0'..=b'9' | b'a'..=b'f')
 }
 
 /// Sum of `values`, or `None` when it overflows `u64`.
