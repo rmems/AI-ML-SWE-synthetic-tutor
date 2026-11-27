@@ -185,11 +185,16 @@ impl Assigner {
         split
     }
 
-    /// Whether a previous release froze `row_id` to a split. Callers assign
-    /// frozen rows before unfrozen ones so a new row's provisional hash draw
-    /// never becomes a constraint a frozen row then conflicts with.
-    pub fn is_frozen_row(&self, row_id: &str) -> bool {
-        self.previous_rows.contains_key(row_id)
+    /// The order to [`Assigner::assign`] `rows` in: rows a previous release
+    /// froze first, then the rest, each group in input order. Assigning
+    /// frozen rows first lets their splits settle their problems, so a new
+    /// row's provisional hash draw never becomes a constraint that a frozen
+    /// row then conflicts with; the outcome does not depend on input order.
+    pub fn assignment_order<T>(&self, rows: &[T], row_id: impl Fn(&T) -> &str) -> Vec<usize> {
+        let (mut frozen, fresh): (Vec<usize>, Vec<usize>) = (0..rows.len())
+            .partition(|&index| self.previous_rows.contains_key(row_id(&rows[index])));
+        frozen.extend(fresh);
+        frozen
     }
 
     /// Frozen constraints that could not all be satisfied. Non-empty means

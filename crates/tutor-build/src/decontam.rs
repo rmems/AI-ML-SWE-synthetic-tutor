@@ -54,49 +54,65 @@ pub fn load(dir: &std::path::Path) -> Result<HeldOut, BuildError> {
     let files = input::heldout_files(dir)?;
     let mut items = Vec::new();
     for file in &files {
-        let before = items.len();
-        let text = std::fs::read_to_string(file)
-            .map_err(|e| BuildError::heldout(file, format!("cannot read: {e}")))?;
-        for (index, line) in text.lines().enumerate() {
-            let chunk = if is_jsonl(file) { line } else { text.as_str() };
-            if chunk.trim().is_empty() {
-                continue;
-            }
-            let value: serde_json::Value = serde_json::from_str(chunk).map_err(|e| {
-                let location = if is_jsonl(file) {
-                    format!("line {}: ", index + 1)
-                } else {
-                    String::new()
-                };
-                BuildError::heldout(file, format!("{location}not JSON: {e}"))
-            })?;
-            let item = HeldOutItem::new(file, &value);
-            if item.problem_ids.is_empty() && item.fingerprint.document.is_empty() {
-                // `[]`, `{}`, or a record of only numbers would count as a
-                // record yet decontaminate nothing; fail closed.
-                let location = if is_jsonl(file) {
-                    format!("line {}: ", index + 1)
-                } else {
-                    String::new()
-                };
-                return Err(BuildError::heldout(
-                    file,
-                    format!("{location}record has no text or problem_id to decontaminate against"),
-                ));
-            }
-            items.push(item);
-            // For .json files the whole file is one record; stop after it.
-            if !is_jsonl(file) {
-                break;
-            }
-        }
-        if items.len() == before {
+        let records = load_file(file)?;
+        if records.is_empty() {
             // A held-out file with no record looks like a truncated corpus;
             // fail closed rather than silently shrinking it.
             return Err(BuildError::heldout(file, "file contains no records"));
         }
+        items.extend(records);
     }
     Ok(HeldOut { items, files })
+}
+
+/// One held-out record's text and where it sits in its file.
+struct Chunk<'a> {
+    /// `"line N: "` for a `.jsonl` record; empty for a whole `.json` file.
+    location: String,
+    text: &'a str,
+}
+
+/// Every record in one held-out file: the whole file for `.json` (one
+/// record), each non-blank line for `.jsonl`.
+fn load_file(file: &std::path::Path) -> Result<Vec<HeldOutItem>, BuildError> {
+    let text = std::fs::read_to_string(file)
+        .map_err(|e| BuildError::heldout(file, format!("cannot read: {e}")))?;
+    let chunks: Vec<Chunk<'_>> = if is_jsonl(file) {
+        text.lines()
+            .enumerate()
+            .map(|(index, line)| Chunk {
+                location: format!("line {}: ", index + 1),
+                text: line,
+            })
+            .collect()
+    } else {
+        vec![Chunk {
+            location: String::new(),
+            text: &text,
+        }]
+    };
+    chunks
+        .into_iter()
+        .filter(|chunk| !chunk.text.trim().is_empty())
+        .map(|chunk| parse_record(file, &chunk))
+        .collect()
+}
+
+/// Parse and fingerprint one record. A record with no text and no
+/// `problem_id` (`[]`, `{}`, only numbers) would count as a record yet
+/// decontaminate nothing, so it fails closed.
+fn parse_record(file: &std::path::Path, chunk: &Chunk<'_>) -> Result<HeldOutItem, BuildError> {
+    let location = &chunk.location;
+    let value: serde_json::Value = serde_json::from_str(chunk.text)
+        .map_err(|e| BuildError::heldout(file, format!("{location}not JSON: {e}")))?;
+    let item = HeldOutItem::new(file, &value);
+    if item.problem_ids.is_empty() && item.fingerprint.document.is_empty() {
+        return Err(BuildError::heldout(
+            file,
+            format!("{location}record has no text or problem_id to decontaminate against"),
+        ));
+    }
+    Ok(item)
 }
 
 impl HeldOutItem {

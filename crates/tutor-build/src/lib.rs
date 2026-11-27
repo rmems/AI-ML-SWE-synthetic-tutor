@@ -291,10 +291,9 @@ fn assign_splits(
     assigner: &mut splits::Assigner,
     kept: Vec<Fingerprinted>,
 ) -> BTreeMap<Split, Vec<Fingerprinted>> {
-    let (frozen, fresh): (Vec<usize>, Vec<usize>) =
-        (0..kept.len()).partition(|&index| assigner.is_frozen_row(&kept[index].checked.row.row_id));
+    let order = assigner.assignment_order(&kept, |row| row.checked.row.row_id.as_str());
     let mut splits = vec![Split::Train; kept.len()];
-    for index in frozen.into_iter().chain(fresh) {
+    for index in order {
         let row = &kept[index].checked.row;
         splits[index] = assigner.assign(&row.row_id, &row.problem_id);
     }
