@@ -280,14 +280,17 @@ impl GeneratorUse {
 #[serde(deny_unknown_fields)]
 pub struct SeedUse {
     /// First seed of the caller's stream.
+    #[schemars(range(max = 9_007_199_254_740_991_u64))]
     pub start: u64,
     /// One past the last seed of a contiguous draw; `null` when the tool
-    /// derives per-item seeds — see `derivation`.
+    /// derives per-item seeds — see `derivation`. At most `MAX_SEED + 1`.
+    #[schemars(range(max = 9_007_199_254_740_992_u64))]
     pub end: Option<u64>,
     /// How per-item seeds were derived from `start` (e.g.
     /// `sha256(seed_start, problem_id, attempt_index)`); `null` means the
     /// contiguous range `start..end` was drawn directly. Exactly one of
     /// `end`/`derivation` must be set.
+    #[schemars(length(min = 1))]
     pub derivation: Option<String>,
 }
 

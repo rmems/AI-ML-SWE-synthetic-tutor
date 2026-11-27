@@ -366,7 +366,9 @@ struct SimulationContext<'a> {
 /// Derive a stable attempt seed from the caller's seed stream, problem ID, and
 /// per-problem attempt index, so unrelated input lines do not reseed a problem.
 /// The exact recipe [`stable_attempt_seed`] implements, recorded in the run
-/// log so a batch's seeds can be reproduced from the entry alone.
+/// log so a batch's seeds can be reproduced from the entry plus the input
+/// problem IDs (each committed attempt row also carries its `problem_id` and
+/// `seed`).
 const SEED_DERIVATION: &str = "u64::from_le_bytes(sha256(seed_start as u64 little-endian || \
      problem_id as UTF-8 || 0xff || attempt_index as u64 little-endian)[0..8]) & MAX_SEED \
      (MAX_SEED = 2^53 - 1)";

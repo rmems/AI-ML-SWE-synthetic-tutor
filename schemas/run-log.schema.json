@@ -406,14 +406,16 @@
       "properties": {
         "derivation": {
           "description": "How per-item seeds were derived from `start` (e.g.\n`sha256(seed_start, problem_id, attempt_index)`); `null` means the\ncontiguous range `start..end` was drawn directly. Exactly one of\n`end`/`derivation` must be set.",
+          "minLength": 1,
           "type": [
             "string",
             "null"
           ]
         },
         "end": {
-          "description": "One past the last seed of a contiguous draw; `null` when the tool\nderives per-item seeds — see `derivation`.",
+          "description": "One past the last seed of a contiguous draw; `null` when the tool\nderives per-item seeds — see `derivation`. At most `MAX_SEED + 1`.",
           "format": "uint64",
+          "maximum": 9007199254740992,
           "minimum": 0,
           "type": [
             "integer",
@@ -423,6 +425,7 @@
         "start": {
           "description": "First seed of the caller's stream.",
           "format": "uint64",
+          "maximum": 9007199254740991,
           "minimum": 0,
           "type": "integer"
         }

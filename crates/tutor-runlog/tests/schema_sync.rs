@@ -109,3 +109,22 @@ fn schema_requires_gate_pause_evidence() {
     // The runtime validator rejects an empty map; the schema must agree.
     assert!(!validator.is_valid(&pause(serde_json::json!({}))));
 }
+
+#[test]
+fn schema_caps_seed_bounds_like_the_runtime() {
+    let schema = run_log_json_schema();
+    let seed_use = &schema["$defs"]["SeedUse"]["properties"];
+    // Same bounds `SeedUse::validate` enforces: start <= MAX_SEED and an
+    // exclusive end <= MAX_SEED + 1.
+    assert_eq!(
+        seed_use["start"]["maximum"],
+        serde_json::json!(9_007_199_254_740_991_u64)
+    );
+    assert_eq!(
+        seed_use["end"]["maximum"],
+        serde_json::json!(9_007_199_254_740_992_u64)
+    );
+    let validator = jsonschema::validator_for(&seed_use["end"]).expect("end schema compiles");
+    assert!(validator.is_valid(&serde_json::json!(9_007_199_254_740_992_u64)));
+    assert!(!validator.is_valid(&serde_json::json!(9_007_199_254_740_993_u64)));
+}
