@@ -74,25 +74,53 @@ fn load_json(path: &Path, rows: &mut Vec<InputLine>) -> Result<(), BuildError> {
 
 fn load_jsonl(path: &Path, rows: &mut Vec<InputLine>) -> Result<(), BuildError> {
     let handle = std::fs::File::open(path).map_err(|e| BuildError::io(path, e))?;
-    let reader = std::io::BufReader::new(handle);
-    for (index, line) in reader.lines().enumerate() {
-        let line = line.map_err(|e| BuildError::io(path, e))?;
+    let mut reader = std::io::BufReader::new(handle);
+    let mut index = 0;
+    while let Some(line) = read_bounded_line(&mut reader, path, index + 1)? {
+        index += 1;
         if line.trim().is_empty() {
             continue;
         }
-        if line.len() as u64 > MAX_ROW_BYTES {
-            return Err(BuildError::input(
-                path,
-                format!("line {} exceeds {MAX_ROW_BYTES} bytes", index + 1),
-            ));
-        }
         rows.push(InputLine {
             file: path.to_owned(),
-            line: Some(index + 1),
+            line: Some(index),
             text: line,
         });
     }
     Ok(())
+}
+
+/// Read one line (without its `\n` or `\r\n`) while buffering at most
+/// `MAX_ROW_BYTES` plus the terminator, so an oversized record fails
+/// before it is held in memory. `None` at end of file.
+fn read_bounded_line(
+    reader: &mut impl BufRead,
+    path: &Path,
+    line_number: usize,
+) -> Result<Option<String>, BuildError> {
+    let mut buf = Vec::new();
+    let read = reader
+        .take(MAX_ROW_BYTES + 2)
+        .read_until(b'\n', &mut buf)
+        .map_err(|e| BuildError::io(path, e))?;
+    if read == 0 {
+        return Ok(None);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    }
+    if buf.len() as u64 > MAX_ROW_BYTES {
+        return Err(BuildError::input(
+            path,
+            format!("line {line_number} exceeds {MAX_ROW_BYTES} bytes"),
+        ));
+    }
+    String::from_utf8(buf)
+        .map(Some)
+        .map_err(|_| BuildError::input(path, format!("line {line_number} is not valid UTF-8")))
 }
 
 /// Parse a verified `problems.jsonl` into an index by `problem_id`.
@@ -197,5 +225,31 @@ mod tests {
             heldout_files(Path::new("definitely/missing/dir")),
             Err(BuildError::HeldOut { .. })
         ));
+    }
+
+    #[test]
+    fn bounded_lines_strip_terminators_and_stop_oversized_records() {
+        let text = b"a\r\nb\n\nc";
+        let mut reader = std::io::Cursor::new(&text[..]);
+        let path = Path::new("rows.jsonl");
+        let mut lines = Vec::new();
+        while let Some(line) = read_bounded_line(&mut reader, path, lines.len() + 1).unwrap() {
+            lines.push(line);
+        }
+        assert_eq!(lines, ["a", "b", "", "c"]);
+
+        // One byte over the limit fails without reading the rest of the
+        // record into memory.
+        let oversized = std::io::repeat(b'x').take(MAX_ROW_BYTES * 4);
+        let mut reader = std::io::BufReader::new(oversized);
+        assert!(matches!(
+            read_bounded_line(&mut reader, path, 1),
+            Err(BuildError::Input { .. })
+        ));
+        let mut exact = vec![b'x'; usize::try_from(MAX_ROW_BYTES).unwrap()];
+        exact.extend_from_slice(b"\r\n");
+        let mut reader = std::io::Cursor::new(exact);
+        let line = read_bounded_line(&mut reader, path, 1).unwrap().unwrap();
+        assert_eq!(line.len() as u64, MAX_ROW_BYTES);
     }
 }
