@@ -16,7 +16,8 @@ Topics: synthetic data · post-training · distillation · tutor
 > derivative generators (power/product/chain rule, one Rust-native), and the
 > independent verification pipeline exist
 > ([#18](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/18)).
-> Student attempts, tutor dialogues, QA, splits, and export do not exist yet;
+> Student attempts, tutor dialogues, and QA do not exist yet; splits and
+> export exist for already-assembled dialogue rows (`tutor-build`, below);
 > anything not yet in the repo says *planned*. The pre-pivot Julia
 > playground lives in [`legacy/`](legacy/README.md).
 
@@ -178,6 +179,55 @@ profile fields for debugging; omitted fields are deterministic seed draws.
 
 ---
 
+## Dataset assembly and export
+
+`crates/tutor-build` turns already-assembled dialogue rows into a release:
+dialogue checks (schema + tutor policy via `tutor-schema`, plus a
+cross-check against the verified problems file), dedup (exact + near on
+normalized problem and dialogue text), decontamination against
+`evals/heldout/` (input-only), a deterministic frozen split, and chat-JSONL
+export ([#8](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/8)).
+
+```sh
+cargo run -p tutor-build --bin tutor-build -- build \
+  --family derivatives-pilot \
+  --release v1 \
+  --rows path/to/dialogue-rows.jsonl \
+  --problems out/verified/problems.jsonl \
+  --out datasets/derivatives-pilot
+```
+
+- `--rows` takes `.json` (one row) or `.jsonl` (one row per line) files.
+- `--problems` is required whenever `generated` rows are among the inputs —
+  their seed/parameters/verification provenance lives on the problem.
+- `--heldout` defaults to `evals/heldout/`; `--out` defaults to
+  `datasets/<family>/`.
+- `--previous-manifest <path>` freezes splits: a row or problem already
+  assigned never moves; new rows fill the next release.
+
+Outputs under `datasets/<family>/` are gitignored (only `README.md` and
+`CARD.md` drafts are committed):
+
+```
+datasets/<family>/
+  train.jsonl            chat messages + full provenance per row
+  validation.jsonl
+  test.jsonl
+  rejected/rejected.jsonl  every dropped row with stage + reason code
+  manifest.json          split counts (per split/topic/taxonomy), artifact
+                         + input SHA-256s, frozen row/problem assignments
+  manifest.json.sha256   manifest digest, also printed by the CLI for the
+                         generation run log (#7)
+```
+
+Two pieces are deliberately not in this slice: assembling `DialogueRow`s
+from verified problems + raw student attempts (needs tutor-turn content —
+a teacher model or new templates), and the Hugging Face publish step
+([#21](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/21)); the
+`{split}.jsonl` + manifest layout is what a later HF export consumes.
+
+---
+
 ## Dataset families
 
 Math comes first (most mechanically verifiable), then ML math, then tutoring
@@ -237,7 +287,8 @@ crates/
   tutor-generate/   seeded problem generators (#18) and the procedural student simulator (#19)
   tutor-runlog/     append-only, hash-chained generation run log + `tutor-runlog` verify/pause CLI (#7)
   tutor-teachers/   placeholder: teacher model clients (#17)
-  tutor-build/      placeholder: dedup, splits, Hugging Face export (#8, #21)
+  tutor-build/      build pipeline: checks, dedup, decontamination, frozen
+                    splits, chat-JSONL export + manifest (#8); HF export is #21
 math-julia/         TutorMath: seeded problem generators + ZMQ REP worker
 schemas/            problem.schema.json, dialogue.schema.json, student-attempt.schema.json, run-log.schema.json (generated), taxonomy.yaml
 docs/               mission, tutor policy (v1), rights, batch cadence + run-log rules
