@@ -116,24 +116,30 @@ pub fn document(row: &CheckedRow) -> String {
     text
 }
 
-/// Normalize `text` for comparison: lowercase ASCII and collapse every run
-/// of non-ASCII-alphanumeric characters into one ASCII space. Dropping math
-/// operators (`d/dx sin(x^2)` → `d dx sin x 2`) is intentional: near
-/// duplicates are about the same tutoring trajectory, not byte-identical
-/// rendering.
+/// Math operators kept as their own tokens by [`normalize`]: dropping them
+/// would make `x^4 - 3x^2` and `x^4 + 3x^2` (different problems with
+/// different answers) the same text.
+const MATH_OPERATORS: &[char] = &['+', '-', '*', '/', '^', '=', '<', '>', '\''];
+
+/// Normalize `text` for comparison: lowercase ASCII, keep every
+/// [`MATH_OPERATORS`] character as its own token, and collapse every other
+/// run of non-ASCII-alphanumeric characters into one ASCII space
+/// (`f'(x) = x^4 - 3x^2.` → `f ' x = x ^ 4 - 3x ^ 2`). Brackets, spacing and
+/// prose punctuation are rendering; operators and signs change the math.
 pub fn normalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut separator = false;
     for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() {
-            if separator && !out.is_empty() {
-                out.push(' ');
-            }
-            out.push(ch.to_ascii_lowercase());
-            separator = false;
-        } else {
+        let operator = MATH_OPERATORS.contains(&ch);
+        if !ch.is_ascii_alphanumeric() && !operator {
             separator = true;
+            continue;
         }
+        if (separator || operator) && !out.is_empty() {
+            out.push(' ');
+        }
+        out.push(ch.to_ascii_lowercase());
+        separator = operator;
     }
     out
 }
@@ -177,8 +183,14 @@ mod tests {
     fn normalize_collapses_punctuation_and_case() {
         assert_eq!(
             normalize("Let f(x) = 3x^2. Compute f'(2)."),
-            "let f x 3x 2 compute f 2"
+            "let f x = 3x ^ 2 compute f ' 2"
         );
+        assert_ne!(
+            normalize("x^4 - 3x^2 at 2"),
+            normalize("x^4 + 3x^2 at 2"),
+            "a sign change is a different problem"
+        );
+        assert_eq!(normalize("a--b"), "a - - b");
         assert_eq!(normalize("  A\n\nB  "), "a b");
         assert_eq!(normalize(""), "");
     }

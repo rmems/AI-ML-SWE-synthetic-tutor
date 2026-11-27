@@ -278,6 +278,21 @@ mod tests {
     }
 
     #[test]
+    fn a_sign_flipped_statement_does_not_contaminate() {
+        let row = candidate();
+        let statement = &row.checked.problem.as_ref().unwrap().statement;
+        // `3x^2 + 2x + 5` is a different problem (f'(2) = 14, not 10); it
+        // must clear both the exact and the near statement checks.
+        let flipped = statement.replace("- 2x", "+ 2x");
+        assert_ne!(&flipped, statement);
+        let heldout = heldout_with(serde_json::json!({
+            "problem_id": "different-id",
+            "statement": flipped,
+        }));
+        assert_eq!(contamination(&row, &heldout), None);
+    }
+
+    #[test]
     fn unrelated_record_does_not_contaminate() {
         let row = candidate();
         let heldout = heldout_with(serde_json::json!({
