@@ -28,15 +28,21 @@ otherwise.
   documented meaning — never invented; counts are never estimated.
 - **Append-only with a hash chain:** appending never rewrites earlier lines.
   Each entry records `prev_entry_sha256`, the SHA-256 of the previous
-  serialized line, so an edited, reordered, or mid-truncated log fails
-  `tutor-runlog verify <log>` (also available as
-  `tutor_runlog::RunLog::entries`, which refuses a partial read). Appending
-  itself refuses to extend a log whose chain does not verify, holds a
-  `<log>.lock` lock file so two writers sharing a log cannot interleave
-  (a stale lock from a killed append is removed manually), and is proven
-  out before a batch replaces the previous one: a `--run-log` path that
-  aliases a batch artifact, or a `replaces` naming no earlier run, fails
-  before anything is overwritten.
+  serialized line, so an edit, reordering, or deletion *before the last
+  entry* fails `tutor-runlog verify <log>` (also available as
+  `tutor_runlog::RunLog::entries`, which refuses a partial read). The chain
+  cannot cover its own tail: an edit to the final entry, or cutting trailing
+  entries off, leaves a valid prefix, so a release must also record the
+  SHA-256 of the log's last line it relied on. Appending itself refuses to
+  extend a log whose chain does not verify. Publishing commands take the
+  output directory's lock and the `<log>.lock` lock file *before* replacing
+  any artifact and hold both through the append, so two writers cannot
+  interleave and nothing can change the log between the preflight check and
+  the entry (a stale lock from a killed writer is removed manually). The
+  preflight rejects a `--run-log` path that aliases a batch artifact and a
+  `replaces` naming no earlier run before anything is overwritten; after
+  publication only an I/O error can stop the append, and then the batch is
+  treated as unlogged and rerun.
 - **Reruns:** a rerun is a new entry. When it supersedes an earlier batch it
   names that run in `replaces` — passed explicitly via `--replaces <run-id>`
   (or `RunConfig::replaces`), never inferred by the log, so a new batch is
@@ -79,6 +85,9 @@ cargo run -p tutor-runlog -- pause datasets/<family>/run-log.jsonl \
   --evidence verify_answer_mismatch=12
 ```
 
-The family stays paused until the fix lands as a **new run** whose entry
-names the failed run via `--replaces`. A logged run is never edited —
+The family stays paused until the fix lands as a **new run**. When the pause
+names a failed run, the new run names it via `--replaces`. When the gate
+failed outside a logged run (the pause has no `run_id`), the fix is simply
+the next logged run for the family, appended after the pause; there is
+nothing to replace. A logged run is never edited —
 history stays as written, fixes append.

@@ -5,8 +5,12 @@
 //! run that commits a batch — generation, simulation, and later the
 //! assemble/export stages — appends one [`RunLogEntry`] complete enough to
 //! reproduce the batch or reject it. Entries are hash-chained
-//! (`prev_entry_sha256`) so edited or reordered history is detected by
-//! [`RunLog::entries`]; a rerun appends a new entry whose caller-set
+//! (`prev_entry_sha256`) so edited, reordered, or deleted history *before
+//! the last entry* is detected by [`RunLog::entries`]. The chain cannot
+//! cover its own tail: an edit to the final entry, or truncating trailing
+//! entries, leaves a valid prefix. Detecting that needs the head digest
+//! retained independently (e.g. the release records the last entry's
+//! SHA-256). A rerun appends a new entry whose caller-set
 //! `replaces` names the run it supersedes, instead of editing the old one.
 //! Fields a run could not have known are explicit `null`, documented on
 //! each field.
@@ -25,7 +29,9 @@ pub use entry::{
     Counts, Environment, Gate, GatePauseRecord, GeneratorUse, OutputRef, QaSummary,
     RUN_LOG_SCHEMA_VERSION, Record, RunLogEntry, RunRecord, SeedUse, Stage, TeacherUse,
 };
-pub use log::{RunLog, RunLogError, ensure_log_path_is_clear, new_run_id, sha256_hex};
+pub use log::{
+    LockFile, LockedRunLog, RunLog, RunLogError, ensure_log_path_is_clear, new_run_id, sha256_hex,
+};
 
 /// The rustc version that built this crate; recorded as
 /// [`Environment::rustc_version`].

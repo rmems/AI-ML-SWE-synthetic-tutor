@@ -99,7 +99,7 @@ pub enum RunLogError {
     /// Another append holds the log's lock file. The lock survives a killed
     /// append, so a writer that stopped mid-append leaves it for manual
     /// removal — a stuck lock is recoverable where a forked chain is not.
-    #[error("run log is locked by another append; remove {0} if that append stopped mid-write")]
+    #[error("lock {0} is held by another writer; remove it if that writer stopped mid-write")]
     LockBusy(PathBuf),
 }
 
@@ -149,6 +149,20 @@ impl RunLog {
         check_references(&entries, record, entries.len() + 1)
     }
 
+    /// Take this log's append lock and hold it until the returned guard
+    /// drops. Callers that publish a batch hold the guard from the preflight
+    /// [`LockedRunLog::check`] through [`LockedRunLog::append`], so no other
+    /// writer can take the lock or change the log between the check and the
+    /// entry: once the batch is published, the append can only fail on an
+    /// I/O error. Fails with [`RunLogError::LockBusy`] when another writer
+    /// holds the lock.
+    pub fn lock(&self) -> Result<LockedRunLog<'_>, RunLogError> {
+        Ok(LockedRunLog {
+            log: self,
+            _lock: LockFile::acquire(&lock_path(&self.path))?,
+        })
+    }
+
     /// Append `record` and return the committed entry.
     ///
     /// Fills the envelope (`log_version`, `recorded_at`, `prev_entry_sha256`).
@@ -165,7 +179,10 @@ impl RunLog {
     /// manual removal, the same trade `.simulate.lock` makes. The entry
     /// itself is still one write call, so readers never see a partial line.
     pub fn append(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
-        let _lock = AppendLock::acquire(&self.path)?;
+        self.lock()?.append(record)
+    }
+
+    fn append_locked(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
         let mut text = self.read_text()?;
         // Refuse to extend a log whose history does not verify.
         let entries = verify_lines(&text)?;
@@ -213,16 +230,38 @@ impl RunLog {
     }
 }
 
-/// Serialize writers to one log path across processes: a `<log>.lock`
-/// sibling created with `create_new` guards the whole append. Removed on
-/// drop; a killed append leaves it behind for manual removal.
-struct AppendLock {
+/// A [`RunLog`] whose append lock is held; see [`RunLog::lock`].
+pub struct LockedRunLog<'a> {
+    log: &'a RunLog,
+    _lock: LockFile,
+}
+
+impl LockedRunLog<'_> {
+    /// [`RunLog::check`] under the held lock.
+    pub fn check(&self, record: &Record) -> Result<(), RunLogError> {
+        self.log.check(record)
+    }
+
+    /// Append `record` under the held lock; see [`RunLog::append`].
+    pub fn append(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
+        self.log.append_locked(record)
+    }
+}
+
+/// An exclusive lock file created with `create_new`, so it serializes
+/// writers across processes. Removed on drop; a killed writer leaves it
+/// behind for manual removal (a stuck lock is recoverable, a forked chain or
+/// a mixed batch is not). Run logs use a `<log>.lock` sibling; publishers use
+/// one per output directory.
+pub struct LockFile {
     path: PathBuf,
 }
 
-impl AppendLock {
-    fn acquire(log: &Path) -> Result<Self, RunLogError> {
-        let path = lock_path(log);
+impl LockFile {
+    /// Create `path` exclusively, failing with [`RunLogError::LockBusy`]
+    /// when it already exists.
+    pub fn acquire(path: &Path) -> Result<Self, RunLogError> {
+        let path = path.to_path_buf();
         if let Some(parent) = path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -247,7 +286,7 @@ impl AppendLock {
     }
 }
 
-impl Drop for AppendLock {
+impl Drop for LockFile {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
     }
@@ -308,15 +347,27 @@ fn normalized_path(path: &Path) -> PathBuf {
     // Canonicalizing resolves symlinks and `..` but needs the target to
     // exist; a not-yet-written artifact falls back to its canonicalized
     // parent plus its file name.
-    if let Ok(canonical) = std::fs::canonicalize(&absolute) {
-        return canonical;
-    }
-    match (absolute.parent(), absolute.file_name()) {
-        (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
-            Ok(parent) => normalize_lexically(&parent.join(name)),
-            Err(_) => normalize_lexically(&absolute),
-        },
-        _ => normalize_lexically(&absolute),
+    let absolute = normalize_lexically(&absolute);
+    // Canonicalize the nearest existing ancestor and re-attach the missing
+    // suffix, so `alias/new/file` and `real/new/file` compare equal when
+    // `alias` is a symlink to `real` even though `new/` does not exist yet.
+    let mut suffix = Vec::new();
+    let mut ancestor = absolute.as_path();
+    loop {
+        if let Ok(canonical) = std::fs::canonicalize(ancestor) {
+            let mut resolved = canonical;
+            for part in suffix.iter().rev() {
+                resolved.push(part);
+            }
+            return resolved;
+        }
+        match (ancestor.parent(), ancestor.file_name()) {
+            (Some(parent), Some(name)) => {
+                suffix.push(name.to_os_string());
+                ancestor = parent;
+            }
+            _ => return absolute,
+        }
     }
 }
 
@@ -343,11 +394,23 @@ fn verify_lines(text: &str) -> Result<Vec<RunLogEntry>, RunLogError> {
         if line.trim().is_empty() {
             continue;
         }
-        let entry: RunLogEntry =
-            serde_json::from_str(line).map_err(|source| RunLogError::Parse {
-                line: line_number,
-                source,
-            })?;
+        let parse = |source| RunLogError::Parse {
+            line: line_number,
+            source,
+        };
+        let raw: serde_json::Value = serde_json::from_str(line).map_err(parse)?;
+        let entry: RunLogEntry = serde_json::from_value(raw.clone()).map_err(parse)?;
+        // Serde reads an omitted `Option` field as `None`; the format (and
+        // the schema) require nullable fields to be written as explicit
+        // `null`. Re-encoding the entry and comparing catches any omission.
+        if serde_json::to_value(&entry).map_err(parse)? != raw {
+            return Err(RunLogError::Invalid {
+                field: "entry",
+                reason: format!(
+                    "line {line_number} is not in canonical form (a field is missing; nullable fields must be explicit null)"
+                ),
+            });
+        }
         if entry.log_version != RUN_LOG_SCHEMA_VERSION {
             return Err(RunLogError::UnsupportedVersion {
                 line: line_number,
@@ -634,39 +697,46 @@ mod tests {
     }
 
     #[test]
-    fn tampered_history_is_detected() {
-        corrupted_log_fails_verify(
-            "tampered.jsonl",
-            2,
-            |text| text.replace("\"generated\":40", "\"generated\":41"),
-            |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
-        );
-    }
-
-    #[test]
-    fn reordered_history_is_detected() {
-        corrupted_log_fails_verify(
-            "reordered.jsonl",
-            2,
-            |text| {
-                let lines: Vec<_> = text.lines().collect();
-                format!("{}\n{}\n", lines[1], lines[0])
-            },
-            |error| matches!(error, RunLogError::FirstEntryLinks { line: 1 }),
-        );
-    }
-
-    #[test]
-    fn deleted_middle_entry_is_detected() {
-        corrupted_log_fails_verify(
-            "deleted.jsonl",
-            3,
-            |text| {
-                let lines: Vec<_> = text.lines().collect();
-                format!("{}\n{}\n", lines[0], lines[2])
-            },
-            |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
-        );
+    fn corrupted_history_is_detected() {
+        type Corrupt = fn(&str) -> String;
+        type Expect = fn(&RunLogError) -> bool;
+        let cases: [(&str, usize, Corrupt, Expect); 4] = [
+            (
+                "tampered.jsonl",
+                2,
+                |text| text.replace("\"generated\":40", "\"generated\":41"),
+                |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
+            ),
+            (
+                "reordered.jsonl",
+                2,
+                |text| {
+                    let lines: Vec<_> = text.lines().collect();
+                    format!("{}\n{}\n", lines[1], lines[0])
+                },
+                |error| matches!(error, RunLogError::FirstEntryLinks { line: 1 }),
+            ),
+            (
+                "deleted.jsonl",
+                3,
+                |text| {
+                    let lines: Vec<_> = text.lines().collect();
+                    format!("{}\n{}\n", lines[0], lines[2])
+                },
+                |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
+            ),
+            (
+                // Serde would read the omitted nullable field as `None`; the
+                // format requires an explicit `null`.
+                "omitted-null.jsonl",
+                1,
+                |text| text.replacen("\"prev_entry_sha256\":null,", "", 1),
+                |error| matches!(error, RunLogError::Invalid { field: "entry", .. }),
+            ),
+        ];
+        for (name, runs, corrupt, expected) in cases {
+            corrupted_log_fails_verify(name, runs, corrupt, expected);
+        }
     }
 
     #[test]
@@ -704,25 +774,6 @@ mod tests {
             log.entries_strict(),
             Err(RunLogError::Io(ref error)) if error.kind() == std::io::ErrorKind::NotFound
         ));
-    }
-
-    #[test]
-    fn output_manifest_sha256_must_be_a_digest() {
-        let path = temp_path("bad-sha.jsonl");
-        let log = RunLog::at(&path);
-        let mut record = run_record("run-a", Stage::Generate);
-        let Record::Run(run) = &mut record else {
-            panic!("run record");
-        };
-        run.output.manifest_sha256 = Some("not-a-digest".to_owned());
-        assert!(matches!(
-            log.append(record),
-            Err(RunLogError::Invalid {
-                field: "output.manifest_sha256",
-                ..
-            })
-        ));
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -786,20 +837,140 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    #[test]
-    fn replaces_must_name_an_earlier_run() {
-        let path = temp_path("replaces.jsonl");
+    /// Mutate a valid run record with `mutate`, and assert the append is
+    /// rejected with an error matching `expected` and leaves no log behind.
+    fn append_is_rejected(
+        name: &str,
+        mutate: impl FnOnce(&mut RunRecord),
+        expected: impl FnOnce(&RunLogError) -> bool,
+    ) {
+        let path = temp_path(name);
         let log = RunLog::at(&path);
         let mut record = run_record("run-b", Stage::Generate);
         let Record::Run(run) = &mut record else {
             panic!("run record");
         };
-        run.replaces = Some("run-a".to_owned());
+        mutate(run);
+        let result = log.append(record);
+        assert!(
+            matches!(result, Err(ref error) if expected(error)),
+            "{name}: unexpected append result: {result:?}"
+        );
+        assert!(!path.exists(), "{name}: a rejected append must not write");
+    }
+
+    #[test]
+    fn invalid_run_records_are_rejected() {
+        type Mutate = fn(&mut RunRecord);
+        type Expect = fn(&RunLogError) -> bool;
+        let cases: [(&str, Mutate, Expect); 5] = [
+            (
+                "bad-sha.jsonl",
+                |run| run.output.manifest_sha256 = Some("not-a-digest".to_owned()),
+                |error| {
+                    matches!(
+                        error,
+                        RunLogError::Invalid {
+                            field: "output.manifest_sha256",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "upper-sha.jsonl",
+                |run| run.output.manifest_sha256 = Some("AB".repeat(32)),
+                |error| {
+                    matches!(
+                        error,
+                        RunLogError::Invalid {
+                            field: "output.manifest_sha256",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "blank-derivation.jsonl",
+                |run| {
+                    run.generators[0].seeds.end = None;
+                    run.generators[0].seeds.derivation = Some("  ".to_owned());
+                },
+                |error| {
+                    matches!(
+                        error,
+                        RunLogError::Invalid {
+                            field: "generators[].seeds.derivation",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "overflow.jsonl",
+                |run| {
+                    run.counts.rejected = 1;
+                    run.counts.rejected_by_reason =
+                        BTreeMap::from([("a".to_owned(), u64::MAX), ("b".to_owned(), 2)]);
+                },
+                |error| {
+                    matches!(
+                        error,
+                        RunLogError::Invalid {
+                            field: "counts.rejected_by_reason",
+                            ..
+                        }
+                    )
+                },
+            ),
+            (
+                "replaces.jsonl",
+                |run| run.replaces = Some("run-a".to_owned()),
+                |error| matches!(error, RunLogError::ReplacesUnknown { .. }),
+            ),
+        ];
+        for (name, mutate, expected) in cases {
+            append_is_rejected(name, mutate, expected);
+        }
+    }
+
+    #[test]
+    fn lock_holds_the_log_between_check_and_append() {
+        let path = temp_path("held.jsonl");
+        let log = RunLog::at(&path);
+        let locked = log.lock().expect("lock is free");
+        let record = run_record("run-a", Stage::Generate);
+        locked.check(&record).unwrap();
+        // Another writer cannot slip an entry in between check and append.
         assert!(matches!(
-            log.append(record),
-            Err(RunLogError::ReplacesUnknown { .. })
+            log.append(run_record("run-x", Stage::Generate)),
+            Err(RunLogError::LockBusy(_))
         ));
+        locked.append(record).unwrap();
+        drop(locked);
+        assert!(!lock_path(&path).exists(), "the lock is released on drop");
+        assert_eq!(log.entries().unwrap().len(), 1);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn missing_paths_alias_through_a_symlinked_ancestor() {
+        let root = temp_path("alias-root");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        // Neither `new/` nor the file exists yet; only an ancestor does.
+        assert!(paths_alias(
+            &link.join("new/run-log.jsonl"),
+            &real.join("new/run-log.jsonl")
+        ));
+        assert!(!paths_alias(
+            &link.join("new/run-log.jsonl"),
+            &real.join("other/run-log.jsonl")
+        ));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -841,8 +1012,21 @@ mod tests {
             gate: Gate::Export,
             run_id: Some("run-nope".to_owned()),
             detail: "export failed".to_owned(),
-            evidence: BTreeMap::new(),
+            evidence: BTreeMap::from([("reason".to_owned(), serde_json::json!("x"))]),
         });
+        assert!(matches!(
+            log.append(Record::GatePause(GatePauseRecord {
+                family: "derivative_misconceptions".to_owned(),
+                gate: Gate::Export,
+                run_id: None,
+                detail: "export failed".to_owned(),
+                evidence: BTreeMap::new(),
+            })),
+            Err(RunLogError::Invalid {
+                field: "evidence",
+                ..
+            })
+        ));
         assert!(matches!(
             log.append(bad),
             Err(RunLogError::PauseRunUnknown { .. })

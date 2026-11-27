@@ -3,7 +3,7 @@
 //! batch they committed.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use sha2::{Digest, Sha256};
@@ -13,15 +13,45 @@ fn bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_tutor-generate"))
 }
 
-fn unique_path(name: &str) -> PathBuf {
+/// A unique scratch path under the system temp dir, removed (file or
+/// directory tree) when the guard drops — including when a test panics.
+struct TempPath(PathBuf);
+
+impl std::ops::Deref for TempPath {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for TempPath {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::ffi::OsStr> for TempPath {
+    fn as_ref(&self) -> &std::ffi::OsStr {
+        self.0.as_os_str()
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn unique_path(name: &str) -> TempPath {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!(
+    TempPath(std::env::temp_dir().join(format!(
         "tutor-generate-runlog-{name}-{}-{nanos}",
         std::process::id()
-    ))
+    )))
 }
 
 fn run_log_schema() -> jsonschema::Validator {
@@ -328,6 +358,48 @@ fn a_run_log_aliasing_an_output_artifact_is_rejected() {
         stderr(&output)
     );
     assert!(!rejections.exists(), "no bundle was published");
+}
+
+#[test]
+fn a_run_log_on_a_run_staging_or_lock_file_is_rejected() {
+    for name in ["manifest.json.tmp", ".run.lock"] {
+        let out = unique_path("staging-alias-out");
+        let log = out.join(name);
+        let mut args = run_args(&out);
+        args.extend([
+            "--run-log".to_owned(),
+            log.to_str().expect("utf-8 temp path").to_owned(),
+        ]);
+        let output = bin().args(args).output().expect("runs tutor-generate run");
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("aliases the batch artifact"),
+            "{name}: stderr: {}",
+            stderr(&output)
+        );
+        assert!(
+            !out.join("manifest.json").exists(),
+            "{name}: nothing was published"
+        );
+    }
+}
+
+#[test]
+fn a_held_output_lock_blocks_a_run() {
+    let out = unique_path("locked-run-out");
+    std::fs::create_dir_all(&*out).unwrap();
+    std::fs::write(out.join(".run.lock"), "pid 0\n").unwrap();
+    let output = bin()
+        .args(run_args(&out))
+        .output()
+        .expect("runs tutor-generate run");
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("held by another writer"),
+        "stderr: {}",
+        stderr(&output)
+    );
+    assert!(!out.join("manifest.json").exists(), "nothing was published");
 }
 
 #[test]

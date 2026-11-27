@@ -22,7 +22,10 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
-use tutor_runlog::{Counts, GeneratorUse, OutputRef, Record, RunLog, RunRecord, SeedUse, Stage};
+use tutor_runlog::{
+    Counts, GeneratorUse, LockFile, LockedRunLog, OutputRef, Record, RunLog, RunRecord, SeedUse,
+    Stage,
+};
 use tutor_schema::{
     Answer, Difficulty, GeneratorLanguage, GeneratorProvenance, MAX_SEED, MisconceptionId,
     Parameters, Problem, Step,
@@ -452,19 +455,40 @@ pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
         total_rejected: rejected.len(),
     };
     let manifest_text = manifest_text(&report, &verified, &rejected)?;
-    // Build the entry and prove it can commit before any artifact is
-    // replaced: a bad --run-log path or a `replaces` naming no earlier run
-    // fails here, while the previous batch is still intact.
-    let log_entry = config
+    let summary = RunSummary {
+        report: &report,
+        worker: worker.as_ref(),
+        manifest_text: &manifest_text,
+    };
+    // One run publishes into an output directory at a time, so two runs
+    // cannot interleave their artifact and manifest renames.
+    let _out_lock = LockFile::acquire(&config.out_dir.join(RUN_LOCK_FILE)).map_err(|err| {
+        io_err(format!(
+            "output directory {}: {err}",
+            config.out_dir.display()
+        ))
+    })?;
+    // Take the log's append lock and prove the entry can commit before any
+    // artifact is replaced: a bad --run-log path or a `replaces` naming no
+    // earlier run fails here, while the previous batch is still intact. The
+    // lock is held through the append, so no other writer can change the
+    // log between this check and the entry.
+    let log = config
         .run_log
         .as_ref()
-        .map(|target| prepare_log_entry(config, &report, worker.as_ref(), target, &manifest_text))
-        .transpose()?;
+        .map(|target| RunLog::at(&target.path));
+    let locked = log
+        .as_ref()
+        .map(RunLog::lock)
+        .transpose()
+        .map_err(log_err)?;
+    let log_entry = match (config.run_log.as_ref(), locked.as_ref()) {
+        (Some(target), Some(locked)) => Some(prepare_log_entry(config, target, &summary, locked)?),
+        _ => None,
+    };
     emit_outputs(config, &verified, &rejected, &manifest_text)?;
-    if let Some((path, record)) = log_entry {
-        RunLog::at(&path)
-            .append(record)
-            .map_err(|err| io_err(format!("run log append failed: {err}")))?;
+    if let (Some(locked), Some(record)) = (locked.as_ref(), log_entry) {
+        locked.append(record).map_err(log_err)?;
     }
     Ok(report)
 }
@@ -579,7 +603,7 @@ fn emit_outputs(
             .map(|v| v.unwrap()),
     )?;
     let manifest_path = config.out_dir.join("manifest.json");
-    let tmp = manifest_path.with_extension("json.tmp");
+    let tmp = config.out_dir.join(MANIFEST_STAGING_FILE);
     std::fs::write(&tmp, manifest_text)?;
     publish(&tmp, &manifest_path)
 }
@@ -663,45 +687,60 @@ fn reason_counts(rejected: &[RejectRecord]) -> BTreeMap<String, u64> {
     counts
 }
 
+/// Staging name the manifest is written to before its atomic rename.
+const MANIFEST_STAGING_FILE: &str = "manifest.json.tmp";
+
+/// Lock file serializing `run` publishes into one output directory.
+const RUN_LOCK_FILE: &str = ".run.lock";
+
+/// What a finished run reports to its log entry.
+struct RunSummary<'a> {
+    report: &'a RunReport,
+    worker: Option<&'a WorkerInfo>,
+    /// The manifest text about to be committed.
+    manifest_text: &'a str,
+}
+
+fn log_err(err: tutor_runlog::RunLogError) -> std::io::Error {
+    io_err(format!("run log append failed: {err}"))
+}
+
 /// Prove this run's log entry can commit before any artifact is replaced:
-/// the destination must not alias a batch artifact (a misplaced `--run-log`
-/// would overwrite the output it should only describe), and the append —
-/// existing chain, `replaces` resolution, record format — must validate
-/// against the log as it stands. Returns the entry to append after the
-/// batch is committed.
+/// the destination must not alias a batch artifact or staging file (a
+/// misplaced `--run-log` would overwrite the output it should only
+/// describe), and the append — existing chain, `replaces` resolution,
+/// record format — must validate against the log as it stands under the
+/// held lock. Returns the entry to append after the batch is committed.
 fn prepare_log_entry(
     config: &RunConfig,
-    report: &RunReport,
-    worker: Option<&WorkerInfo>,
     target: &RunLogTarget,
-    manifest_text: &str,
-) -> std::io::Result<(PathBuf, Record)> {
+    summary: &RunSummary<'_>,
+    log: &LockedRunLog<'_>,
+) -> std::io::Result<Record> {
     let reserved = [
         config.out_dir.clone(),
         config.out_dir.join("verified/problems.jsonl"),
         config.out_dir.join("rejected/rejections.jsonl"),
         config.out_dir.join("manifest.json"),
+        config.out_dir.join(MANIFEST_STAGING_FILE),
+        config.out_dir.join(RUN_LOCK_FILE),
         PathBuf::from(&config.schema),
     ];
-    tutor_runlog::ensure_log_path_is_clear(&target.path, &reserved)
-        .map_err(|err| io_err(format!("run log append failed: {err}")))?;
-    let record = run_record(config, report, worker, target, manifest_text);
-    RunLog::at(&target.path)
-        .check(&record)
-        .map_err(|err| io_err(format!("run log append failed: {err}")))?;
-    Ok((target.path.clone(), record))
+    tutor_runlog::ensure_log_path_is_clear(&target.path, &reserved).map_err(log_err)?;
+    let record = run_record(config, target, summary);
+    log.check(&record).map_err(log_err)?;
+    Ok(record)
 }
 
 /// This run's entry for the generation run log: counts from the report
 /// (never estimated), the manifest digest of the text about to be committed,
 /// and Julia versions from the worker's `ping` reply when it answered.
-fn run_record(
-    config: &RunConfig,
-    report: &RunReport,
-    worker: Option<&WorkerInfo>,
-    target: &RunLogTarget,
-    manifest_text: &str,
-) -> Record {
+fn run_record(config: &RunConfig, target: &RunLogTarget, summary: &RunSummary<'_>) -> Record {
+    let RunSummary {
+        report,
+        worker,
+        manifest_text,
+    } = *summary;
     let mut environment = tutor_runlog::environment();
     if let Some(info) = worker {
         environment.julia_version = Some(info.julia_version.clone());

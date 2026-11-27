@@ -534,22 +534,25 @@ fn write_simulation_output(
         manifest_text: &manifest_text,
     };
 
-    // Prove the run-log write can commit before any artifact is replaced:
-    // the destination must not alias a batch file, and the append — chain,
-    // `replaces`, record format — must validate against the log as it
-    // stands. A bad --run-log or a mistyped --replaces fails here, while the
-    // previous bundle is still intact.
+    std::fs::create_dir_all(&args.out)?;
+    let _lock = OutputLock::acquire(&args.out)?;
+    // Take the log's append lock and prove the run-log write can commit
+    // before any artifact is replaced: the destination must not alias a
+    // batch file, and the append — chain, `replaces`, record format — must
+    // validate against the log as it stands. A bad --run-log or a mistyped
+    // --replaces fails here, while the previous bundle is still intact. The
+    // lock is held through the append, so no other writer can change the
+    // log between this check and the entry.
     let log_path = run_log_path(args);
     tutor_runlog::ensure_log_path_is_clear(&log_path, &reserved_log_paths(args))?;
     let record = simulation_run_record(args, &batch, &manifest_text);
     let log = RunLog::at(&log_path);
-    log.check(&record)?;
+    let locked = log.lock()?;
+    locked.check(&record)?;
 
-    std::fs::create_dir_all(&args.out)?;
-    let _lock = OutputLock::acquire(&args.out)?;
     let existing = ensure_simulation_output(&args.out)?;
     publish_bundle(&args.out, &publication, &existing)?;
-    log.append(record)?;
+    locked.append(record)?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
         batch.attempts.len(),
