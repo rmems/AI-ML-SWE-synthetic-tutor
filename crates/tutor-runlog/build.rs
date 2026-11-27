@@ -20,11 +20,22 @@ fn main() {
     if let Some(commit) = git_head() {
         println!("cargo:rustc-env=TUTOR_RUNLOG_GIT_COMMIT={commit}");
     }
-    // Rebuild when the checkout's HEAD moves (e.g. a branch switch) so the
-    // recorded commit stays accurate. Not all checkouts have .git/HEAD —
-    // worktrees keep a .git file instead — so only watch what exists.
-    if std::path::Path::new("../../.git/HEAD").exists() {
-        println!("cargo:rerun-if-changed=../../.git/HEAD");
+    // Rebuild when the checkout's commit moves so the recorded commit stays
+    // accurate: HEAD itself changes on a branch switch, while a commit or
+    // fast-forward on the current branch only touches that branch's ref (or
+    // packed-refs). Ask git for the paths so worktrees, whose HEAD lives in
+    // the common git dir, are covered too; only watch files that exist.
+    let mut watched = vec![git_output(&["rev-parse", "--git-path", "HEAD"])];
+    if let Some(branch) = git_output(&["symbolic-ref", "-q", "HEAD"]) {
+        watched.push(git_output(&["rev-parse", "--git-path", &branch]));
+    }
+    watched.push(git_output(&["rev-parse", "--git-path", "packed-refs"]));
+    let manifest_dir = std::path::PathBuf::from(manifest_dir());
+    for path in watched.into_iter().flatten() {
+        let path = manifest_dir.join(path);
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
     }
 }
 
@@ -40,15 +51,24 @@ fn tool_version(tool: &str) -> String {
 /// `None` when the crate is built outside a git worktree or git is
 /// unavailable (the run entry then records `git_commit: null`).
 fn git_head() -> Option<String> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it");
+    git_output(&["rev-parse", "HEAD"])
+}
+
+fn manifest_dir() -> String {
+    std::env::var("CARGO_MANIFEST_DIR").expect("cargo sets it")
+}
+
+/// Trimmed stdout of `git <args>` run in this crate's directory; `None`
+/// when git fails, is unavailable, or prints nothing.
+fn git_output(args: &[&str]) -> Option<String> {
     let output = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(manifest_dir)
+        .args(args)
+        .current_dir(manifest_dir())
         .output()
         .ok()?;
     if !output.status.success() {
         return None;
     }
-    let head = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (!head.is_empty()).then_some(head)
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
