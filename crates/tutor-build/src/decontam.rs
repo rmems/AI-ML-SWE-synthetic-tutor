@@ -70,7 +70,21 @@ pub fn load(dir: &std::path::Path) -> Result<HeldOut, BuildError> {
                 };
                 BuildError::heldout(file, format!("{location}not JSON: {e}"))
             })?;
-            items.push(HeldOutItem::new(file, &value));
+            let item = HeldOutItem::new(file, &value);
+            if item.problem_ids.is_empty() && item.fingerprint.document.is_empty() {
+                // `[]`, `{}`, or a record of only numbers would count as a
+                // record yet decontaminate nothing; fail closed.
+                let location = if is_jsonl(file) {
+                    format!("line {}: ", index + 1)
+                } else {
+                    String::new()
+                };
+                return Err(BuildError::heldout(
+                    file,
+                    format!("{location}record has no text or problem_id to decontaminate against"),
+                ));
+            }
+            items.push(item);
             // For .json files the whole file is one record; stop after it.
             if !is_jsonl(file) {
                 break;
@@ -290,6 +304,21 @@ mod tests {
             "statement": flipped,
         }));
         assert_eq!(contamination(&row, &heldout), None);
+    }
+
+    #[test]
+    fn placeholder_heldout_records_fail_closed() {
+        let dir =
+            std::env::temp_dir().join(format!("tutor-build-placeholder-{}", std::process::id()));
+        for (name, text) in [("empty-array.json", "[]"), ("empty-object.jsonl", "{}\n")] {
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(name), text).unwrap();
+            assert!(
+                matches!(load(&dir), Err(BuildError::HeldOut { .. })),
+                "{name} must not pass as a held-out record"
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     #[test]
