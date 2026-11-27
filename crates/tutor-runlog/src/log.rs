@@ -290,6 +290,10 @@ impl LockedRunLog<'_> {
     /// destination path, or another open failure then stops publication while
     /// the previous batch is still intact instead of leaving a committed
     /// batch with no entry.
+    // `write(true)` looks redundant to clippy because append implies write in
+    // the cross-platform API, but on Windows it changes the low-level access
+    // rights needed for rollback truncation.
+    #[allow(clippy::ineffective_open_options)]
     pub fn open_append(&mut self) -> Result<(), RunLogError> {
         if self.append_file.is_none() {
             self.append_file = Some(
