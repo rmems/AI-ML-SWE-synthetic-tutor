@@ -398,6 +398,12 @@ fn lock_path(log: &Path) -> PathBuf {
 /// is an ancestor of another reserved path is the output directory itself
 /// and may hold the log.
 pub fn ensure_log_path_is_clear(log: &Path, reserved: &[PathBuf]) -> Result<(), RunLogError> {
+    if log.as_os_str().to_string_lossy().ends_with('/') {
+        return Err(RunLogError::Invalid {
+            field: "run_log.path",
+            reason: format!("{} ends in a directory separator", log.display()),
+        });
+    }
     if log.is_dir() {
         return Err(RunLogError::Invalid {
             field: "run_log.path",
