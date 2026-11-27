@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tutor_generate::student::{AttemptSpec, SIMULATOR_NAME, SIMULATOR_VERSION, simulate};
 use tutor_generate::{GENERATORS, RunConfig, run, spec};
+use tutor_runlog::{Counts, GeneratorUse, OutputRef, Record, RunLog, RunRecord, SeedUse, Stage};
 use tutor_schema::{MAX_SEED, MisconceptionId, Persistence, Problem, StudentLevel, SurfaceStyle};
 use tutor_wire::DEFAULT_ENDPOINT;
 
@@ -50,6 +51,20 @@ enum Command {
         /// Output directory.
         #[arg(long)]
         out: PathBuf,
+        /// Path of the append-only generation run log; defaults to
+        /// `<out>/run-log.jsonl`.
+        #[arg(long)]
+        run_log: Option<PathBuf>,
+        /// Dataset family this run feeds, recorded in the run log.
+        #[arg(long)]
+        family: Option<String>,
+        /// Generation spec reference (issue ref or URL) recorded in the run log.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Run id of the earlier run this one replaces (a rerun marker);
+        /// omit for a run that replaces nothing.
+        #[arg(long)]
+        replaces: Option<String>,
     },
     /// Simulate student attempts from verified/problems.jsonl.
     Simulate {
@@ -86,6 +101,20 @@ enum Command {
         /// Path to student-attempt.schema.json.
         #[arg(long, default_value = "schemas/student-attempt.schema.json")]
         schema: PathBuf,
+        /// Path of the append-only generation run log; defaults to
+        /// `<out>/run-log.jsonl`.
+        #[arg(long)]
+        run_log: Option<PathBuf>,
+        /// Dataset family this run feeds, recorded in the run log.
+        #[arg(long)]
+        family: Option<String>,
+        /// Generation spec reference (issue ref or URL) recorded in the run log.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Run id of the earlier run this one replaces (a rerun marker);
+        /// omit for a run that replaces nothing.
+        #[arg(long)]
+        replaces: Option<String>,
     },
 }
 
@@ -100,6 +129,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout_secs,
             schema,
             out,
+            run_log,
+            family,
+            spec,
+            replaces,
         } => run_generation(GenerateArgs {
             generators,
             seed_start,
@@ -108,6 +141,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout_secs,
             schema,
             out,
+            run_log,
+            family,
+            spec,
+            replaces,
         }),
         Command::Simulate {
             problems,
@@ -121,6 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             surface_style,
             teacher_variety,
             schema,
+            run_log,
+            family,
+            spec,
+            replaces,
         } => run_simulation(SimulateArgs {
             problems,
             out,
@@ -133,6 +174,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             surface_style,
             teacher_variety,
             schema,
+            run_log,
+            family,
+            spec,
+            replaces,
         }),
     }
 }
@@ -159,6 +204,10 @@ struct GenerateArgs {
     timeout_secs: u64,
     schema: PathBuf,
     out: PathBuf,
+    run_log: Option<PathBuf>,
+    family: Option<String>,
+    spec: Option<String>,
+    replaces: Option<String>,
 }
 
 fn run_generation(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -188,6 +237,14 @@ fn run_generation(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> 
         out_dir: args.out.clone(),
         schema_json,
         schema: args.schema.display().to_string(),
+        run_log: Some(tutor_generate::RunLogTarget {
+            path: args
+                .run_log
+                .unwrap_or_else(|| args.out.join("run-log.jsonl")),
+            family: args.family,
+            spec: args.spec,
+            replaces: args.replaces,
+        }),
     })?;
     print_generation_report(&report, &args.out);
     if report.total_verified == 0 {
@@ -223,6 +280,10 @@ struct SimulateArgs {
     surface_style: Option<String>,
     teacher_variety: bool,
     schema: PathBuf,
+    run_log: Option<PathBuf>,
+    family: Option<String>,
+    spec: Option<String>,
+    replaces: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -477,6 +538,7 @@ fn write_simulation_output(
     let _lock = OutputLock::acquire(&args.out)?;
     let existing = ensure_simulation_output(&args.out)?;
     publish_bundle(&args.out, &publication, &existing)?;
+    append_simulation_log_entry(args, &batch, &manifest_text)?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
         batch.attempts.len(),
@@ -566,6 +628,91 @@ fn publish_bundle(
     )?;
     write_text_atomic(&out.join("manifest.json"), publication.manifest_text)?;
     let _ = std::fs::remove_file(pending_publish_path(out));
+    Ok(())
+}
+
+/// Append this simulation's entry to the generation run log after the bundle
+/// is committed: counts from the batch that was written, and the manifest
+/// digest of the text just published.
+fn append_simulation_log_entry(
+    args: &SimulateArgs,
+    batch: &SimulationBatch,
+    manifest_text: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut rejected_by_reason = std::collections::BTreeMap::new();
+    for rejection in &batch.rejections {
+        let reason = rejection["stage"].as_str().unwrap_or("unknown");
+        *rejected_by_reason.entry(reason.to_owned()).or_insert(0_u64) += 1;
+    }
+    // Candidates that produced an attempt row: emitted + schema-stage rejects.
+    let produced = batch.attempts.len()
+        + batch
+            .rejections
+            .iter()
+            .filter(|rejection| rejection["stage"] == "schema")
+            .count();
+    let parameter_ranges = std::collections::BTreeMap::from([
+        (
+            "attempts_per_problem".to_owned(),
+            serde_json::json!(args.attempts_per_problem),
+        ),
+        ("mode".to_owned(), serde_json::json!(args.mode)),
+        (
+            "misconception".to_owned(),
+            serde_json::json!(args.misconception),
+        ),
+        ("level".to_owned(), serde_json::json!(args.level)),
+        (
+            "persistence".to_owned(),
+            serde_json::json!(args.persistence),
+        ),
+        (
+            "surface_style".to_owned(),
+            serde_json::json!(args.surface_style),
+        ),
+    ]);
+    let record = Record::Run(Box::new(RunRecord {
+        run_id: tutor_runlog::new_run_id(),
+        family: args.family.clone(),
+        spec: args.spec.clone(),
+        stage: Stage::Simulate,
+        replaces: args.replaces.clone(),
+        environment: tutor_runlog::environment(),
+        generators: vec![GeneratorUse {
+            name: SIMULATOR_NAME.to_owned(),
+            version: SIMULATOR_VERSION,
+            language: tutor_schema::GeneratorLanguage::Rust,
+            seeds: SeedUse {
+                start: args.seed_start,
+                end: None,
+                derivation: Some(
+                    "sha256(seed_start, problem_id, attempt_index) & MAX_SEED".to_owned(),
+                ),
+            },
+            parameter_ranges,
+        }],
+        teacher: None,
+        counts: Counts {
+            generated: produced as u64,
+            verified: batch.attempts.len() as u64,
+            rejected: batch.rejections.len() as u64,
+            rejected_by_reason,
+            deduplicated: None,
+            decontaminated: None,
+            exported: None,
+        },
+        output: OutputRef {
+            directory: args.out.display().to_string(),
+            manifest_sha256: Some(tutor_runlog::sha256_hex(manifest_text.as_bytes())),
+        },
+        split_manifest_sha256: None,
+        qa: None,
+    }));
+    let path = args
+        .run_log
+        .clone()
+        .unwrap_or_else(|| args.out.join("run-log.jsonl"));
+    RunLog::at(path).append(record)?;
     Ok(())
 }
 

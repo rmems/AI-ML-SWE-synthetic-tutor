@@ -1,0 +1,28 @@
+[package]
+name = "tutor-runlog"
+description = "Append-only, hash-chained generation run log (JSONL) for batch provenance (issue #7)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+build = "build.rs"
+
+[dependencies]
+clap.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tutor-schema.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+
+[[bin]]
+name = "tutor-runlog"
+path = "src/bin/tutor-runlog.rs"
+
+[lints]
+workspace = true
