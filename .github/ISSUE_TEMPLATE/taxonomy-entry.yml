@@ -1,0 +1,122 @@
+name: Taxonomy entry
+description: Propose one new misconception id for schemas/taxonomy.yaml
+title: "[taxonomy]: "
+labels:
+  - dataset
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## New misconception id
+
+        One entry per issue. The taxonomy is the versioned label set for
+        planted student errors — see `docs/taxonomy.md` (#6). Every planted
+        error in a dataset row carries exactly one primary id; "generic wrong
+        answer" is not a label.
+
+        Rules (also in the `schemas/taxonomy.yaml` header):
+        - Ids are `<area>.<snake_case_name>`; areas: `algebra`, `functions`,
+          `trig`, `limits`, `derivatives`, `integrals`.
+        - An id, once used in a published dataset row, never changes meaning.
+          Split or rename only by adding a new id and marking the old one
+          `status: deprecated`.
+        - **New ids are added only with a worked wrong example. No example,
+          no id.**
+        - Landing the entry bumps `version` in `taxonomy.yaml` and
+          `TAXONOMY_VERSION` in `tutor-schema` together.
+        - `crates/tutor-schema/tests/taxonomy_sync.rs` keeps the YAML and the
+          `MisconceptionId` enum in sync — both are updated in the same change.
+  - type: input
+    id: misconception-id
+    attributes:
+      label: Proposed id
+      description: Dotted id — `<area>.<snake_case_name>`.
+      placeholder: "derivatives.quotient_rule"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: The namespace prefix of the id.
+      options:
+        - algebra
+        - functions
+        - trig
+        - limits
+        - derivatives
+        - integrals
+    validations:
+      required: true
+  - type: textarea
+    id: error-pattern
+    attributes:
+      label: error_pattern
+      description: The faulty reasoning in one sentence — the pattern, not the topic name.
+      placeholder: "Student applies d/dx[f/g] = f'/g' instead of the quotient rule."
+    validations:
+      required: true
+  - type: input
+    id: bites-at
+    attributes:
+      label: bites_at
+      description: The step in the student's work where the error bites.
+      placeholder: "the step differentiating the composite quotient"
+    validations:
+      required: true
+  - type: textarea
+    id: wrong-attempt
+    attributes:
+      label: wrong_attempt
+      description: A minimal worked example of the error — student work plus the correct result. Required; no example, no id.
+      placeholder: "d/dx[x^2/sin x] = 2x/cos x (wrong) — correct: (2x sin x - x^2 cos x) / sin^2 x"
+    validations:
+      required: true
+  - type: textarea
+    id: correct-reasoning
+    attributes:
+      label: correct_reasoning
+      description: The right reasoning in one or two lines.
+      placeholder: "A quotient is not differentiated termwise; apply the quotient rule to numerator and denominator together."
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic-question
+    attributes:
+      label: diagnostic_question
+      description: What a tutor should ask to surface the misconception (hint-ladder L2).
+      placeholder: "What rule applies to a ratio of two functions, and where did each of f' and g' go?"
+    validations:
+      required: true
+  - type: textarea
+    id: first-hint
+    attributes:
+      label: first_hint
+      description: Hint-ladder level 1 — the first nudge a tutor gives, pointing at the step where it went wrong.
+      placeholder: "Check the step where you differentiated the fraction — does the quotient rule look like that?"
+    validations:
+      required: true
+  - type: textarea
+    id: topics
+    attributes:
+      label: topics
+      description: At least two curriculum topic IDs (from `curriculum/coverage-matrix.md`) where the error can appear, one per line.
+      placeholder: |
+        calculus.derivatives.quotient_rule
+        calculus.derivatives.mixed_rules
+    validations:
+      required: true
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      description: Confirm before filing.
+      options:
+        - label: This issue includes a worked wrong example (`wrong_attempt`) — required for any new id
+          required: true
+        - label: Every topic above exists in `curriculum/coverage-matrix.md`
+          required: true
+        - label: This is a new id, not a rename — renames add a new id and deprecate the old one
+          required: true
+        - label: A generation spec that needs this id is linked (or this entry precedes one)
+          required: false

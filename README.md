@@ -194,6 +194,20 @@ The repo name says AI / ML / SWE, but current coverage is math and ML math
 only; programming-language families are planned after the math pipeline is
 proven.
 
+New families start with a spec, not code:
+
+1. **Open a generation spec** — the
+   [generation-spec issue form](.github/ISSUE_TEMPLATE/generation-spec.yml)
+   is the contract; no generation work starts on a family without it.
+2. **Link the taxonomy and curriculum entries** — every targeted
+   misconception id comes from `schemas/taxonomy.yaml` (new ids via the
+   taxonomy-entry form) and every topic from
+   `curriculum/coverage-matrix.md`.
+3. **Generation issues follow from the spec** — a teacher named in a spec
+   needs an `allowed` [rights-registry](docs/rights.md) entry; one without
+   it is a blocker, not a TODO. Family releases use the dataset-release
+   form.
+
 ---
 
 ## Out of scope

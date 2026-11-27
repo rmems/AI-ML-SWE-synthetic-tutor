@@ -1,0 +1,175 @@
+name: Generation spec
+description: Spec one new dataset family or topic — required before any rows are generated for it
+title: "[gen-spec]: "
+labels:
+  - dataset
+  - pipeline
+  - verification
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Generation spec
+
+        One spec per new dataset family or topic. **No generation work starts
+        on a family without a filled spec** — this issue is the contract the
+        QA pass checks against.
+
+        Naming a teacher (or any source) without an `allowed` entry in the
+        rights registry is a **blocker, not a TODO**: register it in
+        `docs/rights.md` first, or use an allowed source. Procedural
+        generation is first-party code and needs no third-party terms.
+
+        References:
+        - Curriculum topics: `curriculum/coverage-matrix.md` (#16)
+        - Misconception ids: `docs/taxonomy.md` → `schemas/taxonomy.yaml` (#6)
+        - Teachers and rights: `docs/rights.md` (#17)
+        - Tutor policy: `docs/tutor-policy.md` (#13)
+        - Student simulator: `crates/tutor-generate` (#19, PR #34)
+        - Rust↔Julia bridge: `crates/tutor-wire` + `math-julia` (`tutor-math/1`, REQ/REP)
+  - type: input
+    id: family
+    attributes:
+      label: Family name
+      description: One family or topic slice per spec (e.g. "derivative misconceptions", "function transformations").
+      placeholder: "e.g. precalculus.function-transformations"
+    validations:
+      required: true
+  - type: dropdown
+    id: domain
+    attributes:
+      label: Domain
+      description: Math comes first, then ML math, then programming-language families.
+      options:
+        - math
+        - ML math
+        - SWE / programming language
+    validations:
+      required: true
+  - type: input
+    id: target-language
+    attributes:
+      label: Target language
+      description: The subject language students are tutored in — "none" for pure math; a programming language (e.g. Python) for later language families.
+      placeholder: "none"
+    validations:
+      required: true
+  - type: textarea
+    id: implementation-split
+    attributes:
+      label: Implementation split
+      description: Which parts are Rust (`crates/…`), which are Julia math workers (`math-julia/`), and the ZMQ endpoint / pattern connecting them (protocol `tutor-math/1`, REQ/REP, e.g. `tcp://127.0.0.1:5557`). Julia is a math engine, not a second pipeline.
+      placeholder: |
+        Rust: generator registry + simulator in crates/tutor-generate, verifier in crates/tutor-verify, ZMQ client in crates/tutor-wire
+        Julia: TutorMath ops generate_problem / verify_answer in math-julia
+        ZMQ: tcp://127.0.0.1:5557, REQ/REP, tutor-math/1 JSON envelope
+    validations:
+      required: true
+  - type: textarea
+    id: topics
+    attributes:
+      label: Curriculum topics covered
+      description: One dotted topic ID per line. Every ID must already exist in `curriculum/coverage-matrix.md`; a topic missing from the matrix is added there first.
+      placeholder: |
+        calculus.derivatives.product_rule
+        calculus.derivatives.chain_rule
+    validations:
+      required: true
+  - type: dropdown
+    id: problem-source
+    attributes:
+      label: Problem source
+      description: How problems (and their candidate answers) are produced.
+      options:
+        - procedural generator
+        - worked-source adaptation
+        - teacher-generated
+    validations:
+      required: true
+  - type: input
+    id: teacher
+    attributes:
+      label: Teacher + rights-registry entry
+      description: The teacher and the exact `allowed` entry in `docs/rights.md` permitting training use (checkpoint/revision, route, serving vendor), or "none (procedural only)". A teacher without an `allowed` entry blocks this spec.
+      placeholder: "none (procedural only) — or e.g. MiMo V2.6 Flash, rights registry entry 2"
+    validations:
+      required: true
+  - type: textarea
+    id: misconceptions
+    attributes:
+      label: Misconception ids targeted
+      description: One `area.snake_case` taxonomy id per line. Every id must exist in `schemas/taxonomy.yaml`; propose missing ids with the taxonomy-entry form first.
+      placeholder: |
+        derivatives.product_rule
+        algebra.sign_error
+    validations:
+      required: true
+  - type: textarea
+    id: student-profiles
+    attributes:
+      label: Student profiles used
+      description: 'Profiles from the synthetic student simulator (`StudentProfile` in `tutor-schema`): level (`struggling` / `typical` / `strong`), surface style (`terse` / `verbose`), persistence (`corrects_after_l1` / `corrects_after_l2` / `needs_l3`), notation noise, and the intended mix.'
+      placeholder: "typical+struggling, mixed terse/verbose, persistence spread across all three, no notation noise"
+    validations:
+      required: true
+  - type: textarea
+    id: verification-method
+    attributes:
+      label: Verification method per problem type
+      description: Required up front, not as a closing step. For each problem type name the independent check — always on the opposite side of the Rust/Julia ZMQ boundary from the generator, so the generator never grades itself.
+      placeholder: |
+        product_rule_at_point (Julia generator) → Rust-side verifier in tutor-verify
+        binomial_derivative_at_point (Rust generator) → Julia verify_answer over ZMQ
+    validations:
+      required: true
+  - type: textarea
+    id: rows-and-splits
+    attributes:
+      label: Target row count and split plan
+      description: Total rows, correction/confirmation mix (pilot policy targets 80/20), and the train / validation / test split plan with dedup.
+      placeholder: "5,000 rows total — 80% correction / 20% confirmation; split per #8 (dedup, frozen train/val/test)"
+    validations:
+      required: true
+  - type: textarea
+    id: eval-coverage
+    attributes:
+      label: Eval coverage — held-out items this family must not contaminate
+      description: Which `evals/heldout/` items overlap this family's topics, and how generated rows are decontaminated against them before splits freeze.
+      placeholder: "heldout derivative items covering power/product/chain rule — excluded from generation seeds, checked during split"
+    validations:
+      required: true
+  - type: textarea
+    id: done-criteria-extra
+    attributes:
+      label: Done criteria — family-specific
+      description: Anything beyond the standard checklist below that this family must satisfy (e.g. new generator ops, a new taxonomy id landing, a rights amendment).
+      placeholder: "all targeted ids fail closed until their simulator transformations land"
+    validations:
+      required: false
+  - type: checkboxes
+    id: done-criteria
+    attributes:
+      label: Done criteria — standard checklist
+      description: The family is done when all of these hold. Leave unticked at filing; the spec issue tracks them.
+      options:
+        - label: Every curriculum topic above exists in `curriculum/coverage-matrix.md`
+        - label: Every targeted misconception id exists in `schemas/taxonomy.yaml` with a simulator transformation
+        - label: Every problem type has an independent verification method implemented (never the generator grading itself)
+        - label: Rows pass `tutor-validate` and the tutor-policy checks
+        - label: Decontamination against `evals/heldout/` verified; splits deduped and frozen
+        - label: Sampled human QA recorded; run-log manifests written per batch
+        - label: 'Family folder + Hugging Face export per #8 / #21'
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Pre-flight checklist
+      description: Confirm before filing — a spec that fails these is blocked.
+      options:
+        - label: Every source/teacher named above has an `allowed` entry in `docs/rights.md` (or is procedural generation)
+          required: true
+        - label: Every curriculum topic above exists in `curriculum/coverage-matrix.md`
+          required: true
+        - label: Every misconception id above exists in `schemas/taxonomy.yaml`
+          required: true
+        - label: I understand no generation work starts on this family until this spec is filled
+          required: true
