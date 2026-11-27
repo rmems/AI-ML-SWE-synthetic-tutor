@@ -259,11 +259,7 @@ pub fn build(config: &BuildConfig) -> Result<BuildReport, BuildError> {
 
     let mut assigner =
         splits::Assigner::load_previous(config.previous_manifest.as_deref(), &config.family)?;
-    let mut by_split: BTreeMap<Split, Vec<Fingerprinted>> = BTreeMap::new();
-    for row in kept {
-        let split = assigner.assign(&row.checked.row.row_id, &row.checked.row.problem_id);
-        by_split.entry(split).or_default().push(row);
-    }
+    let by_split = assign_splits(&mut assigner, kept);
     if !assigner.conflicts().is_empty() {
         return Err(BuildError::FrozenConflict(assigner.conflicts().join("; ")));
     }
@@ -285,6 +281,28 @@ pub fn build(config: &BuildConfig) -> Result<BuildReport, BuildError> {
         manifest_path: outputs.manifest_path,
         manifest_sha256: outputs.manifest_sha256,
     })
+}
+
+/// Group kept rows by split. Rows a previous release froze are assigned
+/// first, so their frozen splits settle their problems before any new row
+/// draws one; the outcome does not depend on input order. Rows keep their
+/// input order within each split.
+fn assign_splits(
+    assigner: &mut splits::Assigner,
+    kept: Vec<Fingerprinted>,
+) -> BTreeMap<Split, Vec<Fingerprinted>> {
+    let (frozen, fresh): (Vec<usize>, Vec<usize>) =
+        (0..kept.len()).partition(|&index| assigner.is_frozen_row(&kept[index].checked.row.row_id));
+    let mut splits = vec![Split::Train; kept.len()];
+    for index in frozen.into_iter().chain(fresh) {
+        let row = &kept[index].checked.row;
+        splits[index] = assigner.assign(&row.row_id, &row.problem_id);
+    }
+    let mut by_split: BTreeMap<Split, Vec<Fingerprinted>> = BTreeMap::new();
+    for (row, split) in kept.into_iter().zip(splits) {
+        by_split.entry(split).or_default().push(row);
+    }
+    by_split
 }
 
 /// Stage 1 for every input line, preserving input order.
@@ -355,10 +373,12 @@ struct SplitCounts {
     taxonomy: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
-/// Write split JSONL files, `rejected/rejected.jsonl`, then the manifest
-/// last (atomically), then its `.sha256` sidecar.
+/// Retract any previous manifest, write split JSONL files and
+/// `rejected/rejected.jsonl`, then the manifest last (atomically), then its
+/// `.sha256` sidecar.
 fn write_outputs(bundle: ReleaseBundle<'_>) -> Result<Outputs, BuildError> {
     let _lock = prepare_out_dir(bundle.config)?;
+    retract_previous_manifest(&bundle.config.out_dir)?;
     let (mut artifacts, counts) = write_split_files(&bundle)?;
 
     let rejected_dir = bundle.config.out_dir.join("rejected");
@@ -416,6 +436,8 @@ fn prepare_out_dir(config: &BuildConfig) -> Result<LockGuard, BuildError> {
         }
     }
 
+    ensure_previous_manifest_survives(config, &manifest_path)?;
+
     let lock_path = config.out_dir.join(".tutor-build.lock");
     match std::fs::File::create_new(&lock_path) {
         Ok(_) => Ok(LockGuard(lock_path)),
@@ -425,6 +447,51 @@ fn prepare_out_dir(config: &BuildConfig) -> Result<LockGuard, BuildError> {
         )),
         Err(error) => Err(BuildError::output(&lock_path, error.to_string())),
     }
+}
+
+/// Refuse a `--previous-manifest` that is the manifest this build is about
+/// to replace: the new release would record the old release's digest at a
+/// path that then holds only the new manifest, so its provenance could
+/// never be verified. Keep the previous release's manifest at its own path.
+fn ensure_previous_manifest_survives(
+    config: &BuildConfig,
+    manifest_path: &Path,
+) -> Result<(), BuildError> {
+    let Some(previous) = config.previous_manifest.as_deref() else {
+        return Ok(());
+    };
+    let same = match (
+        std::fs::canonicalize(previous),
+        std::fs::canonicalize(manifest_path),
+    ) {
+        (Ok(previous), Ok(target)) => previous == target,
+        _ => false,
+    };
+    if same {
+        return Err(BuildError::output(
+            manifest_path,
+            "is also --previous-manifest; this build would overwrite the manifest it records as \
+             its frozen input, so copy the previous release's manifest to its own path first",
+        ));
+    }
+    Ok(())
+}
+
+/// Remove a previous release's manifest and sidecar before any artifact is
+/// replaced. The manifest is the commit record of a bundle, so while new
+/// split files are being written the directory has no manifest at all —
+/// a reader sees "no complete release" rather than new files under the old
+/// release's manifest. The new manifest is published last.
+fn retract_previous_manifest(out_dir: &Path) -> Result<(), BuildError> {
+    for name in ["manifest.json", "manifest.json.sha256"] {
+        let path = out_dir.join(name);
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(BuildError::output(&path, error.to_string())),
+        }
+    }
+    Ok(())
 }
 
 /// Deletes the build's lock file when the write finishes or fails.

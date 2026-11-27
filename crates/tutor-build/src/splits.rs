@@ -185,6 +185,13 @@ impl Assigner {
         split
     }
 
+    /// Whether a previous release froze `row_id` to a split. Callers assign
+    /// frozen rows before unfrozen ones so a new row's provisional hash draw
+    /// never becomes a constraint a frozen row then conflicts with.
+    pub fn is_frozen_row(&self, row_id: &str) -> bool {
+        self.previous_rows.contains_key(row_id)
+    }
+
     /// Frozen constraints that could not all be satisfied. Non-empty means
     /// some row kept a frozen split that disagrees with its problem's split;
     /// publishing either silently moves a frozen row or splits one problem.

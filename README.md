@@ -204,7 +204,13 @@ cargo run -p tutor-build --bin tutor-build -- build \
 - `--heldout` defaults to `evals/heldout/`; `--out` defaults to
   `datasets/<family>/`.
 - `--previous-manifest <path>` freezes splits: a row or problem already
-  assigned never moves; new rows fill the next release.
+  assigned never moves; new rows fill the next release. It must not be the
+  manifest the build is about to replace — copy the previous release's
+  `manifest.json` to its own path first, so the digest the new manifest
+  records stays verifiable.
+- A rebuild into an existing `--out` removes the old `manifest.json` (the
+  bundle's commit record) before rewriting any split file and publishes the
+  new one last, so a reader never sees new files under the old manifest.
 
 Outputs under `datasets/<family>/` are gitignored (only `README.md` and
 `CARD.md` drafts are committed):

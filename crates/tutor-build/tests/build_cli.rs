@@ -35,7 +35,16 @@ fn unique_dir(name: &str) -> PathBuf {
     dir
 }
 
-fn run_build(out: &Path, extra_rows: &[String], extra_args: &[String]) -> Output {
+/// Optional additions to the default fixture build.
+#[derive(Default)]
+struct BuildExtras<'a> {
+    /// Extra `--rows` inputs after the valid fixture.
+    rows: &'a [&'a Path],
+    /// `--previous-manifest`, when the build reruns a release.
+    previous_manifest: Option<&'a Path>,
+}
+
+fn run_build(out: &Path, extras: &BuildExtras<'_>) -> Output {
     let rows = fixture(&["rows", "valid.jsonl"]);
     let problems = fixture(&["problems", "problems.jsonl"]);
     let heldout = fixture(&["heldout"]);
@@ -48,7 +57,12 @@ fn run_build(out: &Path, extra_rows: &[String], extra_args: &[String]) -> Output
         "--rows".to_owned(),
         rows.to_str().unwrap().to_owned(),
     ];
-    args.extend(extra_rows.iter().cloned());
+    args.extend(
+        extras
+            .rows
+            .iter()
+            .map(|path| path.to_str().unwrap().to_owned()),
+    );
     args.extend([
         "--problems".to_owned(),
         problems.to_str().unwrap().to_owned(),
@@ -57,7 +71,12 @@ fn run_build(out: &Path, extra_rows: &[String], extra_args: &[String]) -> Output
         "--out".to_owned(),
         out.to_str().unwrap().to_owned(),
     ]);
-    args.extend(extra_args.iter().cloned());
+    if let Some(previous) = extras.previous_manifest {
+        args.extend([
+            "--previous-manifest".to_owned(),
+            previous.to_str().unwrap().to_owned(),
+        ]);
+    }
     bin().args(args).output().expect("runs tutor-build")
 }
 
@@ -150,8 +169,10 @@ fn assert_frozen_rerun(dir: &Path, manifest: &serde_json::Value, manifest_path: 
     let previous = manifest_path.to_str().unwrap().to_owned();
     let output2 = run_build(
         &out2,
-        &[],
-        &["--previous-manifest".to_owned(), previous.clone()],
+        &BuildExtras {
+            previous_manifest: Some(manifest_path),
+            ..BuildExtras::default()
+        },
     );
     assert!(
         output2.status.success(),
@@ -189,7 +210,13 @@ fn build_end_to_end() {
     writeln!(file, "{{not json").unwrap();
     drop(file);
 
-    let output = run_build(&out, &[broken.to_str().unwrap().to_owned()], &[]);
+    let output = run_build(
+        &out,
+        &BuildExtras {
+            rows: &[&broken],
+            ..BuildExtras::default()
+        },
+    );
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -287,7 +314,7 @@ fn build_refuses_to_overwrite_a_foreign_manifest() {
     let foreign = r#"{"schema":"problem.schema.json","seeds":"0..10"}"#;
     std::fs::write(&manifest_path, foreign).unwrap();
 
-    let output = run_build(&out, &[], &[]);
+    let output = run_build(&out, &BuildExtras::default());
     assert!(
         !output.status.success(),
         "expected failure, got: {}",
@@ -300,13 +327,8 @@ fn build_refuses_to_overwrite_a_foreign_manifest() {
     );
 }
 
-#[test]
-fn build_fails_on_conflicting_frozen_splits() {
-    // A stale manifest froze row-a to train and row-b to test; both now
-    // ground the same problem, so the freezes cannot all hold.
-    let dir = unique_dir("frozen-conflict");
-    let out = dir.join("out");
-    let rows_path = dir.join("rows.jsonl");
+/// Two distinct rows (`row-a`, `row-b`) grounding the same fixture problem.
+fn two_rows_for_one_problem() -> (serde_json::Value, serde_json::Value) {
     let fixture_rows = std::fs::read_to_string(fixture(&["rows", "valid.jsonl"])).unwrap();
     let mut lines = fixture_rows.lines();
     let mut row_a: serde_json::Value = serde_json::from_str(lines.next().unwrap()).unwrap();
@@ -326,23 +348,31 @@ fn build_fails_on_conflicting_frozen_splits() {
         serde_json::json!("Each term differentiates separately, including a lone x.");
     row_b["turns"][5]["content"] = serde_json::json!("Right, f'(1) = 6 + 1 = 7.");
     row_b["turns"][6]["content"] = serde_json::json!("Confirmed: f'(1) = 7.");
-    std::fs::write(&rows_path, format!("{}\n{}\n", row_a, row_b)).unwrap();
+    (row_a, row_b)
+}
+
+/// Build `rows` (in order) as release v2 against a previous manifest that
+/// froze `frozen_rows`.
+fn build_against_frozen(
+    dir: &Path,
+    rows: &[&serde_json::Value],
+    frozen_rows: serde_json::Value,
+) -> Output {
+    let rows_path = dir.join("rows.jsonl");
+    let text: String = rows.iter().map(|row| format!("{row}\n")).collect();
+    std::fs::write(&rows_path, text).unwrap();
     let previous = dir.join("previous.json");
     std::fs::write(
         &previous,
         serde_json::json!({
             "tool": {"name": "tutor-build", "version": "0.1.0"},
             "family": "fx-test",
-            "assignments": {
-                "rows": {"row-a": "train", "row-b": "test"},
-                "problems": {}
-            }
+            "assignments": {"rows": frozen_rows, "problems": {}}
         })
         .to_string(),
     )
     .unwrap();
-
-    let output = bin()
+    bin()
         .args([
             "build",
             "--family",
@@ -356,12 +386,25 @@ fn build_fails_on_conflicting_frozen_splits() {
             "--heldout",
             fixture(&["heldout"]).to_str().unwrap(),
             "--out",
-            out.to_str().unwrap(),
+            dir.join("out").to_str().unwrap(),
             "--previous-manifest",
             previous.to_str().unwrap(),
         ])
         .output()
-        .unwrap();
+        .unwrap()
+}
+
+#[test]
+fn build_fails_on_conflicting_frozen_splits() {
+    // A stale manifest froze row-a to train and row-b to test; both now
+    // ground the same problem, so the freezes cannot all hold.
+    let dir = unique_dir("frozen-conflict");
+    let (row_a, row_b) = two_rows_for_one_problem();
+    let output = build_against_frozen(
+        &dir,
+        &[&row_a, &row_b],
+        serde_json::json!({"row-a": "train", "row-b": "test"}),
+    );
     assert!(
         !output.status.success(),
         "expected failure, got: {}",
@@ -372,4 +415,67 @@ fn build_fails_on_conflicting_frozen_splits() {
         stderr.contains("conflicting frozen split assignments"),
         "stderr should name the conflict: {stderr}"
     );
+}
+
+#[test]
+fn a_new_row_before_a_frozen_row_follows_the_frozen_split() {
+    // Only row-a is frozen; row-b is new and comes first in the input. For
+    // every split row-a could be frozen to (at least one differs from the
+    // problem's hash draw), row-b must inherit it instead of conflicting.
+    let (row_a, row_b) = two_rows_for_one_problem();
+    for split in ["train", "validation", "test"] {
+        let dir = unique_dir(&format!("frozen-order-{split}"));
+        let output =
+            build_against_frozen(&dir, &[&row_b, &row_a], serde_json::json!({"row-a": split}));
+        assert!(
+            output.status.success(),
+            "{split}: stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let ids: Vec<String> = read_jsonl(&dir.join("out").join(format!("{split}.jsonl")))
+            .iter()
+            .map(|row| row["row_id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            ids,
+            ["row-a", "row-b"],
+            "{split}: both rows share the frozen split"
+        );
+    }
+}
+
+#[test]
+fn an_in_place_rerun_cannot_name_its_own_manifest_as_previous() {
+    let dir = unique_dir("self-previous");
+    let out = dir.join("out");
+    let first = run_build(&out, &BuildExtras::default());
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let manifest_path = out.join("manifest.json");
+    let before = std::fs::read(&manifest_path).unwrap();
+    // Name the destination through a `..` alias as well as directly.
+    let alias = out.join("rejected").join("..").join("manifest.json");
+    for previous in [&manifest_path, &alias] {
+        let rerun = run_build(
+            &out,
+            &BuildExtras {
+                previous_manifest: Some(previous),
+                ..BuildExtras::default()
+            },
+        );
+        assert!(!rerun.status.success());
+        assert!(
+            String::from_utf8_lossy(&rerun.stderr).contains("is also --previous-manifest"),
+            "stderr: {}",
+            String::from_utf8_lossy(&rerun.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&manifest_path).unwrap(),
+            before,
+            "release untouched"
+        );
+    }
 }
