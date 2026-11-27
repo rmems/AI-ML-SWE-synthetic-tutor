@@ -919,7 +919,20 @@ mod tests {
 
     #[test]
     fn invalid_run_records_are_rejected() {
-        let cases: [(&str, Mutate, Expect); 3] = [
+        let cases: [(&str, Mutate, Expect); 4] = [
+            (
+                "unsafe-end.jsonl",
+                |run| run.generators[0].seeds.end = Some(tutor_schema::MAX_SEED + 2),
+                |error| {
+                    matches!(
+                        error,
+                        RunLogError::Invalid {
+                            field: "generators[].seeds.end",
+                            ..
+                        }
+                    )
+                },
+            ),
             (
                 "blank-derivation.jsonl",
                 |run| {

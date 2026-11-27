@@ -300,6 +300,11 @@ impl SeedUse {
             ));
         }
         match (self.end, self.derivation.as_deref()) {
+            // `end` is exclusive: the last drawn seed may be MAX_SEED.
+            (Some(end), None) if end > MAX_SEED + 1 => Err(invalid(
+                "generators[].seeds.end",
+                format!("exceeds the JSON-safe exclusive bound {}", MAX_SEED + 1),
+            )),
             (Some(end), None) if end > self.start => Ok(()),
             (Some(_), None) => Err(invalid(
                 "generators[].seeds.end",
