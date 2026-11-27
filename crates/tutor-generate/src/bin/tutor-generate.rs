@@ -660,11 +660,7 @@ fn ensure_simulation_output(
 ) -> Result<Vec<(&'static str, serde_json::Value)>, Box<dyn std::error::Error>> {
     let manifest = read_simulator_manifest(out)?;
     let existing = existing_artifact_metadata(out)?;
-    let pending = if existing.is_empty() {
-        None
-    } else {
-        read_pending_publish(out)?
-    };
+    let pending = read_pending_publish(out)?;
     validate_existing_artifacts(out, &existing, manifest.as_ref(), pending.as_ref())?;
     Ok(existing)
 }

@@ -462,6 +462,41 @@ fn manifestless_artifact_files_require_matching_pending_provenance() {
 }
 
 #[test]
+fn a_foreign_pending_record_without_artifacts_fails_closed() {
+    let problems = unique_path("foreign-pending-problems.jsonl");
+    let out = unique_path("foreign-pending-out");
+    write_problem(&problems);
+    std::fs::create_dir_all(&out).expect("create output directory");
+    std::fs::write(
+        out.join(".simulate-pending.json"),
+        serde_json::json!({"simulator": "other-simulator"}).to_string(),
+    )
+    .expect("write foreign pending record");
+
+    let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("not a simulator pending-publish record"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_valid_pending_record_without_artifacts_allows_an_interrupted_first_publish() {
+    let problems = unique_path("first-pending-problems.jsonl");
+    let out = unique_path("first-pending-out");
+    write_problem(&problems);
+    std::fs::create_dir_all(&out).expect("create output directory");
+    write_pending_record(&out, b"", b"");
+
+    let output = run_simulation(&problems, &out, &["--mode", "confirmation"]);
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert!(out.join("attempts.jsonl").exists());
+    assert!(!out.join(".simulate-pending.json").exists());
+}
+
+#[test]
 fn a_matching_pending_record_allows_replacing_an_interrupted_bundle() {
     let problems = unique_path("pending-problems.jsonl");
     let out = unique_path("pending-out");
