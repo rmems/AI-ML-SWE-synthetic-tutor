@@ -263,32 +263,34 @@ fn inspect_record_taxonomy_references(
     references
 }
 
-fn taxonomy_references(record: &DataRecord) -> Vec<Result<String, String>> {
-    let mut out = Vec::new();
-    collect_taxonomy_references(&record.value, "", &mut out);
-    out
-}
-
-fn collect_taxonomy_references(
+fn walk_json_entries(
     value: &Value,
     json_path: &str,
-    out: &mut Vec<Result<String, String>>,
+    visit_entry: &mut impl FnMut(&str, &Value, &str),
 ) {
     match value {
         Value::Object(map) => {
             for (key, child) in map {
                 let child_path = format!("{json_path}/{key}");
-                collect_direct_taxonomy_reference(key, child, &child_path, out);
-                collect_taxonomy_references(child, &child_path, out);
+                visit_entry(key, child, &child_path);
+                walk_json_entries(child, &child_path, visit_entry);
             }
         }
         Value::Array(items) => {
             for (index, child) in items.iter().enumerate() {
-                collect_taxonomy_references(child, &format!("{json_path}/{index}"), out);
+                walk_json_entries(child, &format!("{json_path}/{index}"), visit_entry);
             }
         }
         _ => {}
     }
+}
+
+fn taxonomy_references(record: &DataRecord) -> Vec<Result<String, String>> {
+    let mut out = Vec::new();
+    walk_json_entries(&record.value, "", &mut |key, child, child_path| {
+        collect_direct_taxonomy_reference(key, child, child_path, &mut out);
+    });
+    out
 }
 
 fn collect_direct_taxonomy_reference(
@@ -306,18 +308,32 @@ fn collect_direct_taxonomy_reference(
     }
 }
 
-fn collect_taxonomy_id_list(value: &Value, json_path: &str, out: &mut Vec<Result<String, String>>) {
+fn collect_list_items<T>(
+    value: &Value,
+    json_path: &str,
+    type_error: &str,
+    out: &mut Vec<Result<T, String>>,
+    collect_item: impl Fn(&Value, &str, &mut Vec<Result<T, String>>),
+) {
     match value {
-        Value::Array(ids) => {
-            for (index, id) in ids.iter().enumerate() {
-                collect_taxonomy_id(id, &format!("{json_path}/{index}"), out);
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_item(item, &format!("{json_path}/{index}"), out);
             }
         }
         Value::Null => {}
-        _ => out.push(Err(format!(
-            "{json_path}: taxonomy reference list must be an array"
-        ))),
+        _ => out.push(Err(format!("{json_path}: {type_error}"))),
     }
+}
+
+fn collect_taxonomy_id_list(value: &Value, json_path: &str, out: &mut Vec<Result<String, String>>) {
+    collect_list_items(
+        value,
+        json_path,
+        "taxonomy reference list must be an array",
+        out,
+        collect_taxonomy_id,
+    );
 }
 
 fn collect_taxonomy_id(value: &Value, json_path: &str, out: &mut Vec<Result<String, String>>) {
@@ -426,30 +442,10 @@ fn denied_citation_errors(
 
 fn teacher_citations(record: &DataRecord) -> Vec<Result<TeacherCitation, String>> {
     let mut out = Vec::new();
-    collect_teacher_citations(&record.value, "", &mut out);
+    walk_json_entries(&record.value, "", &mut |key, child, child_path| {
+        collect_direct_teacher_citation(key, child, child_path, &mut out);
+    });
     out
-}
-
-fn collect_teacher_citations(
-    value: &Value,
-    json_path: &str,
-    out: &mut Vec<Result<TeacherCitation, String>>,
-) {
-    match value {
-        Value::Object(map) => {
-            for (key, child) in map {
-                let child_path = format!("{json_path}/{key}");
-                collect_direct_teacher_citation(key, child, &child_path, out);
-                collect_teacher_citations(child, &child_path, out);
-            }
-        }
-        Value::Array(items) => {
-            for (index, child) in items.iter().enumerate() {
-                collect_teacher_citations(child, &format!("{json_path}/{index}"), out);
-            }
-        }
-        _ => {}
-    }
 }
 
 fn collect_direct_teacher_citation(
@@ -470,15 +466,13 @@ fn collect_teacher_list(
     json_path: &str,
     out: &mut Vec<Result<TeacherCitation, String>>,
 ) {
-    match value {
-        Value::Array(items) => {
-            for (index, item) in items.iter().enumerate() {
-                collect_teacher_value(item, &format!("{json_path}/{index}"), out);
-            }
-        }
-        Value::Null => {}
-        _ => out.push(Err(format!("{json_path}: teacher list must be an array"))),
-    }
+    collect_list_items(
+        value,
+        json_path,
+        "teacher list must be an array",
+        out,
+        collect_teacher_value,
+    );
 }
 
 fn collect_teacher_value(
@@ -732,6 +726,23 @@ mod tests {
         path
     }
 
+    fn teacher_row_json(teacher: &str) -> String {
+        let mut value: Value = serde_json::from_str(GOLD).unwrap();
+        value["teacher_variety"] = serde_json::json!({
+            "requested": true,
+            "status": "applied",
+            "teacher": teacher
+        });
+        value.to_string()
+    }
+
+    fn write_teacher_fixture(name: &str, teacher: &str) -> (PathBuf, PathBuf) {
+        (
+            write_temp("rights.md", RIGHTS),
+            write_temp(name, &teacher_row_json(teacher)),
+        )
+    }
+
     #[test]
     fn taxonomy_lint_accepts_registered_ids() {
         let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
@@ -766,27 +777,14 @@ mod tests {
 
     #[test]
     fn rights_gate_accepts_allowed_teacher_citations() {
-        let mut value: Value = serde_json::from_str(GOLD).unwrap();
-        value["teacher_variety"] = serde_json::json!({
-            "requested": true,
-            "status": "applied",
-            "teacher": "deepseek_v41_flash"
-        });
-        let registry = write_temp("rights.md", RIGHTS);
-        let row = write_temp("teacher.json", &value.to_string());
+        let (registry, row) = write_teacher_fixture("teacher.json", "deepseek_v41_flash");
         let report = rights_gate(&registry, &[row]).expect("allowed teacher passes");
         assert_eq!(report.citations, 1);
     }
 
     #[test]
     fn rights_gate_fails_closed_when_registry_is_absent() {
-        let mut value: Value = serde_json::from_str(GOLD).unwrap();
-        value["teacher_variety"] = serde_json::json!({
-            "requested": true,
-            "status": "applied",
-            "teacher": "deepseek_v41_flash"
-        });
-        let row = write_temp("teacher.json", &value.to_string());
+        let row = write_temp("teacher.json", &teacher_row_json("deepseek_v41_flash"));
         let missing = temp_path("missing-rights.md");
         let errors = rights_gate(&missing, &[row]).expect_err("citation without registry fails");
         assert!(
@@ -798,14 +796,7 @@ mod tests {
 
     #[test]
     fn rights_gate_rejects_parked_or_unregistered_teacher() {
-        let mut value: Value = serde_json::from_str(GOLD).unwrap();
-        value["teacher_variety"] = serde_json::json!({
-            "requested": true,
-            "status": "applied",
-            "teacher": "nemotron_3_ultra_550b_a55b"
-        });
-        let registry = write_temp("rights.md", RIGHTS);
-        let row = write_temp("teacher.json", &value.to_string());
+        let (registry, row) = write_teacher_fixture("teacher.json", "nemotron_3_ultra_550b_a55b");
         let errors = rights_gate(&registry, &[row]).expect_err("parked teacher fails");
         assert!(
             errors
@@ -816,14 +807,10 @@ mod tests {
 
     #[test]
     fn rights_gate_accepts_mimo_exact_checkpoint_with_revision() {
-        let mut value: Value = serde_json::from_str(GOLD).unwrap();
-        value["teacher_variety"] = serde_json::json!({
-            "requested": true,
-            "status": "applied",
-            "teacher": "XiaomiMiMo/MiMo-V2.6-Flash-RL@f657ba2f7d24c9adc5730675baaa2d34de878a49"
-        });
-        let registry = write_temp("rights.md", RIGHTS);
-        let row = write_temp("mimo-teacher.json", &value.to_string());
+        let (registry, row) = write_teacher_fixture(
+            "mimo-teacher.json",
+            "XiaomiMiMo/MiMo-V2.6-Flash-RL@f657ba2f7d24c9adc5730675baaa2d34de878a49",
+        );
         let report = rights_gate(&registry, &[row]).expect("pinned checkpoint passes");
         assert_eq!(report.citations, 1);
     }
@@ -837,14 +824,7 @@ mod tests {
         .into_iter()
         .enumerate()
         {
-            let mut value: Value = serde_json::from_str(GOLD).unwrap();
-            value["teacher_variety"] = serde_json::json!({
-                "requested": true,
-                "status": "applied",
-                "teacher": teacher
-            });
-            let registry = write_temp("rights.md", RIGHTS);
-            let row = write_temp(&format!("mimo-bad-{index}.json"), &value.to_string());
+            let (registry, row) = write_teacher_fixture(&format!("mimo-bad-{index}.json"), teacher);
             assert!(
                 rights_gate(&registry, &[row]).is_err(),
                 "{teacher} must not pass the checkpoint-pinned gate"
@@ -854,28 +834,19 @@ mod tests {
 
     #[test]
     fn rights_gate_rejects_allowed_heading_without_terms_evidence() {
-        let mut value: Value = serde_json::from_str(GOLD).unwrap();
-        value["teacher_variety"] = serde_json::json!({
-            "requested": true,
-            "status": "applied",
-            "teacher": "deepseek_v41_flash"
-        });
+        let row = write_temp(
+            "teacher-no-evidence.json",
+            &teacher_row_json("deepseek_v41_flash"),
+        );
         let missing_evidence = RIGHTS.replacen("Snapshot pinned 2026-11-24.", "", 1);
         let registry = write_temp("rights-no-evidence.md", &missing_evidence);
-        let row = write_temp("teacher-no-evidence.json", &value.to_string());
         assert!(rights_gate(&registry, &[row]).is_err());
     }
 
     #[test]
     fn rights_gate_rejects_teacher_name_embedded_in_unregistered_source() {
-        let mut value: Value = serde_json::from_str(GOLD).unwrap();
-        value["teacher_variety"] = serde_json::json!({
-            "requested": true,
-            "status": "applied",
-            "teacher": "unregistered-copy-of-deepseek-v4.1-flash"
-        });
-        let registry = write_temp("rights.md", RIGHTS);
-        let row = write_temp("teacher.json", &value.to_string());
+        let (registry, row) =
+            write_teacher_fixture("teacher.json", "unregistered-copy-of-deepseek-v4.1-flash");
         let errors = rights_gate(&registry, &[row]).expect_err("embedded name fails");
         assert!(
             errors

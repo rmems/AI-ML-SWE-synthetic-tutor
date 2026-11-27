@@ -99,39 +99,41 @@ fn validate_jsonl_file(
         Err(error) => return Err(vec![format!("cannot read file: {error}")]),
     };
     let reader = std::io::BufReader::new(handle);
-    let mut file_row_ids = HashSet::new();
-    let mut reasons = Vec::new();
+    let mut state = JsonlValidationState {
+        row_ids,
+        file_row_ids: HashSet::new(),
+        reasons: Vec::new(),
+    };
     for (index, line) in reader.lines().enumerate() {
-        if !validate_jsonl_line(
-            validator,
-            line,
-            index + 1,
-            row_ids,
-            &mut file_row_ids,
-            &mut reasons,
-        ) {
+        if !validate_jsonl_line(validator, line, index + 1, &mut state) {
             break;
         }
     }
-    if reasons.is_empty() {
+    if state.reasons.is_empty() {
         Ok(())
     } else {
-        Err(reasons)
+        Err(state.reasons)
     }
+}
+
+struct JsonlValidationState<'a> {
+    row_ids: &'a mut HashSet<(String, String)>,
+    file_row_ids: HashSet<String>,
+    reasons: Vec<String>,
 }
 
 fn validate_jsonl_line(
     validator: &jsonschema::Validator,
     line: std::io::Result<String>,
     line_number: usize,
-    row_ids: &mut HashSet<(String, String)>,
-    file_row_ids: &mut HashSet<String>,
-    reasons: &mut Vec<String>,
+    state: &mut JsonlValidationState<'_>,
 ) -> bool {
     let line = match line {
         Ok(line) => line,
         Err(error) => {
-            reasons.push(format!("line {line_number}: cannot read line: {error}"));
+            state
+                .reasons
+                .push(format!("line {line_number}: cannot read line: {error}"));
             return false;
         }
     };
@@ -139,14 +141,16 @@ fn validate_jsonl_line(
         return true;
     }
     if line.len() as u64 > MAX_ROW_BYTES {
-        reasons.push(format!(
+        state.reasons.push(format!(
             "line {line_number}: row exceeds {MAX_ROW_BYTES} bytes"
         ));
         return true;
     }
-    let result = validate_jsonl_row(validator, &line, row_ids, file_row_ids);
+    let result = validate_jsonl_row(validator, &line, state);
     if let Err(row_reasons) = result {
-        reasons.extend(prefixed_line_errors(row_reasons, line_number));
+        state
+            .reasons
+            .extend(prefixed_line_errors(row_reasons, line_number));
     }
     true
 }
@@ -167,17 +171,16 @@ fn is_jsonl(file: &Path) -> bool {
 fn validate_jsonl_row(
     validator: &jsonschema::Validator,
     line: &str,
-    row_ids: &mut HashSet<(String, String)>,
-    file_row_ids: &mut HashSet<String>,
+    state: &mut JsonlValidationState<'_>,
 ) -> Result<(), Vec<String>> {
     let key = validate_row_text(validator, line)?;
-    if !file_row_ids.insert(key.0.clone()) {
+    if !state.file_row_ids.insert(key.0.clone()) {
         return Err(vec![format!(
             "duplicate row_id {:?} within this JSONL file",
             key.0
         )]);
     }
-    insert_row_key(key, row_ids)
+    insert_row_key(key, state.row_ids)
 }
 
 fn validate_row_text(
