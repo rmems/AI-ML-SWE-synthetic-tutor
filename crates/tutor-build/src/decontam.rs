@@ -112,12 +112,15 @@ fn parse_record(file: &std::path::Path, chunk: &Chunk<'_>) -> Result<HeldOutItem
         .split(' ')
         .filter(|w| !w.is_empty())
         .count();
-    if item.problem_ids.is_empty() && words < dedup::SHINGLE_WORDS {
+    let has_statement_text = item
+        .statement
+        .as_ref()
+        .is_some_and(|statement| !statement.document.trim().is_empty());
+    if item.problem_ids.is_empty() && !has_statement_text && words < dedup::SHINGLE_WORDS {
         return Err(BuildError::heldout(
             file,
             format!(
-                "{location}record has no problem_id and too little text ({words} words) to \
-                 decontaminate against"
+                "{location}record has no problem_id or statement and too little text ({words} words) to                  decontaminate against"
             ),
         ));
     }

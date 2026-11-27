@@ -153,6 +153,11 @@ pub fn normalize(text: &str) -> String {
 /// kept.
 fn strip_emphasis(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
+    let marker_runs = chars
+        .iter()
+        .enumerate()
+        .filter(|(index, ch)| **ch == '*' && chars.get(index.wrapping_sub(1)) != Some(ch))
+        .count();
     let mut out = String::with_capacity(text.len());
     let mut index = 0;
     while index < chars.len() {
@@ -165,11 +170,12 @@ fn strip_emphasis(text: &str) -> String {
             .iter()
             .position(|&ch| ch != '*')
             .map_or(chars.len(), |offset| index + offset);
-        // Whitespace, prose punctuation, or the end of the text.
         let spaced =
             |ch: Option<&char>| ch.is_none_or(|ch| ch.is_whitespace() || ".,;:!?".contains(*ch));
         let before_spaced = spaced(index.checked_sub(1).and_then(|i| chars.get(i)));
-        if before_spaced == spaced(chars.get(end)) {
+        // Emphasis markers come in pairs. A lone one-sided `*` is math
+        // (`x* -3`), not markup, and must survive normalization.
+        if before_spaced == spaced(chars.get(end)) || marker_runs < 2 {
             out.extend(&chars[index..end]);
         } else {
             out.push(' ');
@@ -224,7 +230,14 @@ pub fn math_signature(document: &str) -> Vec<&str> {
             let near_operator = [index.wrapping_sub(1), index + 1]
                 .iter()
                 .any(|&n| tokens.get(n).is_some_and(|t| is_operator(t)));
-            is_operator(token) || (token.chars().any(|ch| ch.is_ascii_digit()) && near_operator)
+            let near_function = index
+                .checked_sub(1)
+                .and_then(|n| tokens.get(n))
+                .is_some_and(|t| {
+                    t.chars().count() == 1 && t.chars().all(|ch| ch.is_ascii_alphabetic())
+                });
+            is_operator(token)
+                || (token.chars().any(|ch| ch.is_ascii_digit()) && (near_operator || near_function))
         })
         .map(|index| tokens[index])
         .collect()
@@ -284,6 +297,12 @@ mod tests {
         );
         assert_eq!(normalize("3*x and 3 * x"), "3 * x and 3 * x");
         assert_eq!(normalize("f(x)*2"), "f x * 2");
+        assert_eq!(normalize("x* -3"), "x * - 3");
+        assert_ne!(
+            math_signature(&normalize("Compute f(3).")),
+            math_signature(&normalize("Compute f(4).")),
+            "the evaluation point is part of the posed math"
+        );
         // Prose numbers are not part of the math signature.
         assert_eq!(
             math_signature(&normalize("Compute f'(2) = ? in 2 sentences.")),

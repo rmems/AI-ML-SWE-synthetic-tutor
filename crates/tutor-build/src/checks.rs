@@ -245,7 +245,11 @@ fn closing_states_answer(row: &DialogueRow, answer: &Answer) -> bool {
 fn asserted_ints(text: &str) -> Vec<i64> {
     int_tokens(text)
         .into_iter()
-        .filter(|(start, _)| follows_assertion(&text[..*start]) && !in_question(&text[*start..]))
+        .filter(|(start, _)| {
+            follows_assertion(&text[..*start])
+                && !in_question(&text[*start..])
+                && !clause_started_as_question(&text[..*start])
+        })
         .map(|(_, value)| value)
         .collect()
 }
@@ -266,6 +270,21 @@ fn in_question(rest: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether the clause containing the token opened as a direct question.
+fn clause_started_as_question(prefix: &str) -> bool {
+    let start = prefix
+        .rmatch_indices(['?', '!', ';', '\n'])
+        .next()
+        .map_or(0, |(index, _)| index + 1);
+    let clause = prefix[start..].trim_start().to_ascii_lowercase();
+    [
+        "is ", "are ", "does ", "do ", "did ", "can ", "could ", "should ", "would ", "what ",
+        "why ", "how ",
+    ]
+    .iter()
+    .any(|opening| clause.starts_with(opening))
 }
 
 /// Whether `prefix` ends with an assertion marker: `=`, `:`, or the word
@@ -598,5 +617,6 @@ mod tests {
         assert!(asserted_ints("You got = 7.5, is that right?").is_empty());
         assert_eq!(asserted_ints("f'(1) = 7\nDoes that match?"), [7]);
         assert_eq!(asserted_ints("The answer is 7; can you explain why?"), [7]);
+        assert!(asserted_ints("Is f'(1) = 7; if not, what went wrong?").is_empty());
     }
 }
