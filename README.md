@@ -194,6 +194,22 @@ The repo name says AI / ML / SWE, but current coverage is math and ML math
 only; programming-language families are planned after the math pipeline is
 proven.
 
+New families start with a spec, not code:
+
+1. **Make sure the taxonomy and curriculum entries exist** — every targeted
+   misconception id must already be in `schemas/taxonomy.yaml` and every
+   topic in `curriculum/coverage-matrix.md`, because the spec's pre-flight
+   checks them. Land any missing id first via the
+   [taxonomy-entry form](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/new?template=taxonomy-entry.yml),
+   and any missing topic in the matrix.
+2. **Open a generation spec that links them** — the
+   [generation-spec issue form](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/new?template=generation-spec.yml)
+   is the contract; no generation work starts on a family without it.
+3. **Generation issues follow from the spec** — a teacher named in a spec
+   needs an `allowed` [rights-registry](docs/rights.md) entry; one without
+   it is a blocker, not a TODO. Family releases use the
+   [dataset-release form](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/new?template=dataset-release.yml).
+
 ---
 
 ## Out of scope

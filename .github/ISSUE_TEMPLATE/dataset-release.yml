@@ -1,0 +1,115 @@
+name: Dataset release
+description: Cut one dataset family release or version bump once its generation spec's pre-publication criteria are met
+title: "[release]: "
+labels:
+  - dataset
+  - export
+  - huggingface
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Dataset family release
+
+        One issue per family release or version bump. Start the release once
+        the generation spec's pre-publication criteria are met (verification,
+        decontamination, QA, run logs). Use this issue to track publication and
+        confirm the remaining spec criteria before closing — the spec is the
+        contract this release is checked against.
+
+        Release requirements:
+        - Every row passed independent verification; rejections live in
+          `rejected/` with reason codes and never ship.
+        - Splits are deduped, decontaminated against `evals/heldout/`, and
+          frozen (#8).
+        - Sampled human QA verdicts are recorded (#21).
+        - Every batch's run-log manifest is committed (#7).
+        - Export ships as one Hugging Face dataset per family (#21); the
+          family folder lives under `datasets/<family>/`.
+        - Teacher-sourced rows carry a rights envelope naming teacher +
+          route + serving vendor (`docs/rights.md`).
+  - type: input
+    id: family
+    attributes:
+      label: Dataset family
+      description: The family being released — same name as in its generation spec and `datasets/<family>/`.
+      placeholder: "derivative-misconceptions"
+    validations:
+      required: true
+  - type: input
+    id: spec
+    attributes:
+      label: Generation spec
+      description: Link the generation-spec issue this release satisfies.
+      placeholder: "e.g. #20"
+    validations:
+      required: true
+  - type: dropdown
+    id: release-type
+    attributes:
+      label: Release type
+      options:
+        - new family release
+        - version bump
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Dataset version tag for this release.
+      placeholder: "v1"
+    validations:
+      required: true
+  - type: textarea
+    id: changes
+    attributes:
+      label: What changed
+      description: For a new release, scope relative to the spec. For a version bump, what makes this a new version (regeneration, new topics, new taxonomy ids, split changes).
+      placeholder: "initial release covering power/product/chain rule topics"
+    validations:
+      required: true
+  - type: textarea
+    id: rows-and-splits
+    attributes:
+      label: Row counts and splits
+      description: Actual rows shipped, correction/confirmation mix versus the spec's target (pilot policy 80/20), and per-split counts.
+      placeholder: "5,012 rows — 79.8% correction / 20.2% confirmation; train 4,510 / val 251 / test 251"
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Verification summary
+      description: 'Per problem type: the independent verification method and pass/reject counts. Rejected problems must not appear in any split.'
+      placeholder: "product_rule_at_point: 2,040 verified via Rust-side check, 96 rejected"
+    validations:
+      required: true
+  - type: textarea
+    id: decontamination
+    attributes:
+      label: Decontamination and QA
+      description: How rows were checked against `evals/heldout/` items named in the spec, dedup results, and the sampled human-QA verdicts (#21) with links to run-log manifests.
+      placeholder: "heldout overlap scan clean; 1.2% near-dupes dropped; QA sample 200 rows, verdicts in out/…/manifest.json"
+    validations:
+      required: true
+  - type: input
+    id: artifact
+    attributes:
+      label: Dataset artifact
+      description: The Hugging Face dataset repo (one per family) and the local `datasets/<family>/` folder.
+      placeholder: "hf.co/datasets/rmems/tutor-derivative-misconceptions + datasets/derivative-misconceptions/"
+    validations:
+      required: true
+  - type: checkboxes
+    id: release-checklist
+    attributes:
+      label: Release checklist
+      description: The release is done when all of these hold. Leave unticked at filing; tick each as it lands, and close the release only when all are ticked.
+      options:
+        - label: The linked generation spec's done criteria are all met
+        - label: All rows verified; rejections excluded from every split
+        - label: Dedup + decontamination against `evals/heldout/` verified; splits frozen
+        - label: Sampled human QA recorded; run-log manifests committed
+        - label: Rights envelopes (teacher + route + serving vendor) present on teacher-sourced rows
+        - label: Hugging Face dataset published and version tagged
