@@ -1,0 +1,65 @@
+name: Data validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  data-validation:
+    name: Schema, taxonomy, policy, verification, rights
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install libzmq
+        run: sudo apt-get update && sudo apt-get install -y libzmq3-dev pkg-config
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.99.1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build validators
+        run: cargo build --locked -p tutor-validate -p tutor-ci
+      - name: Schema and validation-gate fixture tests
+        run: cargo test --locked -p tutor-schema -p tutor-validate -p tutor-ci
+      - name: Schema and dialogue-policy validation
+        shell: bash
+        run: |
+          mapfile -t rows < <(git ls-files -- 'datasets/*.json' 'datasets/*.jsonl' | sort -u)
+          if [ "${#rows[@]}" -eq 0 ]; then
+            echo "no committed dataset rows found" >&2
+            exit 1
+          fi
+          printf 'validating %d committed dataset row file(s)\n' "${#rows[@]}"
+          cargo run --locked -q -p tutor-validate -- "${rows[@]}"
+      - name: Taxonomy lint
+        shell: bash
+        run: |
+          mapfile -t files < <({
+            git ls-files -- 'datasets/*.json' 'datasets/*.jsonl'
+            git ls-files -- 'crates/*/tests/fixtures/*.json' 'crates/*/tests/fixtures/*.jsonl'
+          } | sort -u)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no data or fixture files found" >&2
+            exit 1
+          fi
+          cargo run --locked -q -p tutor-ci -- taxonomy-lint --taxonomy schemas/taxonomy.yaml "${files[@]}"
+      - name: Verification smoke tests
+        run: cargo run --locked -q -p tutor-ci -- verify-smoke --problem crates/tutor-schema/tests/fixtures/problem.json
+      - name: Rights gate
+        shell: bash
+        run: |
+          mapfile -t files < <({
+            git ls-files -- 'datasets/*.json' 'datasets/*.jsonl'
+            git ls-files -- 'crates/*/tests/fixtures/*.json' 'crates/*/tests/fixtures/*.jsonl'
+          } | sort -u)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no data or fixture files found" >&2
+            exit 1
+          fi
+          cargo run --locked -q -p tutor-ci -- rights-gate --registry docs/rights.md "${files[@]}"

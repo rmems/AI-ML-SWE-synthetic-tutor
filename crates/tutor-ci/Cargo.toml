@@ -1,0 +1,17 @@
+[package]
+name = "tutor-ci"
+description = "PR-time data-validation gates: taxonomy lint, rights gate, and verification smoke tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap.workspace = true
+serde_json.workspace = true
+tutor-schema.workspace = true
+tutor-verify.workspace = true
+
+[lints]
+workspace = true
