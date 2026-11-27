@@ -42,15 +42,22 @@ fn main() {
     // `refs/` instead (cargo rescans a watched directory), so that first
     // commit also triggers a rebuild. Never climb above `refs/`: watching
     // the git dir itself would rebuild on every index update.
-    if let Some(branch) = git_output(&["symbolic-ref", "-q", "HEAD"])
-        && let Some(path) = git_path(&branch)
-        && let Some(existing) = path
-            .ancestors()
-            .take_while(|candidate| candidate.components().any(|c| c.as_os_str() == "refs"))
-            .find(|candidate| candidate.exists())
-    {
-        println!("cargo:rerun-if-changed={}", existing.display());
+    if let Some(watch) = branch_ref_watch(&git_path) {
+        println!("cargo:rerun-if-changed={}", watch.display());
     }
+}
+
+/// The current branch's loose ref, or its nearest existing directory under
+/// `refs/` when the ref is only packed; `None` on a detached HEAD.
+fn branch_ref_watch(
+    git_path: &impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    let branch = git_output(&["symbolic-ref", "-q", "HEAD"])?;
+    let path = git_path(&branch)?;
+    path.ancestors()
+        .take_while(|candidate| candidate.components().any(|c| c.as_os_str() == "refs"))
+        .find(|candidate| candidate.exists())
+        .map(std::path::Path::to_path_buf)
 }
 
 fn tool_version(tool: &str) -> String {

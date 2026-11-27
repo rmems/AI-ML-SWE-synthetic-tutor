@@ -160,17 +160,33 @@ fn simulate_appends_a_chained_schema_valid_entry() {
     let Record::Run(run) = &entry.record else {
         panic!("expected a run entry");
     };
-    assert_eq!(run.stage, Stage::Simulate);
-    assert_eq!(run.family.as_deref(), Some("derivative_misconceptions"));
-    assert_eq!(run.replaces, None);
-    assert_eq!(run.counts.generated, 1);
-    assert_eq!(run.counts.verified, 1);
-    assert_eq!(run.counts.rejected, 0);
-    assert_eq!(run.generators[0].name, "synthetic-student-simulator");
-    assert_eq!(run.teacher, None);
-    assert_eq!(run.split_manifest_sha256, None);
-    assert_eq!(run.qa, None);
-    assert!(!run.environment.rustc_version.is_empty());
+    assert_eq!(
+        (
+            run.stage,
+            run.family.as_deref(),
+            run.replaces.as_deref(),
+            run.generators[0].name.as_str(),
+        ),
+        (
+            Stage::Simulate,
+            Some("derivative_misconceptions"),
+            None,
+            "synthetic-student-simulator",
+        )
+    );
+    assert_eq!(
+        (
+            run.counts.generated,
+            run.counts.verified,
+            run.counts.rejected
+        ),
+        (1, 1, 0)
+    );
+    // Fields a simulation could not have known stay null; the toolchain is
+    // always recorded.
+    let unknown_are_null =
+        run.teacher.is_none() && run.split_manifest_sha256.is_none() && run.qa.is_none();
+    assert!(unknown_are_null && !run.environment.rustc_version.is_empty());
     // The entry's manifest digest matches the committed manifest.
     let manifest_sha =
         tutor_runlog::sha256_hex(&std::fs::read(out.join("manifest.json")).expect("manifest"));
@@ -282,19 +298,31 @@ fn a_fully_rejected_run_still_leaves_a_log_entry() {
     let Record::Run(run) = &entries[0].record else {
         panic!("expected a run entry");
     };
-    assert_eq!(run.stage, Stage::Generate);
-    assert_eq!(run.counts.generated, 1);
-    assert_eq!(run.counts.verified, 0);
-    assert_eq!(run.counts.rejected, 1);
+    assert_eq!(
+        (
+            run.stage,
+            run.counts.generated,
+            run.counts.verified,
+            run.counts.rejected,
+        ),
+        (Stage::Generate, 1, 0, 1)
+    );
     assert_eq!(
         run.counts.rejected_by_reason["verify_verifier_unavailable"],
         1
     );
-    assert_eq!(run.environment.julia_version, None);
-    assert_eq!(run.generators[0].name, "binomial_derivative_at_point");
+    let generator = &run.generators[0];
     assert_eq!(
-        run.generators[0].language,
-        tutor_schema::GeneratorLanguage::Rust
+        (
+            generator.name.as_str(),
+            generator.language,
+            run.environment.julia_version.as_deref(),
+        ),
+        (
+            "binomial_derivative_at_point",
+            tutor_schema::GeneratorLanguage::Rust,
+            None,
+        )
     );
 }
 
@@ -377,19 +405,16 @@ fn a_run_log_on_a_run_staging_or_lock_file_is_rejected() {
             log.to_str().expect("utf-8 temp path").to_owned(),
         ]);
         let output = bin().args(args).output().expect("runs tutor-generate run");
-        assert!(!output.status.success());
         assert!(
-            stderr(&output).contains("the batch artifact"),
+            !output.status.success() && stderr(&output).contains("the batch artifact"),
             "{name}: stderr: {}",
             stderr(&output)
         );
+        let untouched =
+            !out.join("manifest.json").exists() && !out.join("manifest.json.tmp").is_dir();
         assert!(
-            !out.join("manifest.json").exists(),
-            "{name}: nothing was published"
-        );
-        assert!(
-            !out.join("manifest.json.tmp").is_dir(),
-            "{name}: no directory was created at the staging path"
+            untouched,
+            "{name}: nothing was published and no directory was created at the staging path"
         );
     }
 }
