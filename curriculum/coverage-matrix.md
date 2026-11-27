@@ -47,11 +47,20 @@ method cannot move to `generator + verification` — both must land first
 
 ## Counting rules
 
-- `generated rows` and `eval items held out` come from the **split manifests**
-  produced by [#8](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/8)
-  (assembly / splits / export) and `evals/heldout/` — never from hand edits.
-  #8 is not done and no split manifest exists yet, so both columns are `0`
-  on every row. Once #8 lands they read from the manifests.
+- Do not hand-edit the `generated rows` or `eval items held out` columns.
+  No committed release split manifest exists yet, so both columns are `0`
+  on every row.
+- When a release manifest is written by the [#8](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/8)
+  builder (`tutor-build`, PR #43), `generated rows` is read from
+  `counts.topics` (accepted rows per topic per split). That tally is
+  whatever the build ingested and accepted — including gold or other
+  hand-written rows if they were passed as `--rows` — which is why the
+  matrix still does not invent numbers by hand.
+- `eval items held out` cannot yet be read as a per-topic item count:
+  the current manifest records held-out *file* digests under
+  `inputs.heldout` (path, sha256, bytes), not a count of held-out items
+  per topic. That column stays `0` until the manifest or `evals/heldout/`
+  exposes an item-level count.
 - `target rows` is only filled where an existing issue states a number.
   The only stated target today: [#20](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/20)
   is **300 dialogues for the derivative-misconceptions family as a whole —

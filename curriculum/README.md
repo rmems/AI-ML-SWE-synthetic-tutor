@@ -8,5 +8,6 @@ prerequisites, available misconception ids, problem-generator status, target /
 generated rows, and held-out eval items. Every row has a status (`generator +
 verification`, `planned`, `specced`, `unscoped`), and every family/slice issue
 is linked both ways there. Generation specs may only target topics that exist
-in the matrix, and generated/held-out counts come from split manifests (#8),
-not hand edits — so gaps are visible before generation runs.
+in the matrix, and generated-row counts will come from #8 split-manifest topic tallies,
+not hand edits of this file. Held-out item counts stay 0 until the manifest
+records them — so gaps are visible before generation runs.
