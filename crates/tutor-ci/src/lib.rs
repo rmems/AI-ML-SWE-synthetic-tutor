@@ -741,6 +741,13 @@ mod tests {
         assert!(errors.iter().any(|error| error.contains(expected_error)));
     }
 
+    fn assert_taxonomy_row_error(value: &Value, context: &str, expected_error: &str) {
+        let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
+        let row = write_temp(&format!("{context}.json"), &value.to_string());
+        let errors = lint_taxonomy(&taxonomy, &[row]).expect_err(context);
+        assert!(errors.iter().any(|error| error.contains(expected_error)));
+    }
+
     #[test]
     fn taxonomy_lint_accepts_registered_ids() {
         let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
@@ -755,14 +762,7 @@ mod tests {
     fn taxonomy_lint_rejects_orphan_ids() {
         let mut value: Value = serde_json::from_str(GOLD).unwrap();
         value["misconceptions"] = serde_json::json!(["derivatives.not_registered"]);
-        let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
-        let row = write_temp("orphan.json", &value.to_string());
-        let errors = lint_taxonomy(&taxonomy, &[row]).expect_err("orphan id fails");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("orphan misconception id"))
-        );
+        assert_taxonomy_row_error(&value, "orphan id fails", "orphan misconception id");
     }
 
     #[test]
@@ -771,27 +771,17 @@ mod tests {
         value["nested"] = serde_json::json!([
             {"misconception": "derivatives.not_registered"}
         ]);
-        let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
-        let row = write_temp("nested-orphan.json", &value.to_string());
-        let errors = lint_taxonomy(&taxonomy, &[row]).expect_err("nested orphan id fails");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("orphan misconception id"))
-        );
+        assert_taxonomy_row_error(&value, "nested orphan id fails", "orphan misconception id");
     }
 
     #[test]
     fn taxonomy_lint_rejects_null_list_entries() {
         let mut value: Value = serde_json::from_str(GOLD).unwrap();
         value["misconceptions"] = serde_json::json!(["derivatives.chain_rule", null]);
-        let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
-        let row = write_temp("null-reference.json", &value.to_string());
-        let errors = lint_taxonomy(&taxonomy, &[row]).expect_err("null list entry fails");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("list entries must not be null"))
+        assert_taxonomy_row_error(
+            &value,
+            "null list entry fails",
+            "list entries must not be null",
         );
     }
 
