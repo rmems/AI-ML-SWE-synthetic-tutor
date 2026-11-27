@@ -25,17 +25,31 @@ fn main() {
     // fast-forward on the current branch only touches that branch's ref (or
     // packed-refs). Ask git for the paths so worktrees, whose HEAD lives in
     // the common git dir, are covered too; only watch files that exist.
-    let mut watched = vec![git_output(&["rev-parse", "--git-path", "HEAD"])];
-    if let Some(branch) = git_output(&["symbolic-ref", "-q", "HEAD"]) {
-        watched.push(git_output(&["rev-parse", "--git-path", &branch]));
-    }
-    watched.push(git_output(&["rev-parse", "--git-path", "packed-refs"]));
     let manifest_dir = std::path::PathBuf::from(manifest_dir());
-    for path in watched.into_iter().flatten() {
-        let path = manifest_dir.join(path);
+    let git_path = |name: &str| {
+        git_output(&["rev-parse", "--git-path", name]).map(|path| manifest_dir.join(path))
+    };
+    for path in [git_path("HEAD"), git_path("packed-refs")]
+        .into_iter()
+        .flatten()
+    {
         if path.exists() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
+    }
+    // A branch that is only in packed-refs has no loose ref file yet; the
+    // next commit creates one. Watch its nearest existing directory under
+    // `refs/` instead (cargo rescans a watched directory), so that first
+    // commit also triggers a rebuild. Never climb above `refs/`: watching
+    // the git dir itself would rebuild on every index update.
+    if let Some(branch) = git_output(&["symbolic-ref", "-q", "HEAD"])
+        && let Some(path) = git_path(&branch)
+        && let Some(existing) = path
+            .ancestors()
+            .take_while(|candidate| candidate.components().any(|c| c.as_os_str() == "refs"))
+            .find(|candidate| candidate.exists())
+    {
+        println!("cargo:rerun-if-changed={}", existing.display());
     }
 }
 
