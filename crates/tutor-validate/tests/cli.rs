@@ -106,6 +106,21 @@ fn duplicate_row_id_in_one_jsonl_file_fails_across_problem_ids() {
     assert!(stderr(&output).contains("duplicate row_id"));
 }
 
+#[test]
+fn reused_row_id_in_different_problem_files_is_allowed() {
+    let first = gold_value();
+    let mut second = gold_value();
+    second["problem_id"] = serde_json::json!("different-family-problem");
+    let first_path = write_temp("first-family.json", &first.to_string());
+    let second_path = write_temp("second-family.json", &second.to_string());
+    let output = bin()
+        .arg(&first_path)
+        .arg(&second_path)
+        .output()
+        .expect("runs tutor-validate");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+}
+
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }

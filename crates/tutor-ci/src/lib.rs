@@ -73,49 +73,73 @@ pub fn read_records(paths: &[PathBuf]) -> Result<Vec<DataRecord>, Vec<String>> {
     let mut records = Vec::new();
     let mut errors = Vec::new();
     for path in paths {
-        let text = match fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(error) => {
-                errors.push(format!(
-                    "{}: cannot read data file: {error}",
-                    path.display()
-                ));
-                continue;
-            }
-        };
-        if is_jsonl(path) {
-            for (index, line) in text.lines().enumerate() {
-                if line.trim().is_empty() {
-                    continue;
-                }
-                match serde_json::from_str(line) {
-                    Ok(value) => records.push(DataRecord {
-                        path: path.clone(),
-                        line: Some(index + 1),
-                        value,
-                    }),
-                    Err(error) => errors.push(format!(
-                        "{}:{}: not JSON: {error}",
-                        path.display(),
-                        index + 1
-                    )),
-                }
-            }
-        } else {
-            match serde_json::from_str(&text) {
-                Ok(value) => records.push(DataRecord {
-                    path: path.clone(),
-                    line: None,
-                    value,
-                }),
-                Err(error) => errors.push(format!("{}: not JSON: {error}", path.display())),
-            }
-        }
+        let (file_records, file_errors) = read_record_file(path);
+        records.extend(file_records);
+        errors.extend(file_errors);
     }
     if errors.is_empty() {
         Ok(records)
     } else {
         Err(errors)
+    }
+}
+
+fn read_record_file(path: &Path) -> (Vec<DataRecord>, Vec<String>) {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => {
+            return (
+                Vec::new(),
+                vec![format!(
+                    "{}: cannot read data file: {error}",
+                    path.display()
+                )],
+            );
+        }
+    };
+    if is_jsonl(path) {
+        read_jsonl_records(path, &text)
+    } else {
+        read_json_record(path, &text)
+    }
+}
+
+fn read_jsonl_records(path: &Path, text: &str) -> (Vec<DataRecord>, Vec<String>) {
+    let mut records = Vec::new();
+    let mut errors = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match parse_record(path, line, Some(index + 1)) {
+            Ok(record) => records.push(record),
+            Err(error) => errors.push(error),
+        }
+    }
+    (records, errors)
+}
+
+fn read_json_record(path: &Path, text: &str) -> (Vec<DataRecord>, Vec<String>) {
+    match parse_record(path, text, None) {
+        Ok(record) => (vec![record], Vec::new()),
+        Err(error) => (Vec::new(), vec![error]),
+    }
+}
+
+fn parse_record(path: &Path, text: &str, line: Option<usize>) -> Result<DataRecord, String> {
+    match serde_json::from_str(text) {
+        Ok(value) => Ok(DataRecord {
+            path: path.to_owned(),
+            line,
+            value,
+        }),
+        Err(error) => {
+            let location = match line {
+                Some(line) => format!("{}:{line}", path.display()),
+                None => path.display().to_string(),
+            };
+            Err(format!("{location}: not JSON: {error}"))
+        }
     }
 }
 
@@ -144,9 +168,28 @@ pub fn lint_taxonomy(
             taxonomy_path.display()
         )]
     })?;
-    let mut registered = BTreeSet::new();
     let mut errors = Vec::new();
-    for id in taxonomy_ids(&taxonomy_text) {
+    let registered = registered_taxonomy_ids(&taxonomy_text, taxonomy_path, &mut errors);
+    let records = read_records_allowing_partial(data_paths, &mut errors);
+    let references = inspect_taxonomy_references(&records, &registered, taxonomy_path, &mut errors);
+
+    if errors.is_empty() {
+        Ok(TaxonomyLintReport {
+            records: records.len(),
+            references,
+        })
+    } else {
+        Err(errors)
+    }
+}
+
+fn registered_taxonomy_ids(
+    taxonomy_text: &str,
+    taxonomy_path: &Path,
+    errors: &mut Vec<String>,
+) -> BTreeSet<String> {
+    let mut registered = BTreeSet::new();
+    for id in taxonomy_ids(taxonomy_text) {
         if id.is_empty() {
             errors.push(format!(
                 "{}: taxonomy contains an empty misconception id",
@@ -166,42 +209,58 @@ pub fn lint_taxonomy(
             taxonomy_path.display()
         ));
     }
+    registered
+}
 
-    let records = match read_records(data_paths) {
+fn read_records_allowing_partial(
+    data_paths: &[PathBuf],
+    errors: &mut Vec<String>,
+) -> Vec<DataRecord> {
+    match read_records(data_paths) {
         Ok(records) => records,
         Err(read_errors) => {
             errors.extend(read_errors);
             Vec::new()
         }
-    };
+    }
+}
 
+fn inspect_taxonomy_references(
+    records: &[DataRecord],
+    registered: &BTreeSet<String>,
+    taxonomy_path: &Path,
+    errors: &mut Vec<String>,
+) -> usize {
     let mut references = 0usize;
-    for record in &records {
-        for reference in taxonomy_references(record) {
-            match reference {
-                Ok(reference) => {
-                    references += 1;
-                    if !registered.contains(&reference) {
-                        errors.push(format!(
-                            "{}: orphan misconception id {reference:?} is not registered in {}",
-                            record.location(),
-                            taxonomy_path.display()
-                        ));
-                    }
+    for record in records {
+        references += inspect_record_taxonomy_references(record, registered, taxonomy_path, errors);
+    }
+    references
+}
+
+fn inspect_record_taxonomy_references(
+    record: &DataRecord,
+    registered: &BTreeSet<String>,
+    taxonomy_path: &Path,
+    errors: &mut Vec<String>,
+) -> usize {
+    let mut references = 0usize;
+    for reference in taxonomy_references(record) {
+        match reference {
+            Ok(reference) => {
+                references += 1;
+                if !registered.contains(&reference) {
+                    errors.push(format!(
+                        "{}: orphan misconception id {reference:?} is not registered in {}",
+                        record.location(),
+                        taxonomy_path.display()
+                    ));
                 }
-                Err(error) => errors.push(format!("{}: {error}", record.location())),
             }
+            Err(error) => errors.push(format!("{}: {error}", record.location())),
         }
     }
-
-    if errors.is_empty() {
-        Ok(TaxonomyLintReport {
-            records: records.len(),
-            references,
-        })
-    } else {
-        Err(errors)
-    }
+    references
 }
 
 fn taxonomy_references(record: &DataRecord) -> Vec<Result<String, String>> {
@@ -219,32 +278,7 @@ fn collect_taxonomy_references(
         Value::Object(map) => {
             for (key, child) in map {
                 let child_path = format!("{json_path}/{key}");
-                match key.as_str() {
-                    "misconception" => match child {
-                        Value::String(id) => out.push(Ok(id.clone())),
-                        Value::Null => {}
-                        _ => out.push(Err(format!(
-                            "{child_path}: taxonomy reference must be a string id"
-                        ))),
-                    },
-                    "misconceptions" | "misconception_ids" => match child {
-                        Value::Array(ids) => {
-                            for (index, id) in ids.iter().enumerate() {
-                                match id {
-                                    Value::String(id) => out.push(Ok(id.clone())),
-                                    _ => out.push(Err(format!(
-                                        "{child_path}/{index}: taxonomy reference must be a string id"
-                                    ))),
-                                }
-                            }
-                        }
-                        Value::Null => {}
-                        _ => out.push(Err(format!(
-                            "{child_path}: taxonomy reference list must be an array"
-                        ))),
-                    },
-                    _ => {}
-                }
+                collect_direct_taxonomy_reference(key, child, &child_path, out);
                 collect_taxonomy_references(child, &child_path, out);
             }
         }
@@ -254,6 +288,45 @@ fn collect_taxonomy_references(
             }
         }
         _ => {}
+    }
+}
+
+fn collect_direct_taxonomy_reference(
+    key: &str,
+    child: &Value,
+    child_path: &str,
+    out: &mut Vec<Result<String, String>>,
+) {
+    match key {
+        "misconception" => collect_taxonomy_id(child, child_path, out),
+        "misconceptions" | "misconception_ids" => {
+            collect_taxonomy_id_list(child, child_path, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_taxonomy_id_list(value: &Value, json_path: &str, out: &mut Vec<Result<String, String>>) {
+    match value {
+        Value::Array(ids) => {
+            for (index, id) in ids.iter().enumerate() {
+                collect_taxonomy_id(id, &format!("{json_path}/{index}"), out);
+            }
+        }
+        Value::Null => {}
+        _ => out.push(Err(format!(
+            "{json_path}: taxonomy reference list must be an array"
+        ))),
+    }
+}
+
+fn collect_taxonomy_id(value: &Value, json_path: &str, out: &mut Vec<Result<String, String>>) {
+    match value {
+        Value::String(id) => out.push(Ok(id.clone())),
+        Value::Null => {}
+        _ => out.push(Err(format!(
+            "{json_path}: taxonomy reference must be a string id"
+        ))),
     }
 }
 
@@ -275,16 +348,7 @@ pub fn rights_gate(
     data_paths: &[PathBuf],
 ) -> Result<RightsGateReport, Vec<String>> {
     let records = read_records(data_paths)?;
-    let mut citations = Vec::new();
-    let mut errors = Vec::new();
-    for record in &records {
-        for citation in teacher_citations(record) {
-            match citation {
-                Ok(citation) => citations.push((record.location(), citation)),
-                Err(error) => errors.push(format!("{}: {error}", record.location())),
-            }
-        }
-    }
+    let (citations, errors) = collect_record_teacher_citations(&records);
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -295,31 +359,8 @@ pub fn rights_gate(
         });
     }
 
-    let registry = fs::read_to_string(registry_path).map_err(|error| {
-        vec![format!(
-            "{}: cannot read rights registry while rows cite teachers: {error}",
-            registry_path.display()
-        )]
-    })?;
-    let allowed = allowed_sources(&registry);
-    if allowed.is_empty() {
-        return Err(vec![format!(
-            "{}: no allowed source entries found while rows cite teachers",
-            registry_path.display()
-        )]);
-    }
-
-    for (location, citation) in &citations {
-        if !citation_is_allowed(&citation.value, &allowed) {
-            errors.push(format!(
-                "{location}: teacher {:?} at {} has no allowed entry with pinned snapshot evidence in {}",
-                citation.value,
-                citation.json_path,
-                registry_path.display()
-            ));
-        }
-    }
-
+    let allowed = load_allowed_sources(registry_path)?;
+    let errors = denied_citation_errors(&citations, &allowed, registry_path);
     if errors.is_empty() {
         Ok(RightsGateReport {
             records: records.len(),
@@ -328,6 +369,59 @@ pub fn rights_gate(
     } else {
         Err(errors)
     }
+}
+
+fn collect_record_teacher_citations(
+    records: &[DataRecord],
+) -> (Vec<(String, TeacherCitation)>, Vec<String>) {
+    let mut citations = Vec::new();
+    let mut errors = Vec::new();
+    for record in records {
+        for citation in teacher_citations(record) {
+            match citation {
+                Ok(citation) => citations.push((record.location(), citation)),
+                Err(error) => errors.push(format!("{}: {error}", record.location())),
+            }
+        }
+    }
+    (citations, errors)
+}
+
+fn load_allowed_sources(registry_path: &Path) -> Result<Vec<AllowedSource>, Vec<String>> {
+    let registry = fs::read_to_string(registry_path).map_err(|error| {
+        vec![format!(
+            "{}: cannot read rights registry while rows cite teachers: {error}",
+            registry_path.display()
+        )]
+    })?;
+    let allowed = allowed_sources(&registry);
+    if allowed.is_empty() {
+        Err(vec![format!(
+            "{}: no allowed source entries found while rows cite teachers",
+            registry_path.display()
+        )])
+    } else {
+        Ok(allowed)
+    }
+}
+
+fn denied_citation_errors(
+    citations: &[(String, TeacherCitation)],
+    allowed: &[AllowedSource],
+    registry_path: &Path,
+) -> Vec<String> {
+    citations
+        .iter()
+        .filter(|(_, citation)| !citation_is_allowed(&citation.value, allowed))
+        .map(|(location, citation)| {
+            format!(
+                "{location}: teacher {:?} at {} has no allowed entry with pinned snapshot evidence in {}",
+                citation.value,
+                citation.json_path,
+                registry_path.display()
+            )
+        })
+        .collect()
 }
 
 fn teacher_citations(record: &DataRecord) -> Vec<Result<TeacherCitation, String>> {
@@ -345,19 +439,7 @@ fn collect_teacher_citations(
         Value::Object(map) => {
             for (key, child) in map {
                 let child_path = format!("{json_path}/{key}");
-                match key.as_str() {
-                    "teacher" | "teacher_id" => collect_teacher_value(child, &child_path, out),
-                    "teachers" => match child {
-                        Value::Array(items) => {
-                            for (index, item) in items.iter().enumerate() {
-                                collect_teacher_value(item, &format!("{child_path}/{index}"), out);
-                            }
-                        }
-                        Value::Null => {}
-                        _ => out.push(Err(format!("{child_path}: teacher list must be an array"))),
-                    },
-                    _ => {}
-                }
+                collect_direct_teacher_citation(key, child, &child_path, out);
                 collect_teacher_citations(child, &child_path, out);
             }
         }
@@ -367,6 +449,35 @@ fn collect_teacher_citations(
             }
         }
         _ => {}
+    }
+}
+
+fn collect_direct_teacher_citation(
+    key: &str,
+    child: &Value,
+    child_path: &str,
+    out: &mut Vec<Result<TeacherCitation, String>>,
+) {
+    match key {
+        "teacher" | "teacher_id" => collect_teacher_value(child, child_path, out),
+        "teachers" => collect_teacher_list(child, child_path, out),
+        _ => {}
+    }
+}
+
+fn collect_teacher_list(
+    value: &Value,
+    json_path: &str,
+    out: &mut Vec<Result<TeacherCitation, String>>,
+) {
+    match value {
+        Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                collect_teacher_value(item, &format!("{json_path}/{index}"), out);
+            }
+        }
+        Value::Null => {}
+        _ => out.push(Err(format!("{json_path}: teacher list must be an array"))),
     }
 }
 
@@ -407,7 +518,7 @@ fn collect_teacher_value(
 #[derive(Debug)]
 struct AllowedSource {
     aliases: BTreeSet<String>,
-    checkpoint_aliases: BTreeSet<String>,
+    checkpoint_pins: BTreeSet<String>,
     has_snapshot: bool,
 }
 
@@ -425,29 +536,35 @@ fn allowed_sources(markdown: &str) -> Vec<AllowedSource> {
         let without_parenthetical = strip_parentheticals(&name);
         aliases.insert(normalize(&without_parenthetical));
         aliases.retain(|alias| !alias.is_empty());
-        let checkpoint_aliases = exact_checkpoints(&body)
+        let checkpoint_pins = exact_checkpoint_pins(&body)
             .into_iter()
-            .map(|checkpoint| normalize(&checkpoint))
+            .map(|(checkpoint, revision)| normalize(&format!("{checkpoint}{revision}")))
             .collect();
         sources.push(AllowedSource {
             aliases,
-            checkpoint_aliases,
-            has_snapshot: body.to_ascii_lowercase().contains("snapshot"),
+            checkpoint_pins,
+            has_snapshot: has_terms_evidence(&body),
         });
     }
     sources
 }
 
-fn exact_checkpoints(body: &str) -> Vec<String> {
-    body.lines()
-        .filter(|line| line.contains("Exact checkpoint:"))
-        .filter_map(|line| {
-            let after_label = line.split_once("Exact checkpoint:")?.1;
+fn exact_checkpoint_pins(body: &str) -> Vec<(String, String)> {
+    body.split("Exact checkpoint:")
+        .skip(1)
+        .filter_map(|after_label| {
             let after_first_backtick = after_label.split_once('`')?.1;
-            let (checkpoint, _) = after_first_backtick.split_once('`')?;
-            Some(checkpoint.to_owned())
+            let (checkpoint, rest) = after_first_backtick.split_once('`')?;
+            let after_revision_backtick = rest.split_once('`')?.1;
+            let (revision, _) = after_revision_backtick.split_once('`')?;
+            Some((checkpoint.to_owned(), revision.to_owned()))
         })
         .collect()
+}
+
+fn has_terms_evidence(body: &str) -> bool {
+    let body = body.to_ascii_lowercase();
+    body.contains("clause relied on:") && body.contains("snapshot pinned")
 }
 
 fn entry_sections(markdown: &str) -> Vec<(String, String)> {
@@ -477,7 +594,6 @@ fn entry_name(heading: &str) -> Option<String> {
         .or_else(|| heading.split_once(" - "))?;
     let mut name = name.trim();
     if let Some((ordinal, rest)) = name.split_once(". ")
-        && !ordinal.is_empty()
         && ordinal.chars().all(|c| c.is_ascii_digit())
     {
         name = rest.trim();
@@ -514,18 +630,12 @@ fn citation_is_allowed(citation: &str, allowed: &[AllowedSource]) -> bool {
     let citation = normalize(citation);
     allowed.iter().any(|source| {
         source.has_snapshot
-            && (source.aliases.contains(&citation)
-                || source.checkpoint_aliases.iter().any(|checkpoint| {
-                    citation == *checkpoint || checkpoint_with_revision(&citation, checkpoint)
-                }))
+            && if source.checkpoint_pins.is_empty() {
+                source.aliases.contains(&citation)
+            } else {
+                source.checkpoint_pins.contains(&citation)
+            }
     })
-}
-
-fn checkpoint_with_revision(citation: &str, checkpoint: &str) -> bool {
-    let Some(revision) = citation.strip_prefix(checkpoint) else {
-        return false;
-    };
-    revision.len() >= 7 && revision.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Run the verification smoke test over the committed known-good problem
@@ -716,6 +826,44 @@ mod tests {
         let row = write_temp("mimo-teacher.json", &value.to_string());
         let report = rights_gate(&registry, &[row]).expect("pinned checkpoint passes");
         assert_eq!(report.citations, 1);
+    }
+
+    #[test]
+    fn rights_gate_rejects_mimo_bare_or_mismatched_revision() {
+        for (index, teacher) in [
+            "XiaomiMiMo/MiMo-V2.6-Flash-RL",
+            "XiaomiMiMo/MiMo-V2.6-Flash-RL@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut value: Value = serde_json::from_str(GOLD).unwrap();
+            value["teacher_variety"] = serde_json::json!({
+                "requested": true,
+                "status": "applied",
+                "teacher": teacher
+            });
+            let registry = write_temp("rights.md", RIGHTS);
+            let row = write_temp(&format!("mimo-bad-{index}.json"), &value.to_string());
+            assert!(
+                rights_gate(&registry, &[row]).is_err(),
+                "{teacher} must not pass the checkpoint-pinned gate"
+            );
+        }
+    }
+
+    #[test]
+    fn rights_gate_rejects_allowed_heading_without_terms_evidence() {
+        let mut value: Value = serde_json::from_str(GOLD).unwrap();
+        value["teacher_variety"] = serde_json::json!({
+            "requested": true,
+            "status": "applied",
+            "teacher": "deepseek_v41_flash"
+        });
+        let missing_evidence = RIGHTS.replacen("Snapshot pinned 2026-11-24.", "", 1);
+        let registry = write_temp("rights-no-evidence.md", &missing_evidence);
+        let row = write_temp("teacher-no-evidence.json", &value.to_string());
+        assert!(rights_gate(&registry, &[row]).is_err());
     }
 
     #[test]

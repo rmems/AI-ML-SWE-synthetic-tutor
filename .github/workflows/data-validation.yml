@@ -30,7 +30,7 @@ jobs:
       - name: Schema and dialogue-policy validation
         shell: bash
         run: |
-          mapfile -t rows < <(git ls-files -- 'datasets/*.json' 'datasets/*.jsonl' | sort -u)
+          mapfile -d '' -t rows < <(git ls-files -z -- 'datasets/*.json' 'datasets/*.jsonl' | sort -zu)
           if [ "${#rows[@]}" -eq 0 ]; then
             echo "no committed dataset rows found" >&2
             exit 1
@@ -40,10 +40,10 @@ jobs:
       - name: Taxonomy lint
         shell: bash
         run: |
-          mapfile -t files < <({
-            git ls-files -- 'datasets/*.json' 'datasets/*.jsonl'
-            git ls-files -- 'crates/*/tests/fixtures/*.json' 'crates/*/tests/fixtures/*.jsonl'
-          } | sort -u)
+          mapfile -d '' -t files < <({
+            git ls-files -z -- 'datasets/*.json' 'datasets/*.jsonl'
+            git ls-files -z -- 'crates/*/tests/fixtures/*.json' 'crates/*/tests/fixtures/*.jsonl'
+          } | sort -zu)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "no data or fixture files found" >&2
             exit 1
@@ -54,10 +54,10 @@ jobs:
       - name: Rights gate
         shell: bash
         run: |
-          mapfile -t files < <({
-            git ls-files -- 'datasets/*.json' 'datasets/*.jsonl'
-            git ls-files -- 'crates/*/tests/fixtures/*.json' 'crates/*/tests/fixtures/*.jsonl'
-          } | sort -u)
+          mapfile -d '' -t files < <({
+            git ls-files -z -- 'datasets/*.json' 'datasets/*.jsonl'
+            git ls-files -z -- 'crates/*/tests/fixtures/*.json' 'crates/*/tests/fixtures/*.jsonl'
+          } | sort -zu)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "no data or fixture files found" >&2
             exit 1

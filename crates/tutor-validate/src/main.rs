@@ -39,9 +39,6 @@ fn main() -> ExitCode {
         }
     };
     let mut failures = 0u32;
-    // Row IDs are only unique within a dataset family; rows carry no family
-    // field, so key on the (row_id, problem_id) pair — a cross-family reuse
-    // of an id always grounds a different problem.
     let mut row_ids = HashSet::new();
     for file in &cli.files {
         match validate_file(&validator, file, &mut row_ids) {
@@ -66,7 +63,7 @@ fn main() -> ExitCode {
 fn validate_file(
     validator: &jsonschema::Validator,
     file: &PathBuf,
-    row_ids: &mut HashSet<String>,
+    row_ids: &mut HashSet<(String, String)>,
 ) -> Result<(), Vec<String>> {
     if is_jsonl(file) {
         return validate_jsonl_file(validator, file, row_ids);
@@ -95,47 +92,25 @@ fn validate_file(
 fn validate_jsonl_file(
     validator: &jsonschema::Validator,
     file: &PathBuf,
-    row_ids: &mut HashSet<String>,
+    row_ids: &mut HashSet<(String, String)>,
 ) -> Result<(), Vec<String>> {
     let handle = match std::fs::File::open(file) {
         Ok(handle) => handle,
         Err(error) => return Err(vec![format!("cannot read file: {error}")]),
     };
     let reader = std::io::BufReader::new(handle);
+    let mut file_row_ids = HashSet::new();
     let mut reasons = Vec::new();
     for (index, line) in reader.lines().enumerate() {
-        let line = match line {
-            Ok(line) => line,
-            Err(error) => {
-                reasons.push(format!("line {}: cannot read line: {error}", index + 1));
-                break;
-            }
-        };
-        if line.trim().is_empty() {
-            continue;
-        }
-        if line.len() as u64 > MAX_ROW_BYTES {
-            reasons.push(format!(
-                "line {}: row exceeds {MAX_ROW_BYTES} bytes",
-                index + 1
-            ));
-            continue;
-        }
-        match validate_row_text(validator, &line) {
-            Ok(key) => {
-                if let Err(key_reasons) = insert_row_key(key, row_ids) {
-                    reasons.extend(
-                        key_reasons
-                            .into_iter()
-                            .map(|reason| format!("line {}: {reason}", index + 1)),
-                    );
-                }
-            }
-            Err(line_reasons) => reasons.extend(
-                line_reasons
-                    .into_iter()
-                    .map(|reason| format!("line {}: {reason}", index + 1)),
-            ),
+        if !validate_jsonl_line(
+            validator,
+            line,
+            index + 1,
+            row_ids,
+            &mut file_row_ids,
+            &mut reasons,
+        ) {
+            break;
         }
     }
     if reasons.is_empty() {
@@ -145,13 +120,70 @@ fn validate_jsonl_file(
     }
 }
 
+fn validate_jsonl_line(
+    validator: &jsonschema::Validator,
+    line: std::io::Result<String>,
+    line_number: usize,
+    row_ids: &mut HashSet<(String, String)>,
+    file_row_ids: &mut HashSet<String>,
+    reasons: &mut Vec<String>,
+) -> bool {
+    let line = match line {
+        Ok(line) => line,
+        Err(error) => {
+            reasons.push(format!("line {line_number}: cannot read line: {error}"));
+            return false;
+        }
+    };
+    if line.trim().is_empty() {
+        return true;
+    }
+    if line.len() as u64 > MAX_ROW_BYTES {
+        reasons.push(format!(
+            "line {line_number}: row exceeds {MAX_ROW_BYTES} bytes"
+        ));
+        return true;
+    }
+    let result = validate_jsonl_row(validator, &line, row_ids, file_row_ids);
+    if let Err(row_reasons) = result {
+        reasons.extend(prefixed_line_errors(row_reasons, line_number));
+    }
+    true
+}
+
+fn prefixed_line_errors(errors: Vec<String>, line_number: usize) -> Vec<String> {
+    errors
+        .into_iter()
+        .map(|reason| format!("line {line_number}: {reason}"))
+        .collect()
+}
+
 fn is_jsonl(file: &Path) -> bool {
     file.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("jsonl"))
 }
 
-fn validate_row_text(validator: &jsonschema::Validator, text: &str) -> Result<String, Vec<String>> {
+fn validate_jsonl_row(
+    validator: &jsonschema::Validator,
+    line: &str,
+    row_ids: &mut HashSet<(String, String)>,
+    file_row_ids: &mut HashSet<String>,
+) -> Result<(), Vec<String>> {
+    let key = validate_row_text(validator, line)?;
+    if !file_row_ids.insert(key.0.clone()) {
+        return Err(vec![format!(
+            "duplicate row_id {:?} within this JSONL file",
+            key.0
+        )]);
+    }
+    insert_row_key(key, row_ids)
+}
+
+fn validate_row_text(
+    validator: &jsonschema::Validator,
+    text: &str,
+) -> Result<(String, String), Vec<String>> {
     let value: serde_json::Value = match serde_json::from_str(text) {
         Ok(value) => value,
         Err(error) => return Err(vec![format!("not JSON: {error}")]),
@@ -166,15 +198,18 @@ fn validate_row_text(validator: &jsonschema::Validator, text: &str) -> Result<St
     // Parse the raw text, not the value: `serde_json::Value` silently keeps
     // only the last of duplicate fields.
     match DialogueRow::from_json(text) {
-        Ok(row) => Ok(row.row_id),
+        Ok(row) => Ok((row.row_id, row.problem_id)),
         Err(error) => Err(vec![format!("{} ({})", error, error.code())]),
     }
 }
 
-fn insert_row_key(row_id: String, row_ids: &mut HashSet<String>) -> Result<(), Vec<String>> {
-    if row_ids.insert(row_id.clone()) {
+fn insert_row_key(
+    key: (String, String),
+    row_ids: &mut HashSet<(String, String)>,
+) -> Result<(), Vec<String>> {
+    if row_ids.insert(key.clone()) {
         Ok(())
     } else {
-        Err(vec![format!("duplicate row_id {row_id:?}")])
+        Err(vec![format!("duplicate row_id {:?}", key.0)])
     }
 }
