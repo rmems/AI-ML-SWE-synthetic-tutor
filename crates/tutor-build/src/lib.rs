@@ -515,6 +515,23 @@ fn ensure_previous_manifest_survives(
              its frozen input, so copy the previous release's manifest to its own path first",
         ));
     }
+
+    // Staging uses fixed sibling names before promotion. A previous
+    // manifest saved under one is still an input: refuse it rather than
+    // overwriting and deleting the file whose digest the release records.
+    let staging_names = Split::ALL
+        .iter()
+        .map(|split| format!("{}.jsonl.staging", split.as_str()))
+        .chain([format!("{REJECTED_ARTIFACT}.staging")]);
+    for name in staging_names {
+        let staged = config.out_dir.join(name);
+        if std::fs::canonicalize(&staged).ok() == std::fs::canonicalize(previous).ok() {
+            return Err(BuildError::output(
+                &staged,
+                "is a tutor-build staging path and cannot be used as --previous-manifest; copy                  the previous manifest outside the output staging names first",
+            ));
+        }
+    }
     Ok(())
 }
 
