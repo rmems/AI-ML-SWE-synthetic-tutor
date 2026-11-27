@@ -98,18 +98,27 @@ fn load_file(file: &std::path::Path) -> Result<Vec<HeldOutItem>, BuildError> {
         .collect()
 }
 
-/// Parse and fingerprint one record. A record with no text and no
-/// `problem_id` (`[]`, `{}`, only numbers) would count as a record yet
-/// decontaminate nothing, so it fails closed.
+/// Parse and fingerprint one record. A record with no `problem_id` and less
+/// text than one shingle (`[]`, `{}`, `{"topic": "calculus"}`) would count
+/// as a record yet decontaminate nothing, so it fails closed.
 fn parse_record(file: &std::path::Path, chunk: &Chunk<'_>) -> Result<HeldOutItem, BuildError> {
     let location = &chunk.location;
     let value: serde_json::Value = serde_json::from_str(chunk.text)
         .map_err(|e| BuildError::heldout(file, format!("{location}not JSON: {e}")))?;
     let item = HeldOutItem::new(file, &value);
-    if item.problem_ids.is_empty() && item.fingerprint.document.is_empty() {
+    let words = item
+        .fingerprint
+        .document
+        .split(' ')
+        .filter(|w| !w.is_empty())
+        .count();
+    if item.problem_ids.is_empty() && words < dedup::SHINGLE_WORDS {
         return Err(BuildError::heldout(
             file,
-            format!("{location}record has no text or problem_id to decontaminate against"),
+            format!(
+                "{location}record has no problem_id and too little text ({words} words) to \
+                 decontaminate against"
+            ),
         ));
     }
     Ok(item)
@@ -341,7 +350,11 @@ mod tests {
     fn placeholder_heldout_records_fail_closed() {
         let dir =
             std::env::temp_dir().join(format!("tutor-build-placeholder-{}", std::process::id()));
-        for (name, text) in [("empty-array.json", "[]"), ("empty-object.jsonl", "{}\n")] {
+        for (name, text) in [
+            ("empty-array.json", "[]"),
+            ("empty-object.jsonl", "{}\n"),
+            ("metadata-only.json", r#"{"topic": "calculus"}"#),
+        ] {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join(name), text).unwrap();
             assert!(
