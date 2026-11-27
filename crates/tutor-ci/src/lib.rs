@@ -317,7 +317,12 @@ fn collect_list_items<T>(
     match value {
         Value::Array(items) => {
             for (index, item) in items.iter().enumerate() {
-                collect_item(item, &format!("{json_path}/{index}"), out);
+                let item_path = format!("{json_path}/{index}");
+                if item.is_null() {
+                    out.push(Err(format!("{item_path}: list entries must not be null")));
+                } else {
+                    collect_item(item, &item_path, out);
+                }
             }
         }
         Value::Null => {}
@@ -757,6 +762,36 @@ mod tests {
             errors
                 .iter()
                 .any(|error| error.contains("orphan misconception id"))
+        );
+    }
+
+    #[test]
+    fn taxonomy_lint_reads_references_nested_inside_arrays() {
+        let mut value: Value = serde_json::from_str(GOLD).unwrap();
+        value["nested"] = serde_json::json!([
+            {"misconception": "derivatives.not_registered"}
+        ]);
+        let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
+        let row = write_temp("nested-orphan.json", &value.to_string());
+        let errors = lint_taxonomy(&taxonomy, &[row]).expect_err("nested orphan id fails");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("orphan misconception id"))
+        );
+    }
+
+    #[test]
+    fn taxonomy_lint_rejects_null_list_entries() {
+        let mut value: Value = serde_json::from_str(GOLD).unwrap();
+        value["misconceptions"] = serde_json::json!(["derivatives.chain_rule", null]);
+        let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
+        let row = write_temp("null-reference.json", &value.to_string());
+        let errors = lint_taxonomy(&taxonomy, &[row]).expect_err("null list entry fails");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.contains("list entries must not be null"))
         );
     }
 
