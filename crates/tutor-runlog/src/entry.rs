@@ -134,7 +134,8 @@ impl RunRecord {
             sha256_field("split_manifest_sha256", sha)?;
         }
         if let Some(qa) = &self.qa {
-            let verdicts: u64 = qa.verdicts.values().sum();
+            let verdicts = checked_total(qa.verdicts.values())
+                .ok_or_else(|| invalid("qa.verdicts", "verdict counts overflow u64"))?;
             if verdicts != qa.sample_size {
                 return Err(invalid(
                     "qa.verdicts",
@@ -176,6 +177,12 @@ impl GatePauseRecord {
     fn validate(&self) -> Result<(), RunLogError> {
         non_empty("family", &self.family)?;
         non_empty("detail", &self.detail)?;
+        if self.evidence.is_empty() {
+            return Err(invalid(
+                "evidence",
+                "a gate pause must carry the evidence for the failed gate",
+            ));
+        }
         Ok(())
     }
 }
@@ -296,7 +303,7 @@ impl SeedUse {
                 "generators[].seeds.end",
                 "a contiguous range must satisfy end > start",
             )),
-            (None, Some(_)) => Ok(()),
+            (None, Some(derivation)) => non_empty("generators[].seeds.derivation", derivation),
             (None, None) => Err(invalid(
                 "generators[].seeds",
                 "must set either `end` (contiguous draw) or `derivation`",
@@ -350,7 +357,8 @@ pub struct Counts {
 
 impl Counts {
     fn validate(&self) -> Result<(), RunLogError> {
-        let accounted: u64 = self.rejected_by_reason.values().sum();
+        let accounted = checked_total(self.rejected_by_reason.values())
+            .ok_or_else(|| invalid("counts.rejected_by_reason", "reason counts overflow u64"))?;
         if accounted != self.rejected {
             return Err(invalid(
                 "counts.rejected_by_reason",
@@ -401,11 +409,20 @@ fn optional_non_empty(field: &'static str, value: &Option<String>) -> Result<(),
 }
 
 fn sha256_field(field: &'static str, value: &str) -> Result<(), RunLogError> {
-    if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
         Ok(())
     } else {
         Err(invalid(field, "must be a lowercase-hex SHA-256 digest"))
     }
+}
+
+/// Sum of `values`, or `None` when it overflows `u64`.
+fn checked_total<'a>(mut values: impl Iterator<Item = &'a u64>) -> Option<u64> {
+    values.try_fold(0_u64, |total, value| total.checked_add(*value))
 }
 
 fn invalid(field: &'static str, reason: impl Into<String>) -> RunLogError {

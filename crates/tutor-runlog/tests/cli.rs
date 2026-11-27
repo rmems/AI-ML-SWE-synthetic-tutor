@@ -174,11 +174,29 @@ fn pause_rejects_an_unknown_run_id_and_gate() {
             "export failed",
             "--run-id",
             "run-nope",
+            "--evidence",
+            "note=manual check",
         ])
         .output()
         .expect("runs tutor-runlog pause");
     assert!(!unknown_run.status.success());
     assert!(stderr(&unknown_run).contains("run-nope"));
+
+    let no_evidence = bin()
+        .args([
+            "pause",
+            path_str,
+            "--family",
+            "derivative_misconceptions",
+            "--gate",
+            "export",
+            "--detail",
+            "export failed",
+        ])
+        .output()
+        .expect("runs tutor-runlog pause");
+    assert!(!no_evidence.status.success());
+    assert!(stderr(&no_evidence).contains("evidence"));
 
     let bad_gate = bin()
         .args([
