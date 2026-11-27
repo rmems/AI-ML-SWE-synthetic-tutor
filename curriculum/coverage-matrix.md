@@ -59,8 +59,7 @@ method cannot move to `generator + verification` — both must land first
 - `eval items held out` cannot yet be read as a per-topic item count:
   the current manifest records held-out *file* digests under
   `inputs.heldout` (path, sha256, bytes), not a count of held-out items
-  per topic. That column stays `0` until the manifest or `evals/heldout/`
-  exposes an item-level count.
+  per topic. That column stays `0` until the split manifest records an item-level held-out count.
 - `target rows` is only filled where an existing issue states a number.
   The only stated target today: [#20](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/20)
   is **300 dialogues for the derivative-misconceptions family as a whole —
