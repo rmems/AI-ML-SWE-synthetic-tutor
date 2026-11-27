@@ -479,3 +479,27 @@ fn an_in_place_rerun_cannot_name_its_own_manifest_as_previous() {
         );
     }
 }
+
+#[test]
+fn a_failed_rebuild_leaves_the_previous_release_intact() {
+    let dir = unique_dir("failed-rebuild");
+    let out = dir.join("out");
+    let first = run_build(&out, &BuildExtras::default());
+    assert!(
+        first.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let manifest = std::fs::read(out.join("manifest.json")).unwrap();
+    let train = std::fs::read(out.join("train.jsonl")).unwrap();
+    // Block the first staged write: its staging name is a directory.
+    std::fs::create_dir_all(out.join("train.jsonl.staging")).unwrap();
+    let rerun = run_build(&out, &BuildExtras::default());
+    assert!(!rerun.status.success(), "the staging write must fail");
+    let intact = std::fs::read(out.join("manifest.json")).ok() == Some(manifest)
+        && std::fs::read(out.join("train.jsonl")).ok() == Some(train);
+    assert!(
+        intact,
+        "the previous manifest and artifacts survive a failed rebuild"
+    );
+}

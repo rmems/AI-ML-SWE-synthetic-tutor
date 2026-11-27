@@ -372,29 +372,71 @@ struct SplitCounts {
     taxonomy: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
-/// Retract any previous manifest, write split JSONL files and
-/// `rejected/rejected.jsonl`, then the manifest last (atomically), then its
-/// `.sha256` sidecar.
+/// Stage split JSONL files and `rejected/rejected.jsonl`, then retract any
+/// previous manifest, move the staged files into place, and publish the
+/// manifest last (atomically), then its `.sha256` sidecar.
 fn write_outputs(bundle: ReleaseBundle<'_>) -> Result<Outputs, BuildError> {
     let _lock = prepare_out_dir(bundle.config)?;
-    retract_previous_manifest(&bundle.config.out_dir)?;
-    let (mut artifacts, counts) = write_split_files(&bundle)?;
+    let out_dir = &bundle.config.out_dir;
+    let staged_result = stage_artifacts(&bundle);
+    let (artifacts, counts) = match staged_result {
+        Ok(staged) => staged,
+        Err(error) => {
+            discard_staged(out_dir);
+            return Err(error);
+        }
+    };
+    // Every artifact is staged: only now retract the previous release's
+    // manifest and move the new files into place, so a failed staging
+    // write leaves the previous release (files and manifest) intact.
+    retract_previous_manifest(out_dir)?;
+    for name in artifacts.keys() {
+        let path = out_dir.join(name);
+        std::fs::rename(staged(&path), &path)
+            .map_err(|e| BuildError::output(&path, e.to_string()))?;
+    }
+    write_manifest(bundle, artifacts, counts)
+}
 
-    let rejected_dir = bundle.config.out_dir.join("rejected");
+/// Write every split export and the rejection log to their staging names.
+fn stage_artifacts(
+    bundle: &ReleaseBundle<'_>,
+) -> Result<(BTreeMap<String, manifest::Artifact>, SplitCounts), BuildError> {
+    let (mut artifacts, counts) = write_split_files(bundle)?;
     let rejected_meta = write_jsonl(
-        &rejected_dir.join("rejected.jsonl"),
+        &staged(&bundle.config.out_dir.join(REJECTED_ARTIFACT)),
         bundle.rejected.iter().map(serde_json::to_value),
     )?;
     artifacts.insert(
-        "rejected/rejected.jsonl".to_owned(),
+        REJECTED_ARTIFACT.to_owned(),
         manifest::Artifact {
             sha256: rejected_meta.sha256,
             bytes: rejected_meta.bytes,
             rows: bundle.rejected.len(),
         },
     );
+    Ok((artifacts, counts))
+}
 
-    write_manifest(bundle, artifacts, counts)
+/// The rejection log, relative to the output directory.
+const REJECTED_ARTIFACT: &str = "rejected/rejected.jsonl";
+
+/// The staging name an artifact is written to before it is moved into place.
+fn staged(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".staging");
+    PathBuf::from(name)
+}
+
+/// Best-effort removal of staged artifacts after a failed build.
+fn discard_staged(out_dir: &Path) {
+    let names = Split::ALL
+        .iter()
+        .map(|split| format!("{}.jsonl", split.as_str()))
+        .chain([REJECTED_ARTIFACT.to_owned()]);
+    for name in names {
+        let _ = std::fs::remove_file(staged(&out_dir.join(name)));
+    }
 }
 
 /// Create the output directory and claim it for this build: refuse a
@@ -476,11 +518,12 @@ fn ensure_previous_manifest_survives(
     Ok(())
 }
 
-/// Remove a previous release's manifest and sidecar before any artifact is
-/// replaced. The manifest is the commit record of a bundle, so while new
-/// split files are being written the directory has no manifest at all —
-/// a reader sees "no complete release" rather than new files under the old
-/// release's manifest. The new manifest is published last.
+/// Remove a previous release's manifest and sidecar once the new artifacts
+/// are staged and before any of them is moved into place. The manifest is
+/// the commit record of a bundle, so while the new files replace the old
+/// ones the directory has no manifest at all — a reader sees "no complete
+/// release" rather than new files under the old release's manifest. The new
+/// manifest is published last.
 fn retract_previous_manifest(out_dir: &Path) -> Result<(), BuildError> {
     for name in ["manifest.json", "manifest.json.sha256"] {
         let path = out_dir.join(name);
@@ -519,7 +562,7 @@ fn write_split_files(
         count_rows(rows, split, &mut counts);
         let name = format!("{}.jsonl", split.as_str());
         let meta = write_jsonl(
-            &bundle.config.out_dir.join(&name),
+            &staged(&bundle.config.out_dir.join(&name)),
             export_rows.iter().map(serde_json::to_value),
         )?;
         artifacts.insert(

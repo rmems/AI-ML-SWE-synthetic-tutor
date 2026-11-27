@@ -208,9 +208,11 @@ cargo run -p tutor-build --bin tutor-build -- build \
   manifest the build is about to replace — copy the previous release's
   `manifest.json` to its own path first, so the digest the new manifest
   records stays verifiable.
-- A rebuild into an existing `--out` removes the old `manifest.json` (the
-  bundle's commit record) before rewriting any split file and publishes the
-  new one last, so a reader never sees new files under the old manifest.
+- A rebuild into an existing `--out` first stages every new artifact; a
+  failure there leaves the previous release intact. Only then does it
+  remove the old `manifest.json` (the bundle's commit record), move the new
+  files into place, and publish the new manifest last, so a reader never
+  sees new files under the old manifest.
 
 Outputs under `datasets/<family>/` are gitignored (only `README.md` and
 `CARD.md` drafts are committed):
