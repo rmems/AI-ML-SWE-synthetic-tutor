@@ -1,5 +1,5 @@
 name: Dataset release
-description: Cut one dataset family release or version bump after its generation spec is satisfied
+description: Cut one dataset family release or version bump once its generation spec's pre-publication criteria are met
 title: "[release]: "
 labels:
   - dataset
@@ -11,9 +11,11 @@ body:
       value: |
         ## Dataset family release
 
-        One issue per family release or version bump. A release can only
-        follow a generation spec whose done criteria are met — the spec is
-        the contract this release is checked against.
+        One issue per family release or version bump. Start the release once
+        the generation spec's pre-publication criteria are met (verification,
+        decontamination, QA, run logs). Use this issue to track publication and
+        confirm the remaining spec criteria before closing — the spec is the
+        contract this release is checked against.
 
         Release requirements:
         - Every row passed independent verification; rejections live in
@@ -103,7 +105,7 @@ body:
     id: release-checklist
     attributes:
       label: Release checklist
-      description: The release is done when all of these hold.
+      description: The release is done when all of these hold. Leave unticked at filing; tick each as it lands, and close the release only when all are ticked.
       options:
         - label: The linked generation spec's done criteria are all met
         - label: All rows verified; rejections excluded from every split

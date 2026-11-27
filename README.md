@@ -197,16 +197,18 @@ proven.
 New families start with a spec, not code:
 
 1. **Open a generation spec** — the
-   [generation-spec issue form](.github/ISSUE_TEMPLATE/generation-spec.yml)
+   [generation-spec issue form](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/new?template=generation-spec.yml)
    is the contract; no generation work starts on a family without it.
 2. **Link the taxonomy and curriculum entries** — every targeted
-   misconception id comes from `schemas/taxonomy.yaml` (new ids via the
-   taxonomy-entry form) and every topic from
-   `curriculum/coverage-matrix.md`.
+   misconception id comes from `schemas/taxonomy.yaml` and every topic from
+   `curriculum/coverage-matrix.md`. The spec's pre-flight requires them to
+   exist, so land any missing id first (via the
+   [taxonomy-entry form](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/new?template=taxonomy-entry.yml))
+   and any missing topic in the matrix, then link them from the spec.
 3. **Generation issues follow from the spec** — a teacher named in a spec
    needs an `allowed` [rights-registry](docs/rights.md) entry; one without
-   it is a blocker, not a TODO. Family releases use the dataset-release
-   form.
+   it is a blocker, not a TODO. Family releases use the
+   [dataset-release form](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/new?template=dataset-release.yml).
 
 ---
 

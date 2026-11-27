@@ -79,11 +79,11 @@ body:
     id: problem-source
     attributes:
       label: Problem source
-      description: How problems (and their candidate answers) are produced.
+      description: How problems (and their candidate answers) are produced. Teachers never decide a correct answer, and the simulator's teacher-variety lane fails closed until an allowed teacher lane is wired.
       options:
         - procedural generator
         - worked-source adaptation
-        - teacher-generated
+        - teacher-varied (teacher varies dialogue surface over verified problems; answers still verified independently)
     validations:
       required: true
   - type: input
@@ -108,7 +108,7 @@ body:
     id: student-profiles
     attributes:
       label: Student profiles used
-      description: 'Profiles from the synthetic student simulator (`StudentProfile` in `tutor-schema`): level (`struggling` / `typical` / `strong`), surface style (`terse` / `verbose`), persistence (`corrects_after_l1` / `corrects_after_l2` / `needs_l3`), notation noise, and the intended mix.'
+      description: 'Profiles from the synthetic student simulator (`tutor-schema`): `StudentProfile` level (`struggling` / `typical` / `strong`), surface style (`terse` / `verbose`) and notation noise, plus the per-attempt persistence (`corrects_after_l1` / `corrects_after_l2` / `needs_l3`, set on `AttemptSpec`), and the intended mix.'
       placeholder: "typical+struggling, mixed terse/verbose, persistence spread across all three, no notation noise"
     validations:
       required: true

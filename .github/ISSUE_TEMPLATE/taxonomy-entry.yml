@@ -31,7 +31,7 @@ body:
     attributes:
       label: Proposed id
       description: Dotted id — `<area>.<snake_case_name>`.
-      placeholder: "derivatives.quotient_rule"
+      placeholder: "derivatives.constant_multiple_dropped"
     validations:
       required: true
   - type: dropdown
@@ -53,7 +53,7 @@ body:
     attributes:
       label: error_pattern
       description: The faulty reasoning in one sentence — the pattern, not the topic name.
-      placeholder: "Student applies d/dx[f/g] = f'/g' instead of the quotient rule."
+      placeholder: "Student drops a constant coefficient when differentiating, treating d/dx[c·f] as f'."
     validations:
       required: true
   - type: input
@@ -61,7 +61,7 @@ body:
     attributes:
       label: bites_at
       description: The step in the student's work where the error bites.
-      placeholder: "the step differentiating the composite quotient"
+      placeholder: "the step where the coefficient in front of the differentiated term is carried"
     validations:
       required: true
   - type: textarea
@@ -69,7 +69,7 @@ body:
     attributes:
       label: wrong_attempt
       description: A minimal worked example of the error — student work plus the correct result. Required; no example, no id.
-      placeholder: "d/dx[x^2/sin x] = 2x/cos x (wrong) — correct: (2x sin x - x^2 cos x) / sin^2 x"
+      placeholder: "d/dx[3x^2] = 2x (wrong) — correct: 6x; d/dx[3(2x+1)^2] = 2(2x+1)·2 (wrong) — correct: 12(2x+1)"
     validations:
       required: true
   - type: textarea
@@ -77,7 +77,7 @@ body:
     attributes:
       label: correct_reasoning
       description: The right reasoning in one or two lines.
-      placeholder: "A quotient is not differentiated termwise; apply the quotient rule to numerator and denominator together."
+      placeholder: "A constant factor stays: d/dx[c·f] = c·f'. Differentiate f, then multiply by c."
     validations:
       required: true
   - type: textarea
@@ -85,7 +85,7 @@ body:
     attributes:
       label: diagnostic_question
       description: What a tutor should ask to surface the misconception (hint-ladder L2).
-      placeholder: "What rule applies to a ratio of two functions, and where did each of f' and g' go?"
+      placeholder: "What happened to the 3 in front of the x^2 when you differentiated?"
     validations:
       required: true
   - type: textarea
@@ -93,7 +93,7 @@ body:
     attributes:
       label: first_hint
       description: Hint-ladder level 1 — the first nudge a tutor gives, pointing at the step where it went wrong.
-      placeholder: "Check the step where you differentiated the fraction — does the quotient rule look like that?"
+      placeholder: "Look at the coefficient before and after you differentiated — is it still there?"
     validations:
       required: true
   - type: textarea
@@ -102,8 +102,8 @@ body:
       label: topics
       description: At least two curriculum topic IDs (from `curriculum/coverage-matrix.md`) where the error can appear, one per line.
       placeholder: |
-        calculus.derivatives.quotient_rule
-        calculus.derivatives.mixed_rules
+        calculus.derivatives.power_rule
+        calculus.derivatives.chain_rule
     validations:
       required: true
   - type: checkboxes
