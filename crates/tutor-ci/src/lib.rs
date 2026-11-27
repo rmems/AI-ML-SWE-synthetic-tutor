@@ -311,7 +311,6 @@ fn collect_direct_taxonomy_reference(
 fn collect_list_items<T>(
     value: &Value,
     json_path: &str,
-    type_error: &str,
     out: &mut Vec<Result<T, String>>,
     collect_item: impl Fn(&Value, &str, &mut Vec<Result<T, String>>),
 ) {
@@ -322,18 +321,12 @@ fn collect_list_items<T>(
             }
         }
         Value::Null => {}
-        _ => out.push(Err(format!("{json_path}: {type_error}"))),
+        _ => out.push(Err(format!("{json_path}: list must be an array"))),
     }
 }
 
 fn collect_taxonomy_id_list(value: &Value, json_path: &str, out: &mut Vec<Result<String, String>>) {
-    collect_list_items(
-        value,
-        json_path,
-        "taxonomy reference list must be an array",
-        out,
-        collect_taxonomy_id,
-    );
+    collect_list_items(value, json_path, out, collect_taxonomy_id);
 }
 
 fn collect_taxonomy_id(value: &Value, json_path: &str, out: &mut Vec<Result<String, String>>) {
@@ -466,13 +459,7 @@ fn collect_teacher_list(
     json_path: &str,
     out: &mut Vec<Result<TeacherCitation, String>>,
 ) {
-    collect_list_items(
-        value,
-        json_path,
-        "teacher list must be an array",
-        out,
-        collect_teacher_value,
-    );
+    collect_list_items(value, json_path, out, collect_teacher_value);
 }
 
 fn collect_teacher_value(
@@ -743,6 +730,12 @@ mod tests {
         )
     }
 
+    fn assert_teacher_rejected(teacher: &str, context: &str, expected_error: &str) {
+        let (registry, row) = write_teacher_fixture("teacher.json", teacher);
+        let errors = rights_gate(&registry, &[row]).expect_err(context);
+        assert!(errors.iter().any(|error| error.contains(expected_error)));
+    }
+
     #[test]
     fn taxonomy_lint_accepts_registered_ids() {
         let taxonomy = write_temp("taxonomy.yaml", TAXONOMY);
@@ -796,12 +789,10 @@ mod tests {
 
     #[test]
     fn rights_gate_rejects_parked_or_unregistered_teacher() {
-        let (registry, row) = write_teacher_fixture("teacher.json", "nemotron_3_ultra_550b_a55b");
-        let errors = rights_gate(&registry, &[row]).expect_err("parked teacher fails");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("has no allowed entry"))
+        assert_teacher_rejected(
+            "nemotron_3_ultra_550b_a55b",
+            "parked teacher fails",
+            "has no allowed entry",
         );
     }
 
@@ -845,13 +836,10 @@ mod tests {
 
     #[test]
     fn rights_gate_rejects_teacher_name_embedded_in_unregistered_source() {
-        let (registry, row) =
-            write_teacher_fixture("teacher.json", "unregistered-copy-of-deepseek-v4.1-flash");
-        let errors = rights_gate(&registry, &[row]).expect_err("embedded name fails");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.contains("has no allowed entry"))
+        assert_teacher_rejected(
+            "unregistered-copy-of-deepseek-v4.1-flash",
+            "embedded name fails",
+            "has no allowed entry",
         );
     }
 
