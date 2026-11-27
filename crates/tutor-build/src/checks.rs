@@ -250,15 +250,17 @@ fn asserted_ints(text: &str) -> Vec<i64> {
         .collect()
 }
 
-/// Whether the sentence that `rest` continues ends in `?`. A sentence ends
-/// at `?`, `!`, a newline, or a `.` followed by whitespace or the end of the
-/// text (so the decimal point in `7.5` does not end it).
+/// Whether the clause that `rest` continues ends in `?`. A clause ends at
+/// `?`, `!`, `;`, a newline, or a `.` followed by whitespace or the end of
+/// the text (so the decimal point in `7.5` does not end it).
 fn in_question(rest: &str) -> bool {
     let bytes = rest.as_bytes();
     for (index, byte) in bytes.iter().enumerate() {
         match byte {
             b'?' => return true,
-            b'!' | b'\n' => return false,
+            // A clause boundary: a later question does not undo an
+            // assertion made before it.
+            b'!' | b'\n' | b';' => return false,
             b'.' if bytes.get(index + 1).is_none_or(u8::is_ascii_whitespace) => return false,
             _ => {}
         }
@@ -595,5 +597,6 @@ mod tests {
         assert_eq!(asserted_ints("So f'(1) = 7. Substitute 1 to check."), [7]);
         assert!(asserted_ints("You got = 7.5, is that right?").is_empty());
         assert_eq!(asserted_ints("f'(1) = 7\nDoes that match?"), [7]);
+        assert_eq!(asserted_ints("The answer is 7; can you explain why?"), [7]);
     }
 }
