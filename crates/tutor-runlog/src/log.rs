@@ -179,7 +179,8 @@ impl RunLog {
     /// manual removal, the same trade `.simulate.lock` makes. The entry
     /// itself is still one write call, so readers never see a partial line.
     pub fn append(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
-        self.lock()?.append(record)
+        let mut locked = self.lock()?;
+        locked.append(record)
     }
 
     fn append_locked(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
@@ -242,8 +243,11 @@ impl LockedRunLog<'_> {
         self.log.check(record)
     }
 
-    /// Append `record` under the held lock; see [`RunLog::append`].
-    pub fn append(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
+    /// Append `record` under the held lock; see [`RunLog::append`]. Takes
+    /// `&mut self` so one guard cannot drive two appends at once (two
+    /// threads sharing a guard would otherwise both hash the same
+    /// predecessor).
+    pub fn append(&mut self, record: Record) -> Result<RunLogEntry, RunLogError> {
         self.log.append_locked(record)
     }
 }
@@ -303,9 +307,12 @@ fn lock_path(log: &Path) -> PathBuf {
 }
 
 /// Refuse `log` as a run-log destination when it aliases one of `reserved` —
-/// the batch's artifacts or publication-control files — or is an existing
-/// directory, so a misplaced `--run-log` cannot overwrite the output it
-/// should only describe.
+/// the batch's artifacts or publication-control files — sits underneath a
+/// reserved *file*, or is an existing directory, so a misplaced `--run-log`
+/// cannot overwrite the output it should only describe, nor make the log's
+/// lock create a directory where a batch file must go. A reserved path that
+/// is an ancestor of another reserved path is the output directory itself
+/// and may hold the log.
 pub fn ensure_log_path_is_clear(log: &Path, reserved: &[PathBuf]) -> Result<(), RunLogError> {
     if log.is_dir() {
         return Err(RunLogError::Invalid {
@@ -313,62 +320,71 @@ pub fn ensure_log_path_is_clear(log: &Path, reserved: &[PathBuf]) -> Result<(), 
             reason: format!("{} is a directory", log.display()),
         });
     }
-    for artifact in reserved {
-        if paths_alias(log, artifact) {
-            return Err(RunLogError::Invalid {
-                field: "run_log.path",
-                reason: format!(
-                    "{} aliases the batch artifact {}",
-                    log.display(),
-                    artifact.display()
-                ),
-            });
+    let refuse = |relation: &str, artifact: &Path| RunLogError::Invalid {
+        field: "run_log.path",
+        reason: format!(
+            "{} {relation} the batch artifact {}",
+            log.display(),
+            artifact.display()
+        ),
+    };
+    let log_path = normalized_path(log);
+    let normalized: Vec<PathBuf> = reserved.iter().map(|path| normalized_path(path)).collect();
+    for (artifact, path) in reserved.iter().zip(&normalized) {
+        if same_path(&log_path, path) {
+            return Err(refuse("aliases", artifact));
+        }
+        if !is_directory_entry(path, &normalized) && nested_under(&log_path, path) {
+            return Err(refuse("is nested under", artifact));
         }
     }
     Ok(())
 }
 
-/// True when `a` and `b` name the same filesystem location, resolving `.`,
-/// `..`, and symlinks of existing ancestors. Files that do not exist yet are
-/// normalized lexically, so a would-be artifact path still compares equal.
-fn paths_alias(a: &Path, b: &Path) -> bool {
-    let (a, b) = (normalized_path(a), normalized_path(b));
-    if a == b {
-        return true;
+/// Whether `candidate` is the parent directory of another reserved path.
+fn is_directory_entry(candidate: &Path, reserved: &[PathBuf]) -> bool {
+    reserved
+        .iter()
+        .any(|other| other != candidate && nested_under(other, candidate))
+}
+
+/// Whether normalized `path` lies strictly inside normalized `ancestor`.
+fn nested_under(path: &Path, ancestor: &Path) -> bool {
+    if cfg!(windows) {
+        let (path, ancestor) = (
+            path.to_string_lossy().to_ascii_lowercase(),
+            ancestor.to_string_lossy().to_ascii_lowercase(),
+        );
+        return Path::new(&path).starts_with(&ancestor) && path != ancestor;
     }
-    // Windows filesystems are case-insensitive.
-    cfg!(windows)
-        && a.to_string_lossy()
-            .eq_ignore_ascii_case(&b.to_string_lossy())
+    path.starts_with(ancestor) && path != ancestor
+}
+
+/// Normalized-path equality (case-insensitive on Windows).
+fn same_path(a: &Path, b: &Path) -> bool {
+    a == b
+        || (cfg!(windows)
+            && a.to_string_lossy()
+                .eq_ignore_ascii_case(&b.to_string_lossy()))
 }
 
 fn normalized_path(path: &Path) -> PathBuf {
     let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    // Canonicalizing resolves symlinks and `..` but needs the target to
-    // exist; a not-yet-written artifact falls back to its canonicalized
-    // parent plus its file name.
-    let absolute = normalize_lexically(&absolute);
-    // Canonicalize the nearest existing ancestor and re-attach the missing
-    // suffix, so `alias/new/file` and `real/new/file` compare equal when
-    // `alias` is a symlink to `real` even though `new/` does not exist yet.
-    let mut suffix = Vec::new();
-    let mut ancestor = absolute.as_path();
-    loop {
-        if let Ok(canonical) = std::fs::canonicalize(ancestor) {
-            let mut resolved = canonical;
-            for part in suffix.iter().rev() {
-                resolved.push(part);
-            }
-            return resolved;
-        }
-        match (ancestor.parent(), ancestor.file_name()) {
-            (Some(parent), Some(name)) => {
-                suffix.push(name.to_os_string());
-                ancestor = parent;
-            }
-            _ => return absolute,
+    // Canonicalize the longest existing prefix of the path *as written* and
+    // re-attach the missing suffix. Resolving symlinks before collapsing
+    // `..` matters: `link/..` is the parent of the link's target, not the
+    // directory holding the link. Only the suffix that does not exist yet is
+    // normalized lexically, so `alias/new/file` and `real/new/file` compare
+    // equal when `alias` is a symlink to `real`.
+    let components: Vec<_> = absolute.components().collect();
+    for split in (1..=components.len()).rev() {
+        let prefix: PathBuf = components[..split].iter().collect();
+        if let Ok(canonical) = std::fs::canonicalize(&prefix) {
+            let suffix: PathBuf = components[split..].iter().collect();
+            return normalize_lexically(&canonical.join(suffix));
         }
     }
+    normalize_lexically(&absolute)
 }
 
 fn normalize_lexically(path: &Path) -> PathBuf {
@@ -398,8 +414,11 @@ fn verify_lines(text: &str) -> Result<Vec<RunLogEntry>, RunLogError> {
             line: line_number,
             source,
         };
+        // Decode the entry from the text itself, not from a `Value`: a
+        // `Value` keeps only the last of duplicate keys, while the struct
+        // decoder rejects a duplicated field.
         let raw: serde_json::Value = serde_json::from_str(line).map_err(parse)?;
-        let entry: RunLogEntry = serde_json::from_value(raw.clone()).map_err(parse)?;
+        let entry: RunLogEntry = serde_json::from_str(line).map_err(parse)?;
         // Serde reads an omitted `Option` field as `None`; the format (and
         // the schema) require nullable fields to be written as explicit
         // `null`. Re-encoding the entry and comparing catches any omission.
@@ -700,7 +719,7 @@ mod tests {
     fn corrupted_history_is_detected() {
         type Corrupt = fn(&str) -> String;
         type Expect = fn(&RunLogError) -> bool;
-        let cases: [(&str, usize, Corrupt, Expect); 4] = [
+        let cases: [(&str, usize, Corrupt, Expect); 5] = [
             (
                 "tampered.jsonl",
                 2,
@@ -724,6 +743,19 @@ mod tests {
                     format!("{}\n{}\n", lines[0], lines[2])
                 },
                 |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
+            ),
+            (
+                // A duplicated field must not let the last copy win.
+                "duplicate-key.jsonl",
+                1,
+                |text| {
+                    text.replacen(
+                        "{\"log_version\":1,",
+                        "{\"log_version\":2,\"log_version\":1,",
+                        1,
+                    )
+                },
+                |error| matches!(error, RunLogError::Parse { line: 1, .. }),
             ),
             (
                 // Serde would read the omitted nullable field as `None`; the
@@ -859,37 +891,35 @@ mod tests {
         assert!(!path.exists(), "{name}: a rejected append must not write");
     }
 
+    type Mutate = fn(&mut RunRecord);
+    type Expect = fn(&RunLogError) -> bool;
+
+    #[test]
+    fn manifest_digests_must_be_lowercase_sha256() {
+        let cases: [(&str, Mutate); 2] = [
+            ("bad-sha.jsonl", |run| {
+                run.output.manifest_sha256 = Some("not-a-digest".to_owned());
+            }),
+            ("upper-sha.jsonl", |run| {
+                run.output.manifest_sha256 = Some("AB".repeat(32));
+            }),
+        ];
+        for (name, mutate) in cases {
+            append_is_rejected(name, mutate, |error| {
+                matches!(
+                    error,
+                    RunLogError::Invalid {
+                        field: "output.manifest_sha256",
+                        ..
+                    }
+                )
+            });
+        }
+    }
+
     #[test]
     fn invalid_run_records_are_rejected() {
-        type Mutate = fn(&mut RunRecord);
-        type Expect = fn(&RunLogError) -> bool;
-        let cases: [(&str, Mutate, Expect); 5] = [
-            (
-                "bad-sha.jsonl",
-                |run| run.output.manifest_sha256 = Some("not-a-digest".to_owned()),
-                |error| {
-                    matches!(
-                        error,
-                        RunLogError::Invalid {
-                            field: "output.manifest_sha256",
-                            ..
-                        }
-                    )
-                },
-            ),
-            (
-                "upper-sha.jsonl",
-                |run| run.output.manifest_sha256 = Some("AB".repeat(32)),
-                |error| {
-                    matches!(
-                        error,
-                        RunLogError::Invalid {
-                            field: "output.manifest_sha256",
-                            ..
-                        }
-                    )
-                },
-            ),
+        let cases: [(&str, Mutate, Expect); 3] = [
             (
                 "blank-derivation.jsonl",
                 |run| {
@@ -938,7 +968,7 @@ mod tests {
     fn lock_holds_the_log_between_check_and_append() {
         let path = temp_path("held.jsonl");
         let log = RunLog::at(&path);
-        let locked = log.lock().expect("lock is free");
+        let mut locked = log.lock().expect("lock is free");
         let record = run_record("run-a", Stage::Generate);
         locked.check(&record).unwrap();
         // Another writer cannot slip an entry in between check and append.
@@ -953,6 +983,10 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    fn paths_alias_for_test(a: &Path, b: &Path) -> bool {
+        same_path(&normalized_path(a), &normalized_path(b))
+    }
+
     #[cfg(unix)]
     #[test]
     fn missing_paths_alias_through_a_symlinked_ancestor() {
@@ -962,15 +996,47 @@ mod tests {
         let link = root.join("link");
         std::os::unix::fs::symlink(&real, &link).unwrap();
         // Neither `new/` nor the file exists yet; only an ancestor does.
-        assert!(paths_alias(
+        assert!(paths_alias_for_test(
             &link.join("new/run-log.jsonl"),
             &real.join("new/run-log.jsonl")
         ));
-        assert!(!paths_alias(
+        assert!(!paths_alias_for_test(
             &link.join("new/run-log.jsonl"),
             &real.join("other/run-log.jsonl")
         ));
+        // `link/..` is the parent of the link's *target*: resolve the link
+        // before collapsing `..`.
+        let nested = real.join("inner");
+        std::fs::create_dir_all(&nested).unwrap();
+        let deep_link = root.join("deep");
+        std::os::unix::fs::symlink(&nested, &deep_link).unwrap();
+        assert!(paths_alias_for_test(
+            &deep_link.join("../manifest.json"),
+            &real.join("manifest.json")
+        ));
+        assert!(!paths_alias_for_test(
+            &deep_link.join("../manifest.json"),
+            &root.join("manifest.json")
+        ));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_log_nested_under_a_reserved_file_is_refused() {
+        let root = temp_path("nested-reserved");
+        let out = root.join("out");
+        let reserved = [
+            out.clone(),
+            out.join("manifest.json"),
+            out.join("manifest.json.tmp"),
+        ];
+        // The output directory may hold the log...
+        assert!(ensure_log_path_is_clear(&out.join("run-log.jsonl"), &reserved).is_ok());
+        // ...but a reserved file may not become its parent directory.
+        assert!(matches!(
+            ensure_log_path_is_clear(&out.join("manifest.json.tmp/run-log.jsonl"), &reserved),
+            Err(RunLogError::Invalid { field: "run_log.path", ref reason }) if reason.contains("nested under")
+        ));
     }
 
     #[test]

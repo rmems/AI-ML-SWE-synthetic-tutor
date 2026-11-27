@@ -23,8 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 use tutor_runlog::{
-    Counts, GeneratorUse, LockFile, LockedRunLog, OutputRef, Record, RunLog, RunRecord, SeedUse,
-    Stage,
+    Counts, GeneratorUse, LockFile, OutputRef, Record, RunLog, RunRecord, SeedUse, Stage,
 };
 use tutor_schema::{
     Answer, Difficulty, GeneratorLanguage, GeneratorProvenance, MAX_SEED, MisconceptionId,
@@ -460,36 +459,14 @@ pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
         worker: worker.as_ref(),
         manifest_text: &manifest_text,
     };
-    // One run publishes into an output directory at a time, so two runs
-    // cannot interleave their artifact and manifest renames.
-    let _out_lock = LockFile::acquire(&config.out_dir.join(RUN_LOCK_FILE)).map_err(|err| {
-        io_err(format!(
-            "output directory {}: {err}",
-            config.out_dir.display()
-        ))
-    })?;
-    // Take the log's append lock and prove the entry can commit before any
-    // artifact is replaced: a bad --run-log path or a `replaces` naming no
-    // earlier run fails here, while the previous batch is still intact. The
-    // lock is held through the append, so no other writer can change the
-    // log between this check and the entry.
-    let log = config
-        .run_log
-        .as_ref()
-        .map(|target| RunLog::at(&target.path));
-    let locked = log
-        .as_ref()
-        .map(RunLog::lock)
-        .transpose()
-        .map_err(log_err)?;
-    let log_entry = match (config.run_log.as_ref(), locked.as_ref()) {
-        (Some(target), Some(locked)) => Some(prepare_log_entry(config, target, &summary, locked)?),
-        _ => None,
-    };
-    emit_outputs(config, &verified, &rejected, &manifest_text)?;
-    if let (Some(locked), Some(record)) = (locked.as_ref(), log_entry) {
-        locked.append(record).map_err(log_err)?;
-    }
+    publish_run(
+        config,
+        &summary,
+        &RunOutputs {
+            verified: &verified,
+            rejected: &rejected,
+        },
+    )?;
     Ok(report)
 }
 
@@ -705,19 +682,61 @@ fn log_err(err: tutor_runlog::RunLogError) -> std::io::Error {
     io_err(format!("run log append failed: {err}"))
 }
 
-/// Prove this run's log entry can commit before any artifact is replaced:
-/// the destination must not alias a batch artifact or staging file (a
-/// misplaced `--run-log` would overwrite the output it should only
-/// describe), and the append — existing chain, `replaces` resolution,
-/// record format — must validate against the log as it stands under the
-/// held lock. Returns the entry to append after the batch is committed.
-fn prepare_log_entry(
+/// The rows a run publishes.
+struct RunOutputs<'a> {
+    verified: &'a [Problem],
+    rejected: &'a [RejectRecord],
+}
+
+/// Publish a finished run and append its log entry.
+///
+/// One run publishes into an output directory at a time (`.run.lock`), so
+/// two runs cannot interleave their artifact and manifest renames. With a
+/// run log, the destination is checked before anything is created (it must
+/// not alias, or sit under, a batch artifact or staging file — a misplaced
+/// `--run-log` would overwrite the output it should only describe), then
+/// the log's append lock is taken and the entry — existing chain,
+/// `replaces` resolution, record format — is validated before any artifact
+/// is replaced: a bad path or a `replaces` naming no earlier run fails
+/// while the previous batch is intact. The lock is held through the append,
+/// so nothing can change the log between the check and the entry.
+fn publish_run(
     config: &RunConfig,
-    target: &RunLogTarget,
     summary: &RunSummary<'_>,
-    log: &LockedRunLog<'_>,
-) -> std::io::Result<Record> {
-    let reserved = [
+    outputs: &RunOutputs<'_>,
+) -> std::io::Result<()> {
+    let _out_lock = LockFile::acquire(&config.out_dir.join(RUN_LOCK_FILE)).map_err(|err| {
+        io_err(format!(
+            "output directory {}: {err}",
+            config.out_dir.display()
+        ))
+    })?;
+    let emit = || {
+        emit_outputs(
+            config,
+            outputs.verified,
+            outputs.rejected,
+            summary.manifest_text,
+        )
+    };
+    let Some(target) = config.run_log.as_ref() else {
+        return emit();
+    };
+    tutor_runlog::ensure_log_path_is_clear(&target.path, &reserved_run_paths(config))
+        .map_err(log_err)?;
+    let log = RunLog::at(&target.path);
+    let mut locked = log.lock().map_err(log_err)?;
+    let record = run_record(config, target, summary);
+    locked.check(&record).map_err(log_err)?;
+    emit()?;
+    locked.append(record).map_err(log_err)?;
+    Ok(())
+}
+
+/// Paths a run log may not take: the batch's artifacts, staging and lock
+/// files, the output directory itself, and the schema it validates with.
+fn reserved_run_paths(config: &RunConfig) -> [PathBuf; 7] {
+    [
         config.out_dir.clone(),
         config.out_dir.join("verified/problems.jsonl"),
         config.out_dir.join("rejected/rejections.jsonl"),
@@ -725,11 +744,7 @@ fn prepare_log_entry(
         config.out_dir.join(MANIFEST_STAGING_FILE),
         config.out_dir.join(RUN_LOCK_FILE),
         PathBuf::from(&config.schema),
-    ];
-    tutor_runlog::ensure_log_path_is_clear(&target.path, &reserved).map_err(log_err)?;
-    let record = run_record(config, target, summary);
-    log.check(&record).map_err(log_err)?;
-    Ok(record)
+    ]
 }
 
 /// This run's entry for the generation run log: counts from the report

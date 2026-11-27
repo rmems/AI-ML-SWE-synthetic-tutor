@@ -362,7 +362,13 @@ fn a_run_log_aliasing_an_output_artifact_is_rejected() {
 
 #[test]
 fn a_run_log_on_a_run_staging_or_lock_file_is_rejected() {
-    for name in ["manifest.json.tmp", ".run.lock"] {
+    for name in [
+        "manifest.json.tmp",
+        ".run.lock",
+        // Nested under a reserved file: the log's lock would otherwise
+        // create a directory where the manifest staging file must go.
+        "manifest.json.tmp/run-log.jsonl",
+    ] {
         let out = unique_path("staging-alias-out");
         let log = out.join(name);
         let mut args = run_args(&out);
@@ -373,13 +379,17 @@ fn a_run_log_on_a_run_staging_or_lock_file_is_rejected() {
         let output = bin().args(args).output().expect("runs tutor-generate run");
         assert!(!output.status.success());
         assert!(
-            stderr(&output).contains("aliases the batch artifact"),
+            stderr(&output).contains("the batch artifact"),
             "{name}: stderr: {}",
             stderr(&output)
         );
         assert!(
             !out.join("manifest.json").exists(),
             "{name}: nothing was published"
+        );
+        assert!(
+            !out.join("manifest.json.tmp").is_dir(),
+            "{name}: no directory was created at the staging path"
         );
     }
 }
