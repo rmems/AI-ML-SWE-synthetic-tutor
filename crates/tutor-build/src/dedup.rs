@@ -122,7 +122,7 @@ pub fn document(row: &CheckedRow) -> String {
 const MATH_OPERATORS: &[char] = &['+', '-', '*', '/', '^', '=', '<', '>', '\''];
 
 /// Normalize `text` for comparison: lowercase ASCII, keep every
-/// [`MATH_OPERATORS`] character as its own token, and collapse every other
+/// math operator (`+ - * / ^ = < >` and `'`) as its own token, and collapse every other
 /// run of non-ASCII-alphanumeric characters into one ASCII space
 /// (`f'(x) = x^4 - 3x^2.` → `f ' x = x ^ 4 - 3x ^ 2`). Brackets, spacing and
 /// prose punctuation are rendering; operators and signs change the math.
