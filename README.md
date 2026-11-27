@@ -183,9 +183,10 @@ profile fields for debugging; omitted fields are deterministic seed draws.
 
 `crates/tutor-build` turns already-assembled dialogue rows into a release:
 dialogue checks (schema + tutor policy via `tutor-schema`, plus a
-cross-check against the verified problems file), dedup (exact + near on
-normalized problem and dialogue text), decontamination against
-`evals/heldout/` (input-only), a deterministic frozen split, and chat-JSONL
+cross-check against the verified problems file), decontamination against
+`evals/heldout/` (input-only, run before dedup so a contaminated row cannot
+displace a clean near-duplicate), dedup (exact + near on normalized problem
+and dialogue text), a deterministic frozen split, and chat-JSONL
 export ([#8](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/8)).
 
 ```sh
