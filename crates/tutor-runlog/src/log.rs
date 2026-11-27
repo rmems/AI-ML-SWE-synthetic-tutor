@@ -252,7 +252,12 @@ impl RunLog {
     }
 
     fn write_path(&self) -> PathBuf {
-        normalized_path(&self.path)
+        let normalized = normalized_path(&self.path);
+        let trailing_separator = self.path.as_os_str().to_string_lossy().ends_with('/');
+        if trailing_separator && normalized.is_file() {
+            return self.path.clone();
+        }
+        normalized
     }
 
     fn read_text(&self) -> Result<String, RunLogError> {
@@ -289,6 +294,7 @@ impl LockedRunLog<'_> {
         if self.append_file.is_none() {
             self.append_file = Some(
                 std::fs::OpenOptions::new()
+                    .write(true)
                     .append(true)
                     .create(true)
                     .open(&self.write_path)?,
@@ -586,7 +592,7 @@ fn check_references(
                         run_id: run_id.clone(),
                     });
                 };
-                if run.family.as_deref() != Some(pause.family.as_str()) {
+                if run.family.is_some() && run.family.as_deref() != Some(pause.family.as_str()) {
                     return Err(RunLogError::PauseRunFamilyMismatch {
                         line,
                         run_id: run_id.clone(),
