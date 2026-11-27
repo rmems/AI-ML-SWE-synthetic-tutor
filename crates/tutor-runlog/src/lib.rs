@@ -101,7 +101,67 @@ pub fn run_log_json_schema() -> serde_json::Value {
         "const": RUN_LOG_SCHEMA_VERSION
     });
     require_all_properties(&mut schema);
+    pin_format_constraints(&mut schema);
+    pin_seed_use_forms(&mut schema);
     schema
+}
+
+/// Pin scalar formats `schemars` cannot infer from the runtime validators:
+/// RFC 3339 UTC timestamps and lowercase-hex SHA-256 digests. The recursive
+/// walk catches both root envelope fields and record fields nested inside
+/// the `Record` enum's inline variants.
+fn pin_format_constraints(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(map) => {
+            if let Some(properties) = map
+                .get_mut("properties")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                for (name, property) in properties.iter_mut() {
+                    if name == "recorded_at" {
+                        property["pattern"] = serde_json::Value::String(
+                            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$".to_owned(),
+                        );
+                    }
+                    if name.ends_with("_sha256") {
+                        property["pattern"] =
+                            serde_json::Value::String("^[0-9a-f]{64}$".to_owned());
+                    }
+                }
+            }
+            for value in map.values_mut() {
+                pin_format_constraints(value);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for value in items {
+                pin_format_constraints(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Encode the two replayable seed forms `SeedUse::validate` accepts: a
+/// contiguous `start..end` draw (`derivation: null`), or per-item derivation
+/// (`end: null`). Both keys remain required by the outer object; `oneOf`
+/// only narrows which one may be populated. A derivation must contain a
+/// non-whitespace character, matching the runtime's trimmed-nonempty rule.
+fn pin_seed_use_forms(schema: &mut serde_json::Value) {
+    schema["$defs"]["SeedUse"]["oneOf"] = serde_json::json!([
+        {
+            "properties": {
+                "end": {"type": "integer"},
+                "derivation": {"type": "null"}
+            }
+        },
+        {
+            "properties": {
+                "end": {"type": "null"},
+                "derivation": {"type": "string", "pattern": r"^[\s\S]*\S[\s\S]*$"}
+            }
+        }
+    ]);
 }
 
 /// Mark every `properties` object in `schema` as requiring all of its

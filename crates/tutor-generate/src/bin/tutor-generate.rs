@@ -549,14 +549,17 @@ fn write_simulation_output(
     // batch file, and the append — chain, `replaces`, record format — must
     // validate against the log as it stands. A bad --run-log or a mistyped
     // --replaces fails here, while the previous bundle is still intact. The
-    // lock is held through the append, so no other writer can change the
-    // log between this check and the entry.
+    // destination is then opened for append before publication, so an
+    // unwritable log cannot strand a committed bundle merely because the
+    // open fails. The lock is held through the append, so no other writer
+    // can change the log between this check and the entry.
     let log_path = run_log_path(args);
     tutor_runlog::ensure_log_path_is_clear(&log_path, &reserved_log_paths(args))?;
     let record = simulation_run_record(args, &batch, &manifest_text);
     let log = RunLog::at(&log_path);
     let mut locked = log.lock()?;
     locked.check(&record)?;
+    locked.open_append()?;
 
     let existing = ensure_simulation_output(&args.out)?;
     publish_bundle(&args.out, &publication, &existing)?;

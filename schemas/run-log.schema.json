@@ -210,6 +210,7 @@
         },
         "manifest_sha256": {
           "description": "SHA-256 (lowercase hex) of the committed `manifest.json`; `null` when\nthe stage writes no manifest.",
+          "pattern": "^[0-9a-f]{64}$",
           "type": [
             "string",
             "null"
@@ -316,6 +317,7 @@
             },
             "split_manifest_sha256": {
               "description": "SHA-256 (lowercase hex) of the split manifest of the release this run\nfed; `null` until the split step (#8) exists or the run feeds no\nrelease.",
+              "pattern": "^[0-9a-f]{64}$",
               "type": [
                 "string",
                 "null"
@@ -403,6 +405,29 @@
     "SeedUse": {
       "additionalProperties": false,
       "description": "The seeds one generator/simulator drew from.",
+      "oneOf": [
+        {
+          "properties": {
+            "derivation": {
+              "type": "null"
+            },
+            "end": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "properties": {
+            "derivation": {
+              "pattern": "^[\\s\\S]*\\S[\\s\\S]*$",
+              "type": "string"
+            },
+            "end": {
+              "type": "null"
+            }
+          }
+        }
+      ],
       "properties": {
         "derivation": {
           "description": "How per-item seeds were derived from `start` (e.g.\n`sha256(seed_start, problem_id, attempt_index)`); `null` means the\ncontiguous range `start..end` was drawn directly. Exactly one of\n`end`/`derivation` must be set.",
@@ -497,6 +522,7 @@
     },
     "prev_entry_sha256": {
       "description": "SHA-256 (lowercase hex) of the previous entry's serialized JSON line,\nor `null` on the first entry. This is the chain link: editing,\nreordering, or deleting an earlier entry is detected because the next\nentry's `prev_entry_sha256` no longer matches.",
+      "pattern": "^[0-9a-f]{64}$",
       "type": [
         "string",
         "null"
@@ -508,6 +534,7 @@
     },
     "recorded_at": {
       "description": "When the pipeline appended the entry (RFC 3339 UTC).",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$",
       "type": "string"
     }
   },

@@ -391,6 +391,8 @@ fn a_run_log_aliasing_an_output_artifact_is_rejected() {
 #[test]
 fn a_run_log_on_a_run_staging_or_lock_file_is_rejected() {
     for name in [
+        "verified",
+        "rejected",
         "manifest.json.tmp",
         ".run.lock",
         // Nested under a reserved file: the log's lock would otherwise

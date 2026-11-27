@@ -128,3 +128,45 @@ fn schema_caps_seed_bounds_like_the_runtime() {
     assert!(validator.is_valid(&serde_json::json!(9_007_199_254_740_992_u64)));
     assert!(!validator.is_valid(&serde_json::json!(9_007_199_254_740_993_u64)));
 }
+
+#[test]
+fn schema_encodes_the_two_seed_forms() {
+    let schema = run_log_json_schema();
+    let validator =
+        jsonschema::validator_for(&schema["$defs"]["SeedUse"]).expect("schema compiles");
+    let seed = |end: Value, derivation: Value| serde_json::json!({"start": 7, "end": end, "derivation": derivation});
+    assert!(validator.is_valid(&seed(serde_json::json!(9), Value::Null)));
+    assert!(validator.is_valid(&seed(Value::Null, serde_json::json!("sha256(seed, id)"))));
+    for (name, end, derivation) in [
+        ("both null", Value::Null, Value::Null),
+        (
+            "both populated",
+            serde_json::json!(9),
+            serde_json::json!("sha256(seed, id)"),
+        ),
+        ("blank derivation", Value::Null, serde_json::json!("  ")),
+    ] {
+        assert!(
+            !validator.is_valid(&seed(end, derivation)),
+            "{name} must fail schema validation"
+        );
+    }
+}
+
+#[test]
+fn schema_pins_timestamp_and_digest_formats() {
+    let schema = run_log_json_schema();
+    let timestamp = jsonschema::validator_for(&schema["properties"]["recorded_at"])
+        .expect("timestamp schema compiles");
+    assert!(timestamp.is_valid(&serde_json::json!("2026-11-27T09:30:00Z")));
+    assert!(timestamp.is_valid(&serde_json::json!("2026-11-27T09:30:00.123Z")));
+    assert!(!timestamp.is_valid(&serde_json::json!("yesterday")));
+    assert!(!timestamp.is_valid(&serde_json::json!("2026-11-27T09:30:00+00:00")));
+
+    let digest = jsonschema::validator_for(&schema["properties"]["prev_entry_sha256"])
+        .expect("digest schema compiles");
+    assert!(digest.is_valid(&serde_json::json!("a".repeat(64))));
+    assert!(digest.is_valid(&Value::Null));
+    assert!(!digest.is_valid(&serde_json::json!("A".repeat(64))));
+    assert!(!digest.is_valid(&serde_json::json!("not-a-digest")));
+}

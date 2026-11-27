@@ -22,16 +22,23 @@ fn main() {
     }
     // Rebuild when the checkout's commit moves so the recorded commit stays
     // accurate: HEAD itself changes on a branch switch, while a commit or
-    // fast-forward on the current branch only touches that branch's ref (or
-    // packed-refs). Ask git for the paths so worktrees, whose HEAD lives in
+    // fast-forward on the current branch only touches that branch's ref,
+    // packed-refs, or the reftable index. Ask git for the paths so worktrees,
+    // whose HEAD lives in
     // the common git dir, are covered too; only watch files that exist.
     let manifest_dir = std::path::PathBuf::from(manifest_dir());
     let git_path = |name: &str| {
         git_output(&["rev-parse", "--git-path", name]).map(|path| manifest_dir.join(path))
     };
-    for path in [git_path("HEAD"), git_path("packed-refs")]
-        .into_iter()
-        .flatten()
+    for path in [
+        git_path("HEAD"),
+        git_path("packed-refs"),
+        // Reftable-backed checkouts record ref updates here rather than in
+        // the loose ref or packed-refs watched for the files backend.
+        git_path("reftable/tables.list"),
+    ]
+    .into_iter()
+    .flatten()
     {
         if path.exists() {
             println!("cargo:rerun-if-changed={}", path.display());

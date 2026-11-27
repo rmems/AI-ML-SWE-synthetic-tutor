@@ -698,8 +698,10 @@ struct RunOutputs<'a> {
 /// the log's append lock is taken and the entry — existing chain,
 /// `replaces` resolution, record format — is validated before any artifact
 /// is replaced: a bad path or a `replaces` naming no earlier run fails
-/// while the previous batch is intact. The lock is held through the append,
-/// so nothing can change the log between the check and the entry.
+/// while the previous batch is intact. The log is opened for append before
+/// publication as well, so an unwritable destination cannot strand a
+/// committed batch merely because the open fails. The lock is held through
+/// the append, so nothing can change the log between the check and the entry.
 fn publish_run(
     config: &RunConfig,
     summary: &RunSummary<'_>,
@@ -728,6 +730,7 @@ fn publish_run(
     let mut locked = log.lock().map_err(log_err)?;
     let record = run_record(config, target, summary);
     locked.check(&record).map_err(log_err)?;
+    locked.open_append().map_err(log_err)?;
     emit()?;
     locked.append(record).map_err(log_err)?;
     Ok(())
@@ -735,9 +738,11 @@ fn publish_run(
 
 /// Paths a run log may not take: the batch's artifacts, staging and lock
 /// files, the output directory itself, and the schema it validates with.
-fn reserved_run_paths(config: &RunConfig) -> [PathBuf; 7] {
+fn reserved_run_paths(config: &RunConfig) -> [PathBuf; 9] {
     [
         config.out_dir.clone(),
+        config.out_dir.join("verified"),
+        config.out_dir.join("rejected"),
         config.out_dir.join("verified/problems.jsonl"),
         config.out_dir.join("rejected/rejections.jsonl"),
         config.out_dir.join("manifest.json"),

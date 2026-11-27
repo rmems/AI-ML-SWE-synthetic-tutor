@@ -40,9 +40,15 @@ otherwise.
   interleave and nothing can change the log between the preflight check and
   the entry (a stale lock from a killed writer is removed manually). The
   preflight rejects a `--run-log` path that aliases a batch artifact and a
-  `replaces` naming no earlier run before anything is overwritten; after
-  publication only an I/O error can stop the append, and then the batch is
-  treated as unlogged and rerun.
+  `replaces` naming no earlier run before anything is overwritten. Under the
+  log lock the destination is opened for append before publication, so an
+  unreadable-but-unwritable log fails while the previous batch is intact.
+  After publication only a write/sync I/O error can stop the append. The
+  append rolls partial bytes back to the prior end of the log while the lock
+  is still held; if that rollback itself fails, the log requires manual
+  truncation to the reported offset before any retry. In either case the
+  published batch is not release-eligible until a successful run entry
+  exists.
 - **Reruns:** a rerun is a new entry. When it supersedes an earlier batch it
   names that run in `replaces` — passed explicitly via `--replaces <run-id>`
   (or `RunConfig::replaces`), never inferred by the log, so a new batch is

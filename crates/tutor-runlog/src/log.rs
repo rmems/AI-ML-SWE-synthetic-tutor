@@ -80,6 +80,20 @@ pub enum RunLogError {
         /// The unresolved run id.
         run_id: String,
     },
+    /// A gate-pause `run_id` names a run for a different family.
+    #[error(
+        "line {line}: gate-pause `run_id` names run {run_id:?} for family {run_family:?}, not pause family {pause_family:?}"
+    )]
+    PauseRunFamilyMismatch {
+        /// 1-based line number.
+        line: usize,
+        /// The referenced run id.
+        run_id: String,
+        /// Family on the pause record.
+        pause_family: String,
+        /// Family recorded on the referenced run.
+        run_family: Option<String>,
+    },
     /// A run id was appended twice; run ids are unique.
     #[error("line {line}: run id {run_id:?} already exists earlier in this log")]
     DuplicateRunId {
@@ -101,6 +115,19 @@ pub enum RunLogError {
     /// removal — a stuck lock is recoverable where a forked chain is not.
     #[error("lock {0} is held by another writer; remove it if that writer stopped mid-write")]
     LockBusy(PathBuf),
+    /// The append write/sync failed and rolling the file back to its prior
+    /// length also failed, so the log needs manual repair at `offset`.
+    #[error(
+        "append I/O failed after byte {offset}: {write}; rollback to that offset failed: {rollback}; manual repair is required"
+    )]
+    RecoveryRequired {
+        /// Byte offset the log must be truncated to before retrying.
+        offset: u64,
+        /// The original write or sync failure.
+        write: std::io::Error,
+        /// The rollback failure.
+        rollback: std::io::Error,
+    },
 }
 
 /// An append-only, hash-chained generation run log: one [`RunLogEntry`] per
@@ -133,7 +160,7 @@ impl RunLog {
     /// path fails instead of reporting `ok (0 entries)`; appends keep the
     /// missing-file-means-new-log fallback.
     pub fn entries_strict(&self) -> Result<Vec<RunLogEntry>, RunLogError> {
-        verify_lines(&std::fs::read_to_string(&self.path)?)
+        verify_lines(&std::fs::read_to_string(self.write_path())?)
     }
 
     /// Check that `record` could be appended right now — the existing chain
@@ -157,9 +184,12 @@ impl RunLog {
     /// I/O error. Fails with [`RunLogError::LockBusy`] when another writer
     /// holds the lock.
     pub fn lock(&self) -> Result<LockedRunLog<'_>, RunLogError> {
+        let write_path = self.write_path();
         Ok(LockedRunLog {
             log: self,
-            _lock: LockFile::acquire(&lock_path(&self.path))?,
+            _lock: LockFile::acquire(&lock_path(&write_path))?,
+            append_file: None,
+            write_path,
         })
     }
 
@@ -175,15 +205,20 @@ impl RunLog {
     /// The read–verify–link–write sequence runs under a `<log>.lock` sibling
     /// file so two processes sharing a log cannot interleave an append — the
     /// second fails with [`RunLogError::LockBusy`] instead of linking to the
-    /// wrong predecessor. A writer killed mid-append leaves the lock for
-    /// manual removal, the same trade `.simulate.lock` makes. The entry
-    /// itself is still one write call, so readers never see a partial line.
+    /// wrong predecessor. Aliases of the same log resolve to the same lock
+    /// path. A writer killed mid-append leaves the lock for manual removal,
+    /// the same trade `.simulate.lock` makes. If the entry write or sync
+    /// fails, the append rolls the file back to its prior length while the
+    /// lock is still held; only a rollback failure leaves a partial tail.
     pub fn append(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
         let mut locked = self.lock()?;
         locked.append(record)
     }
 
-    fn append_locked(&self, record: Record) -> Result<RunLogEntry, RunLogError> {
+    /// Serialize `record` as the next entry after validating the existing
+    /// chain, the record, and its references. No file handle is opened here:
+    /// a validation failure cannot create an empty log as a side effect.
+    fn prepare_append(&self, record: Record) -> Result<(RunLogEntry, String), RunLogError> {
         let mut text = self.read_text()?;
         // Refuse to extend a log whose history does not verify.
         let entries = verify_lines(&text)?;
@@ -213,17 +248,15 @@ impl RunLog {
             line.insert(0, '\n');
         }
         line.push('\n');
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&self.path)?;
-        file.write_all(line.as_bytes())?;
-        file.sync_data()?;
-        Ok(entry)
+        Ok((entry, line))
+    }
+
+    fn write_path(&self) -> PathBuf {
+        normalized_path(&self.path)
     }
 
     fn read_text(&self) -> Result<String, RunLogError> {
-        match std::fs::read_to_string(&self.path) {
+        match std::fs::read_to_string(self.write_path()) {
             Ok(text) => Ok(text),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
             Err(error) => Err(error.into()),
@@ -235,6 +268,8 @@ impl RunLog {
 pub struct LockedRunLog<'a> {
     log: &'a RunLog,
     _lock: LockFile,
+    append_file: Option<std::fs::File>,
+    write_path: PathBuf,
 }
 
 impl LockedRunLog<'_> {
@@ -243,12 +278,51 @@ impl LockedRunLog<'_> {
         self.log.check(record)
     }
 
+    /// Open the resolved log destination for append and retain that handle.
+    ///
+    /// Publishers call this after [`check`](Self::check) and before replacing
+    /// their batch. An unreadable-but-unwritable log, a directory in the
+    /// destination path, or another open failure then stops publication while
+    /// the previous batch is still intact instead of leaving a committed
+    /// batch with no entry.
+    pub fn open_append(&mut self) -> Result<(), RunLogError> {
+        if self.append_file.is_none() {
+            self.append_file = Some(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .create(true)
+                    .open(&self.write_path)?,
+            );
+        }
+        Ok(())
+    }
+
     /// Append `record` under the held lock; see [`RunLog::append`]. Takes
     /// `&mut self` so one guard cannot drive two appends at once (two
     /// threads sharing a guard would otherwise both hash the same
     /// predecessor).
     pub fn append(&mut self, record: Record) -> Result<RunLogEntry, RunLogError> {
-        self.log.append_locked(record)
+        let (entry, line) = self.log.prepare_append(record)?;
+        self.open_append()?;
+        let file = self
+            .append_file
+            .as_mut()
+            .expect("open_append leaves a file handle");
+        let original_len = file.metadata()?.len();
+        if let Err(write) = file
+            .write_all(line.as_bytes())
+            .and_then(|()| file.sync_data())
+        {
+            return Err(match file.set_len(original_len) {
+                Ok(()) => write.into(),
+                Err(rollback) => RunLogError::RecoveryRequired {
+                    offset: original_len,
+                    write,
+                    rollback,
+                },
+            });
+        }
+        Ok(entry)
     }
 }
 
@@ -318,6 +392,23 @@ pub fn ensure_log_path_is_clear(log: &Path, reserved: &[PathBuf]) -> Result<(), 
         return Err(RunLogError::Invalid {
             field: "run_log.path",
             reason: format!("{} is a directory", log.display()),
+        });
+    }
+    // A dangling symlink has no canonical target for the missing-path
+    // comparison below. Publication can later create its target as an
+    // artifact, after which append would follow the link and overwrite that
+    // artifact. Ordinary new files are fine; only an existing symlink whose
+    // target is missing is ambiguous enough to reject.
+    if let Ok(metadata) = std::fs::symlink_metadata(log)
+        && metadata.file_type().is_symlink()
+        && matches!(
+            std::fs::metadata(log),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+    {
+        return Err(RunLogError::Invalid {
+            field: "run_log.path",
+            reason: format!("{} is a dangling symlink", log.display()),
         });
     }
     let refuse = |relation: &str, artifact: &Path| RunLogError::Invalid {
@@ -436,6 +527,12 @@ fn verify_lines(text: &str) -> Result<Vec<RunLogEntry>, RunLogError> {
                 found: entry.log_version,
             });
         }
+        if !is_rfc3339_utc(&entry.recorded_at) {
+            return Err(RunLogError::Invalid {
+                field: "recorded_at",
+                reason: format!("line {line_number} must be an RFC 3339 UTC timestamp"),
+            });
+        }
         match (previous_line, &entry.prev_entry_sha256) {
             (None, None) => {}
             (None, Some(_)) => return Err(RunLogError::FirstEntryLinks { line: line_number }),
@@ -458,21 +555,22 @@ fn check_references(
     record: &Record,
     line: usize,
 ) -> Result<(), RunLogError> {
-    let run_exists = |run_id: &str| {
-        prior
-            .iter()
-            .any(|entry| matches!(&entry.record, Record::Run(run) if run.run_id == run_id))
+    let find_run = |run_id: &str| {
+        prior.iter().find_map(|entry| match &entry.record {
+            Record::Run(run) if run.run_id == run_id => Some(run),
+            _ => None,
+        })
     };
     match record {
         Record::Run(run) => {
-            if run_exists(&run.run_id) {
+            if find_run(&run.run_id).is_some() {
                 return Err(RunLogError::DuplicateRunId {
                     line,
                     run_id: run.run_id.clone(),
                 });
             }
             if let Some(replaces) = &run.replaces
-                && !run_exists(replaces)
+                && find_run(replaces).is_none()
             {
                 return Err(RunLogError::ReplacesUnknown {
                     line,
@@ -481,13 +579,21 @@ fn check_references(
             }
         }
         Record::GatePause(pause) => {
-            if let Some(run_id) = &pause.run_id
-                && !run_exists(run_id)
-            {
-                return Err(RunLogError::PauseRunUnknown {
-                    line,
-                    run_id: run_id.clone(),
-                });
+            if let Some(run_id) = &pause.run_id {
+                let Some(run) = find_run(run_id) else {
+                    return Err(RunLogError::PauseRunUnknown {
+                        line,
+                        run_id: run_id.clone(),
+                    });
+                };
+                if run.family.as_deref() != Some(pause.family.as_str()) {
+                    return Err(RunLogError::PauseRunFamilyMismatch {
+                        line,
+                        run_id: run_id.clone(),
+                        pause_family: pause.family.clone(),
+                        run_family: run.family.clone(),
+                    });
+                }
             }
         }
     }
@@ -542,6 +648,63 @@ fn now_rfc3339_utc() -> String {
         .as_secs();
     let (date, time) = civil_utc(secs);
     format!("{date}T{time}Z")
+}
+
+/// Whether `value` is an RFC 3339 timestamp in UTC: `YYYY-MM-DDTHH:MM:SSZ`,
+/// optionally with fractional seconds. Leap seconds are not produced by the
+/// system clock and are rejected here.
+fn is_rfc3339_utc(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 20
+        || bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+    {
+        return false;
+    }
+    let digit = |index: usize| bytes[index].is_ascii_digit();
+    if !(0..4).all(digit)
+        || !(5..7).all(digit)
+        || !(8..10).all(digit)
+        || !(11..13).all(digit)
+        || !(14..16).all(digit)
+        || !(17..19).all(digit)
+    {
+        return false;
+    }
+    let number = |start: usize, end: usize| -> u32 {
+        value[start..end].parse().expect("digit-only slice parses")
+    };
+    let month = number(5, 7);
+    let day = number(8, 10);
+    let hour = number(11, 13);
+    let minute = number(14, 16);
+    let second = number(17, 19);
+    if !(1..=12).contains(&month) || hour >= 24 || minute >= 60 || second >= 60 {
+        return false;
+    }
+    let year = number(0, 4);
+    let leap_year =
+        year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap_year => 29,
+        2 => 28,
+        _ => unreachable!("month was range-checked"),
+    };
+    if day == 0 || day > days_in_month {
+        return false;
+    }
+    if bytes[19] == b'Z' {
+        return bytes.len() == 20;
+    }
+    if bytes[19] != b'.' || bytes.len() < 22 || *bytes.last().expect("nonempty") != b'Z' {
+        return false;
+    }
+    bytes[20..bytes.len() - 1].iter().all(u8::is_ascii_digit)
 }
 
 /// `yyyymmddThhmmss` for run ids.
@@ -719,7 +882,7 @@ mod tests {
     fn corrupted_history_is_detected() {
         type Corrupt = fn(&str) -> String;
         type Expect = fn(&RunLogError) -> bool;
-        let cases: [(&str, usize, Corrupt, Expect); 5] = [
+        let cases: [(&str, usize, Corrupt, Expect); 6] = [
             (
                 "tampered.jsonl",
                 2,
@@ -764,6 +927,25 @@ mod tests {
                 1,
                 |text| text.replacen("\"prev_entry_sha256\":null,", "", 1),
                 |error| matches!(error, RunLogError::Invalid { field: "entry", .. }),
+            ),
+            (
+                "bad-timestamp.jsonl",
+                1,
+                |text| {
+                    let start = text.find("\"recorded_at\":\"").expect("timestamp field")
+                        + "\"recorded_at\":\"".len();
+                    let end = text[start..].find('"').expect("timestamp end") + start;
+                    format!("{}not-a-timestamp{}", &text[..start], &text[end..])
+                },
+                |error| {
+                    matches!(
+                        error,
+                        RunLogError::Invalid {
+                            field: "recorded_at",
+                            ..
+                        }
+                    )
+                },
             ),
         ];
         for (name, runs, corrupt, expected) in cases {
@@ -996,6 +1178,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    #[cfg(unix)]
     fn paths_alias_for_test(a: &Path, b: &Path) -> bool {
         same_path(&normalized_path(a), &normalized_path(b))
     }
@@ -1031,6 +1214,51 @@ mod tests {
             &deep_link.join("../manifest.json"),
             &root.join("manifest.json")
         ));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn aliases_of_the_same_log_share_one_append_lock() {
+        let root = temp_path("alias-lock-root");
+        std::fs::create_dir_all(&root).unwrap();
+        let real = root.join("run-log.jsonl");
+        std::fs::write(&real, "").unwrap();
+        let link = root.join("log-link.jsonl");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let aliased = RunLog::at(&link);
+        let locked = aliased.lock().expect("alias lock is free");
+        assert!(matches!(
+            RunLog::at(&real).append(run_record("run-a", Stage::Generate)),
+            Err(RunLogError::LockBusy(_))
+        ));
+        drop(locked);
+        RunLog::at(&real)
+            .append(run_record("run-a", Stage::Generate))
+            .expect("append after the alias lock drops");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_log_symlink_is_refused_before_publication() {
+        let root = temp_path("dangling-log-root");
+        let out = root.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let artifact = out.join("rejections.jsonl");
+        let link = root.join("log-link.jsonl");
+        std::os::unix::fs::symlink(&artifact, &link).unwrap();
+
+        assert!(matches!(
+            ensure_log_path_is_clear(&link, std::slice::from_ref(&artifact)),
+            Err(RunLogError::Invalid { field: "run_log.path", ref reason }) if reason.contains("dangling symlink")
+        ));
+        // An ordinary new log path beside the artifacts remains valid.
+        assert!(
+            ensure_log_path_is_clear(&out.join("run-log.jsonl"), std::slice::from_ref(&artifact))
+                .is_ok()
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -1110,6 +1338,18 @@ mod tests {
             log.append(bad),
             Err(RunLogError::PauseRunUnknown { .. })
         ));
+
+        let wrong_family = Record::GatePause(GatePauseRecord {
+            family: "other_family".to_owned(),
+            gate: Gate::Export,
+            run_id: Some("run-a".to_owned()),
+            detail: "export failed".to_owned(),
+            evidence: BTreeMap::from([("reason".to_owned(), serde_json::json!("x"))]),
+        });
+        assert!(matches!(
+            log.append(wrong_family),
+            Err(RunLogError::PauseRunFamilyMismatch { .. })
+        ));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -1127,5 +1367,24 @@ mod tests {
         assert_eq!(compact_utc(0), "19700101T000000");
         // 2000-02-29T12:34:56Z — leap day.
         assert_eq!(compact_utc(951827696), "20000229T123456");
+    }
+
+    #[test]
+    fn rfc3339_utc_validation_checks_calendar_dates() {
+        for valid in [
+            "2026-11-27T09:30:00Z",
+            "2026-11-27T09:30:00.123Z",
+            "2000-02-29T12:34:56Z",
+        ] {
+            assert!(is_rfc3339_utc(valid), "{valid}");
+        }
+        for invalid in [
+            "2026-11-27T09:30:00+00:00",
+            "2026-02-29T09:30:00Z",
+            "2026-11-27T24:00:00Z",
+            "not-a-timestamp",
+        ] {
+            assert!(!is_rfc3339_utc(invalid), "{invalid}");
+        }
     }
 }
