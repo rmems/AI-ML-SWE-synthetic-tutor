@@ -131,7 +131,7 @@ const MATH_OPERATORS: &[char] = &['+', '-', '*', '/', '^', '=', '<', '>', '\''];
 pub fn normalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut pending_space = false;
-    for ch in text.chars().map(fold_glyph) {
+    for ch in strip_emphasis(text).chars().map(fold_glyph) {
         let Some(operator) = token_kind(ch) else {
             pending_space = true;
             continue;
@@ -141,6 +141,40 @@ pub fn normalize(text: &str) -> String {
         }
         out.push(ch.to_ascii_lowercase());
         pending_space = operator;
+    }
+    out
+}
+
+/// `text` with Markdown emphasis markers (`*`/`**` runs that open or close
+/// a span — touching text on one side only, with whitespace or prose
+/// punctuation on the other) replaced by spaces, so bolding
+/// an equation does not add multiplication tokens. A `*` with text on both
+/// sides (`3*x`) or spaces on both sides (`3 * x`) is multiplication and is
+/// kept.
+fn strip_emphasis(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index] != '*' {
+            out.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        let end = chars[index..]
+            .iter()
+            .position(|&ch| ch != '*')
+            .map_or(chars.len(), |offset| index + offset);
+        // Whitespace, prose punctuation, or the end of the text.
+        let spaced =
+            |ch: Option<&char>| ch.is_none_or(|ch| ch.is_whitespace() || ".,;:!?".contains(*ch));
+        let before_spaced = spaced(index.checked_sub(1).and_then(|i| chars.get(i)));
+        if before_spaced == spaced(chars.get(end)) {
+            out.extend(&chars[index..end]);
+        } else {
+            out.push(' ');
+        }
+        index = end;
     }
     out
 }
@@ -176,17 +210,23 @@ fn fold_glyph(ch: char) -> char {
     }
 }
 
-/// The math content of a normalized document: its operator and
-/// digit-bearing tokens, in order. Two statements whose signatures differ
-/// pose different problems however similar their prose is.
+/// The math content of a normalized document: its operator tokens and the
+/// digit-bearing tokens next to an operator, in order. Two statements whose
+/// signatures differ pose different problems however similar their prose
+/// is. A number in prose (`in 2 sentences`) has no operator neighbour and
+/// does not count, so instructions cannot make equal math look different.
 pub fn math_signature(document: &str) -> Vec<&str> {
-    document
-        .split(' ')
-        .filter(|token| {
-            token
-                .chars()
-                .any(|ch| ch.is_ascii_digit() || MATH_OPERATORS.contains(&ch))
+    let tokens: Vec<&str> = document.split(' ').filter(|t| !t.is_empty()).collect();
+    let is_operator = |token: &str| token.chars().all(|ch| MATH_OPERATORS.contains(&ch));
+    (0..tokens.len())
+        .filter(|&index| {
+            let token = tokens[index];
+            let near_operator = [index.wrapping_sub(1), index + 1]
+                .iter()
+                .any(|&n| tokens.get(n).is_some_and(|t| is_operator(t)));
+            is_operator(token) || (token.chars().any(|ch| ch.is_ascii_digit()) && near_operator)
         })
+        .map(|index| tokens[index])
         .collect()
 }
 
@@ -237,6 +277,18 @@ mod tests {
             "a sign change is a different problem"
         );
         assert_eq!(normalize("a--b"), "a - - b");
+        // Markdown bold is formatting; `*` between operands is multiplication.
+        assert_eq!(
+            normalize("So **f'(2) = 20**, done."),
+            normalize("So f'(2) = 20, done.")
+        );
+        assert_eq!(normalize("3*x and 3 * x"), "3 * x and 3 * x");
+        assert_eq!(normalize("f(x)*2"), "f x * 2");
+        // Prose numbers are not part of the math signature.
+        assert_eq!(
+            math_signature(&normalize("Compute f'(2) = ? in 2 sentences.")),
+            math_signature(&normalize("Compute f'(2) = ?"))
+        );
         assert_eq!(
             normalize("Let f(x) = x^4 \u{2212} 3x^2. Compute f\u{2032}(2)."),
             normalize("Let f(x) = x^4 - 3x^2. Compute f'(2).")
