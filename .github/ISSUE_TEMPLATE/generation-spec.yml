@@ -79,11 +79,12 @@ body:
     id: problem-source
     attributes:
       label: Problem source
-      description: How problems (and their candidate answers) are produced. Teachers never decide a correct answer, and the simulator's teacher-variety lane fails closed until an allowed teacher lane is wired.
+      description: How problems (and their candidate answers) are produced. Problems always come from a procedural generator or a worked source; a teacher may only vary dialogue surface over those verified problems and never decides a correct answer. The simulator's teacher-variety lane fails closed until an allowed teacher lane is wired.
       options:
         - procedural generator
         - worked-source adaptation
-        - teacher-varied (teacher varies dialogue surface over verified problems; answers still verified independently)
+        - procedural generator + teacher surface variety
+        - worked-source adaptation + teacher surface variety
     validations:
       required: true
   - type: input
