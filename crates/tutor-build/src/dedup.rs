@@ -121,27 +121,73 @@ pub fn document(row: &CheckedRow) -> String {
 /// different answers) the same text.
 const MATH_OPERATORS: &[char] = &['+', '-', '*', '/', '^', '=', '<', '>', '\''];
 
-/// Normalize `text` for comparison: lowercase ASCII, keep every
-/// math operator (`+ - * / ^ = < >` and `'`) as its own token, and collapse every other
-/// run of non-ASCII-alphanumeric characters into one ASCII space
-/// (`f'(x) = x^4 - 3x^2.` → `f ' x = x ^ 4 - 3x ^ 2`). Brackets, spacing and
-/// prose punctuation are rendering; operators and signs change the math.
+/// Normalize `text` for comparison: lowercase ASCII, fold equivalent
+/// Unicode operator glyphs to ASCII (`−` → `-`, `′` → `'`, `×` → `*`, …),
+/// keep every math operator (`+ - * / ^ = < >` and `'`) as its own token,
+/// and collapse every other run of non-ASCII-alphanumeric characters into
+/// one ASCII space (`f′(x) = x^4 − 3x^2.` → `f ' x = x ^ 4 - 3x ^ 2`).
+/// Brackets, spacing and prose punctuation are rendering; operators and
+/// signs change the math.
 pub fn normalize(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut separator = false;
-    for ch in text.chars() {
-        let operator = MATH_OPERATORS.contains(&ch);
-        if !ch.is_ascii_alphanumeric() && !operator {
-            separator = true;
+    let mut pending_space = false;
+    for ch in text.chars().map(fold_glyph) {
+        let Some(operator) = token_kind(ch) else {
+            pending_space = true;
             continue;
-        }
-        if (separator || operator) && !out.is_empty() {
-            out.push(' ');
+        };
+        if pending_space || operator {
+            push_separator(&mut out);
         }
         out.push(ch.to_ascii_lowercase());
-        separator = operator;
+        pending_space = operator;
     }
     out
+}
+
+/// `Some(is_operator)` for a character [`normalize`] keeps, `None` for a
+/// separator.
+fn token_kind(ch: char) -> Option<bool> {
+    if MATH_OPERATORS.contains(&ch) {
+        Some(true)
+    } else {
+        ch.is_ascii_alphanumeric().then_some(false)
+    }
+}
+
+/// One space between tokens, never a leading one.
+fn push_separator(out: &mut String) {
+    if !out.is_empty() {
+        out.push(' ');
+    }
+}
+
+/// The ASCII operator a Unicode math glyph means, else `ch` unchanged.
+fn fold_glyph(ch: char) -> char {
+    match ch {
+        '\u{2212}' | '\u{2010}' | '\u{2011}' | '\u{2012}' | '\u{2013}' | '\u{2014}'
+        | '\u{FE63}' | '\u{FF0D}' => '-',
+        '\u{FF0B}' => '+',
+        '\u{00D7}' | '\u{22C5}' | '\u{00B7}' | '\u{2219}' | '\u{2217}' => '*',
+        '\u{00F7}' | '\u{2215}' | '\u{2044}' => '/',
+        '\u{2032}' | '\u{2019}' | '\u{02B9}' => '\'',
+        '\u{FF1D}' => '=',
+        _ => ch,
+    }
+}
+
+/// The math content of a normalized document: its operator and
+/// digit-bearing tokens, in order. Two statements whose signatures differ
+/// pose different problems however similar their prose is.
+pub fn math_signature(document: &str) -> Vec<&str> {
+    document
+        .split(' ')
+        .filter(|token| {
+            token
+                .chars()
+                .any(|ch| ch.is_ascii_digit() || MATH_OPERATORS.contains(&ch))
+        })
+        .collect()
 }
 
 /// The fingerprint of already-normalized or raw `text`.
@@ -191,6 +237,14 @@ mod tests {
             "a sign change is a different problem"
         );
         assert_eq!(normalize("a--b"), "a - - b");
+        assert_eq!(
+            normalize("Let f(x) = x^4 \u{2212} 3x^2. Compute f\u{2032}(2)."),
+            normalize("Let f(x) = x^4 - 3x^2. Compute f'(2).")
+        );
+        assert_eq!(
+            math_signature(&normalize("Let f(x) = 3x^2 - 2x + 5. Compute f'(2).")),
+            ["=", "3x", "^", "2", "-", "2x", "+", "5", "'", "2"]
+        );
         assert_eq!(normalize("  A\n\nB  "), "a b");
         assert_eq!(normalize(""), "");
     }

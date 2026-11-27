@@ -146,6 +146,20 @@ fn collect_strings(
     }
 }
 
+/// Whether `item` and the candidate both state a problem and the two
+/// statements' math differs (a flipped sign, another coefficient or
+/// evaluation point). Shingle similarity only sees the tokens near a change,
+/// so a long prompt with one sign flipped can still score above the
+/// near-match threshold; such a pair is a different problem, not a leak.
+fn poses_different_math(item: &HeldOutItem, candidate: Option<&dedup::Fingerprint>) -> bool {
+    match (&item.statement, candidate) {
+        (Some(held), Some(candidate)) => {
+            dedup::math_signature(&held.document) != dedup::math_signature(&candidate.document)
+        }
+        _ => false,
+    }
+}
+
 /// Reject kept rows that match the held-out set; pass the rest through.
 pub fn run(
     kept: Vec<dedup::Fingerprinted>,
@@ -211,6 +225,7 @@ fn contamination(row: &dedup::Fingerprinted, heldout: &HeldOut) -> Option<(&'sta
     heldout
         .items
         .iter()
+        .filter(|item| !poses_different_math(item, statement.as_ref()))
         .map(|item| {
             let mut similarity =
                 dedup::jaccard(&item.fingerprint.shingles, &row.fingerprint.shingles);
@@ -319,6 +334,39 @@ mod tests {
             );
             std::fs::remove_dir_all(&dir).unwrap();
         }
+    }
+
+    #[test]
+    fn a_long_sign_flipped_statement_does_not_near_match() {
+        let row = candidate();
+        let statement = row.checked.problem.as_ref().unwrap().statement.clone();
+        // Pad both statements with the same long prose so one flipped sign
+        // leaves most shingles shared.
+        let prose = " Show every step of your work, state which differentiation rule \
+                     you apply at each step, and simplify the result fully before \
+                     substituting the evaluation point into the derivative.";
+        let mut long_row = row;
+        long_row.checked.problem.as_mut().unwrap().statement = format!("{statement}{prose}");
+        let flipped = format!("{}{prose}", statement.replace("- 2x", "+ 2x"));
+        let heldout = heldout_with(serde_json::json!({
+            "problem_id": "different-id",
+            "statement": flipped,
+        }));
+        assert_eq!(contamination(&long_row, &heldout), None);
+    }
+
+    #[test]
+    fn unicode_operator_glyphs_still_match() {
+        let row = candidate();
+        let statement = &row.checked.problem.as_ref().unwrap().statement;
+        let unicode = statement.replace('-', "\u{2212}").replace('\'', "\u{2032}");
+        assert_ne!(&unicode, statement);
+        let heldout = heldout_with(serde_json::json!({
+            "problem_id": "different-id",
+            "statement": unicode,
+        }));
+        let (code, _) = contamination(&row, &heldout).expect("same problem in Unicode notation");
+        assert_eq!(code, "heldout_exact_match");
     }
 
     #[test]
