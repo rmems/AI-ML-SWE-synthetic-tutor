@@ -401,8 +401,13 @@ pub fn ensure_log_path_is_clear(log: &Path, reserved: &[PathBuf]) -> Result<(), 
     validate_log_file_path(log)?;
     let log_path = normalized_path(log);
     let normalized: Vec<PathBuf> = reserved.iter().map(|path| normalized_path(path)).collect();
+    let context = AliasContext {
+        log,
+        log_path: &log_path,
+        reserved: &normalized,
+    };
     for (artifact, path) in reserved.iter().zip(&normalized) {
-        ensure_no_artifact_alias(log, &log_path, artifact, path, &normalized)?;
+        ensure_no_artifact_alias(&context, artifact, path)?;
     }
     Ok(())
 }
@@ -438,16 +443,20 @@ fn dangling_symlink(path: &Path) -> bool {
         )
 }
 
+struct AliasContext<'a> {
+    log: &'a Path,
+    log_path: &'a Path,
+    reserved: &'a [PathBuf],
+}
+
 fn ensure_no_artifact_alias(
-    log: &Path,
-    log_path: &Path,
+    context: &AliasContext<'_>,
     artifact: &Path,
     path: &Path,
-    reserved: &[PathBuf],
 ) -> Result<(), RunLogError> {
-    let relation = if same_path(log_path, path) {
+    let relation = if same_path(context.log_path, path) {
         Some("aliases")
-    } else if !is_directory_entry(path, reserved) && nested_under(log_path, path) {
+    } else if !is_directory_entry(path, context.reserved) && nested_under(context.log_path, path) {
         Some("is nested under")
     } else {
         None
@@ -457,7 +466,7 @@ fn ensure_no_artifact_alias(
             field: "run_log.path",
             reason: format!(
                 "{} {relation} the batch artifact {}",
-                log.display(),
+                context.log.display(),
                 artifact.display()
             ),
         })
