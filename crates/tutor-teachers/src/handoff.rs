@@ -125,12 +125,7 @@ fn load_request(path: &Path) -> Result<(Request, String), Error> {
 
 fn write_new(path: &Path, value: &impl Serialize) -> Result<(), Error> {
     let bytes = serde_json::to_vec_pretty(value)?;
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)?;
-    file.write_all(&bytes)?;
-    Ok(())
+    crate::publication::publish_file(path, |file| file.write_all(&bytes))
 }
 
 /// Emit a versioned, content-bound, unsent request. No credentials are included.

@@ -109,6 +109,11 @@ cargo run --offline --locked -p tutor-teachers -- replay-response \
 Exit 1 means invalid input, failed verification/validation, or I/O failure.
 Prepare/mock-response return 0 on success. These commands refuse existing output
 files/directories. Omitting `--config` on `prepare-request` uses the offline mock.
+Request and mock-response JSON are written to sibling temporary files and
+published only after the complete write, without overwriting existing paths.
+Ordinary write failures remove the temporary file and leave the destination
+absent. Standalone file preparation remains available beyond the platforms
+supporting directory publication below.
 Replay and mock-smoke stage both output files in a temporary sibling directory and publish
 the complete directory with one no-replace move. Existing files, directories
 (including empty ones), and symlinks are refused, even if created during staging.

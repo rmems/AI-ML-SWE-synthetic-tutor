@@ -179,6 +179,38 @@ fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
 }
 
 #[test]
+fn handoff_files_refuse_overwrite_without_leaking_temporary_files() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let original_request = std::fs::read(&request).unwrap();
+    let original_response = std::fs::read(&response).unwrap();
+    assert_eq!(
+        cli(&["prepare-request", "--out", request.to_str().unwrap()])
+            .status
+            .code(),
+        Some(1)
+    );
+    assert_eq!(
+        cli(&[
+            "mock-response",
+            "--request",
+            request.to_str().unwrap(),
+            "--out",
+            response.to_str().unwrap()
+        ])
+        .status
+        .code(),
+        Some(1)
+    );
+    let current = (
+        std::fs::read(&request).unwrap(),
+        std::fs::read(&response).unwrap(),
+    );
+    assert_eq!(current, (original_request, original_response));
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 2);
+}
+
+#[test]
 fn prepared_openrouter_request_binds_pins_without_execution_claims() {
     let temp = Temp::new();
     let request = prepared_request_fixture(&temp);

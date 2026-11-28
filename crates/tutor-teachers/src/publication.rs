@@ -1,7 +1,29 @@
-//! Publish a complete artifact directory without replacing an existing destination.
+//! Publish complete files or artifact pairs without replacing existing destinations.
 use std::path::Path;
 
 use crate::Error;
+
+pub(crate) fn publish_file(
+    out: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(), Error> {
+    #[cfg(windows)]
+    let out = windows_destination(out)?;
+    #[cfg(not(windows))]
+    let out = out.to_path_buf();
+    let parent = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut staged = tempfile::Builder::new()
+        .prefix(".tutor-handoff-")
+        .tempfile_in(parent)?;
+    write(staged.as_file_mut())?;
+    // Close before publication, including on Windows. Portable no-clobber file
+    // persistence does not need the directory-rename support required for pairs.
+    staged.into_temp_path().persist_noclobber(&out)?;
+    Ok(())
+}
 
 pub(crate) fn publish_artifacts(
     out: &Path,
@@ -49,6 +71,12 @@ fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
     // supplies absolute extended-length paths, including UNC/verbatim handling;
     // atomicwrites itself only encodes its arguments as UTF-16.
     let staged = std::fs::canonicalize(staged)?;
+    let out = windows_destination(out)?;
+    atomicwrites::move_atomic(&staged, &out)
+}
+
+#[cfg(windows)]
+fn windows_destination(out: &Path) -> std::io::Result<std::path::PathBuf> {
     let parent = out
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -56,12 +84,11 @@ fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
     let leaf = out.file_name().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
-            "artifact output must name a new directory",
+            "artifact output must name a new file or directory",
         )
     })?;
     // Canonicalize only the existing parent: the destination must remain absent.
-    let out = std::fs::canonicalize(parent)?.join(leaf);
-    atomicwrites::move_atomic(&staged, &out)
+    Ok(std::fs::canonicalize(parent)?.join(leaf))
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -80,6 +107,28 @@ fn unsupported_move(_staged: &Path, _out: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn partial_file_write_is_not_published_and_retry_preserves_complete_output() {
+        let root = tempfile::tempdir().unwrap();
+        let out = root.path().join("request.json");
+        let result = publish_file(&out, |file| {
+            file.write_all(b"{\"version\":")?;
+            assert!(!out.exists());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "injected short write",
+            ))
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        let complete = b"{\"version\":2}";
+        publish_file(&out, |file| file.write_all(complete)).unwrap();
+        assert!(publish_file(&out, |file| file.write_all(b"replacement")).is_err());
+        assert_eq!(std::fs::read(&out).unwrap(), complete);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
 
     #[cfg(any(target_os = "linux", windows))]
     #[test]
@@ -214,5 +263,8 @@ mod tests {
             assert_eq!(std::fs::read(out.join("report.json")).unwrap(), b"report");
             assert!(publish_artifacts(&out, |_| Ok(())).is_err());
         }
+        let file_out = parent.join("request");
+        publish_file(&file_out, |file| file.write_all(b"request")).unwrap();
+        assert_eq!(std::fs::read(file_out).unwrap(), b"request");
     }
 }
