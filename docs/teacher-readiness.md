@@ -113,12 +113,35 @@ Replay and mock-smoke stage both output files in a temporary sibling directory a
 the complete directory with one no-replace move. Existing files, directories
 (including empty ones), and symlinks are refused, even if created during staging.
 Staging errors remove the temporary directory and leave the destination absent,
-so the same output path can be retried. Publication uses a stateless no-replace
-directory rename on Linux/WSL. It requires parent write/search permission, not
-permission to list the parent. Unsupported platforms/filesystems fail without
-publishing or disabling later attempts. Abrupt termination can leave a temporary
+so the same output path can be retried. Linux/Fedora/WSL uses a stateless
+no-replace directory rename requiring parent write/search permission, not listing.
+Native Windows uses `atomicwrites::move_atomic`: its Windows implementation calls
+[`MoveFileExW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
+with `MOVEFILE_WRITE_THROUGH`, without replacement or cross-volume copy flags.
+The staged directory is on the same volume as the destination. Windows success,
+retry and existing-destination tests remain enabled; they are **not verified on
+Windows here** (only a Linux toolchain/runner was available). The existing repo
+build guide still recommends WSL because of its native MinGW/libzmq constraint;
+this publication change does not resolve or configure that build prerequisite.
+Other platforms and unsupported filesystems fail without publishing or disabling
+later attempts. The unsupported-backend cleanup path is tested on Linux as well.
+Abrupt termination can leave a temporary
 sibling; crash durability is not guaranteed. Consumers should read only the
 requested output directory, not `.tutor-artifacts-*` staging directories.
+
+If you already have a working native Windows Rust/libzmq build, the equivalent
+offline rehearsal in PowerShell is below. These Windows commands have not been
+run here; WSL users can use the Bash commands above.
+
+```powershell
+Set-Location 'C:\path\AI-ML-SWE-synthetic-tutor'
+$handoff = Join-Path ([System.IO.Path]::GetTempPath()) ('tutor-handoff-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $handoff | Out-Null
+cargo run --offline --locked -p tutor-teachers -- prepare-request --config configs/teacher.deepseek.example.json --out "$handoff\request.json"
+cargo run --offline --locked -p tutor-teachers -- mock-response --request "$handoff\request.json" --out "$handoff\response.json"
+cargo run --offline --locked -p tutor-teachers -- replay-response --request "$handoff\request.json" --response "$handoff\response.json" --out "$handoff\replay"
+# Expected $LASTEXITCODE: 2 (valid replay, admission blocked).
+```
 
 `request.json` contains a SHA-256 `request_id` bound to its version-2 `payload`:
 teacher selection, instruction, verified static problem, and fixed correction

@@ -22,5 +22,8 @@ url = "2"
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1", features = ["fs"] }
 
+[target.'cfg(windows)'.dependencies]
+atomicwrites.workspace = true
+
 [lints]
 workspace = true

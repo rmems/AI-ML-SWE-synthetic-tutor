@@ -7,6 +7,14 @@ pub(crate) fn publish_artifacts(
     out: &Path,
     write_artifacts: impl FnOnce(&Path) -> Result<(), Error>,
 ) -> Result<(), Error> {
+    publish_with_move(out, write_artifacts, move_directory_new)
+}
+
+fn publish_with_move(
+    out: &Path,
+    write_artifacts: impl FnOnce(&Path) -> Result<(), Error>,
+    move_directory: fn(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), Error> {
     // Require an output leaf rather than a root or dot path.
     out.file_name()
         .ok_or("artifact output must name a new directory")?;
@@ -20,7 +28,7 @@ pub(crate) fn publish_artifacts(
     write_artifacts(staged.path())?;
     // Same filesystem, one no-replace rename. In particular, an empty existing
     // directory (even one created during staging) must not be overwritten.
-    move_directory_new(staged.path(), out)?;
+    move_directory(staged.path(), out)?;
     // The old staging path no longer exists; do not attempt to remove it on drop.
     let _ = staged.keep();
     Ok(())
@@ -34,11 +42,23 @@ fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
     renameat_with(CWD, staged, CWD, out, RenameFlags::NOREPLACE).map_err(Into::into)
 }
 
-#[cfg(not(target_os = "linux"))]
-fn move_directory_new(_staged: &Path, _out: &Path) -> std::io::Result<()> {
+#[cfg(windows)]
+fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
+    // The Windows implementation calls MoveFileExW with WRITE_THROUGH only:
+    // no REPLACE_EXISTING, COPY_ALLOWED, parent read-open or capability cache.
+    atomicwrites::move_atomic(staged, out)
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
+    unsupported_move(staged, out)
+}
+
+#[cfg(any(test, not(any(target_os = "linux", windows))))]
+fn unsupported_move(_staged: &Path, _out: &Path) -> std::io::Result<()> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        "artifact publication requires Linux no-replace directory rename",
+        "artifact publication requires Linux or Windows no-replace directory rename",
     ))
 }
 
@@ -46,7 +66,7 @@ fn move_directory_new(_staged: &Path, _out: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn staging_io_error_leaves_no_output_and_can_be_retried() {
         let root = tempfile::tempdir().unwrap();
@@ -130,16 +150,19 @@ mod tests {
         assert!(!staged.exists());
     }
 
-    #[cfg(not(target_os = "linux"))]
     #[test]
     fn unsupported_platform_does_not_publish_staged_files() {
         let root = tempfile::tempdir().unwrap();
         let out = root.path().join("out");
-        let error = publish_artifacts(&out, |staged| {
-            std::fs::write(staged.join("candidate.json"), b"candidate")?;
-            std::fs::write(staged.join("report.json"), b"report")?;
-            Ok(())
-        })
+        let error = publish_with_move(
+            &out,
+            |staged| {
+                std::fs::write(staged.join("candidate.json"), b"candidate")?;
+                std::fs::write(staged.join("report.json"), b"report")?;
+                Ok(())
+            },
+            unsupported_move,
+        )
         .unwrap_err();
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),

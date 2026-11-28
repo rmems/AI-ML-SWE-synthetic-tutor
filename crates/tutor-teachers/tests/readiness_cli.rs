@@ -1,13 +1,13 @@
 //! Exercise the public command, deterministic artifacts and release refusal.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use serde_json::Value;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use tutor_build::{checks, input::InputLine};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use tutor_schema::Problem;
 
 struct Temp(PathBuf);
@@ -35,7 +35,7 @@ fn cli(args: &[&str]) -> Output {
         .unwrap()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn mock_is_repeatable_validated_and_never_exportable() {
     let temp = Temp::new();
@@ -173,7 +173,7 @@ fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
     (request, response)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn openrouter_pins_and_options_are_bound_without_execution_claims() {
     let temp = Temp::new();
@@ -264,7 +264,7 @@ fn replay(request: &std::path::Path, response: &std::path::Path, out: &std::path
     ])
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn assert_replay_provenance(
     candidate: &Value,
     req: &Value,
@@ -295,7 +295,7 @@ fn assert_replay_provenance(
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn assert_dialogue_digest(candidate: &Value) {
     assert_eq!(
         candidate["provenance"]["dialogue_sha256"],
@@ -303,7 +303,7 @@ fn assert_dialogue_digest(candidate: &Value) {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn assert_admission_blocked(candidate: &Value, expected_code: &str) {
     let validator = jsonschema::validator_for(&tutor_schema::dialogue_json_schema()).unwrap();
     let problem = Problem::from_value(candidate["problem"].clone()).unwrap();
@@ -321,7 +321,7 @@ fn assert_admission_blocked(candidate: &Value, expected_code: &str) {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn hermes_handoff_replays_and_admission_stays_blocked() {
     let temp = Temp::new();
@@ -370,7 +370,7 @@ fn hermes_handoff_replays_and_admission_stays_blocked() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 #[test]
 fn recorded_response_keeps_deferred_admission_and_unverified_execution() {
     let temp = Temp::new();
@@ -485,7 +485,7 @@ fn artifact_commands_publish_without_parent_listing_permission() {
     assert_eq!(std::fs::read_dir(&drop).unwrap().count(), 2);
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 #[test]
 fn artifact_commands_fail_closed_on_unsupported_platforms() {
     let temp = Temp::new();
