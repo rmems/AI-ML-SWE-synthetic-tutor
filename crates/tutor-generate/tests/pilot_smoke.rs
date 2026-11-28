@@ -4,14 +4,14 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::SocketAddrV4;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tutor_schema::{
     Answer, DIALOGUE_SCHEMA_VERSION, DialogueProvenance, DialogueRow, MisconceptionId,
-    NamedVersion, Problem, Role, RowSource, RowType, StudentAttempt, TAXONOMY_VERSION,
+    NamedVersion, Persistence, Problem, Role, RowSource, RowType, StudentAttempt, TAXONOMY_VERSION,
     TUTOR_POLICY_VERSION, TeacherVarietyStatus, Turn, TurnKind,
 };
 use tutor_verify::{JULIA_RECOMPUTE, RUST_RECOMPUTE};
@@ -22,7 +22,7 @@ struct FixtureCase {
     generator: &'static str,
     seed: &'static str,
     misconception: Option<MisconceptionId>,
-    persistence: &'static str,
+    persistence: Persistence,
 }
 
 const CASES: [FixtureCase; 5] = [
@@ -30,31 +30,31 @@ const CASES: [FixtureCase; 5] = [
         generator: "product_rule_at_point",
         seed: "1",
         misconception: Some(MisconceptionId::DerivativesProductRule),
-        persistence: "corrects_after_l1",
+        persistence: Persistence::CorrectsAfterL1,
     },
     FixtureCase {
         generator: "product_rule_at_point",
         seed: "2",
         misconception: Some(MisconceptionId::DerivativesProductRule),
-        persistence: "corrects_after_l2",
+        persistence: Persistence::CorrectsAfterL2,
     },
     FixtureCase {
         generator: "chain_rule_at_point",
         seed: "3",
         misconception: Some(MisconceptionId::DerivativesChainRule),
-        persistence: "corrects_after_l1",
+        persistence: Persistence::CorrectsAfterL1,
     },
     FixtureCase {
         generator: "chain_rule_at_point",
         seed: "4",
         misconception: Some(MisconceptionId::DerivativesChainRule),
-        persistence: "corrects_after_l2",
+        persistence: Persistence::CorrectsAfterL2,
     },
     FixtureCase {
         generator: "binomial_derivative_at_point",
         seed: "1",
         misconception: None,
-        persistence: "corrects_after_l1",
+        persistence: Persistence::CorrectsAfterL1,
     },
 ];
 
@@ -98,18 +98,22 @@ fn derivative_pilot_replays_verified_procedural_dialogues() {
 fn local_endpoint() -> String {
     let endpoint = std::env::var("TUTOR_MATH_ENDPOINT")
         .unwrap_or_else(|_| tutor_wire::DEFAULT_ENDPOINT.to_owned());
+    assert!(
+        is_local_endpoint(&endpoint),
+        "use a numeric IPv4 loopback or absolute Unix socket endpoint"
+    );
+    endpoint
+}
+
+fn is_local_endpoint(endpoint: &str) -> bool {
     let loopback = endpoint
         .strip_prefix("tcp://")
-        .and_then(|addr| addr.parse::<SocketAddr>().ok())
+        .and_then(|addr| addr.parse::<SocketAddrV4>().ok())
         .is_some_and(|addr| addr.ip().is_loopback());
     let unix_socket = endpoint
         .strip_prefix("ipc://")
         .is_some_and(|path| Path::new(path).is_absolute());
-    assert!(
-        loopback || unix_socket,
-        "use a numeric loopback or absolute Unix socket endpoint"
-    );
-    endpoint
+    loopback || unix_socket
 }
 
 fn build_fixture(root: &Path, endpoint: &str) -> Vec<DialogueRow> {
@@ -120,7 +124,15 @@ fn build_fixture(root: &Path, endpoint: &str) -> Vec<DialogueRow> {
             let out = root.join(index.to_string());
             let (problem, problem_path) = generate_problem(case, &out.join("problems"), endpoint);
             let attempt = simulate_attempt(case, &out.join("attempts"), &problem, &problem_path);
-            dialogue(problem, attempt)
+            let row = dialogue(problem, attempt);
+            let expected_levels: &[u8] = match (case.misconception, case.persistence) {
+                (None, _) => &[],
+                (Some(_), Persistence::CorrectsAfterL1) => &[1],
+                (Some(_), Persistence::CorrectsAfterL2) => &[1, 2],
+                _ => panic!("this fixture only covers correction through L2"),
+            };
+            assert_eq!(row.hint_levels_reached, expected_levels, "{}", row.row_id);
+            row
         })
         .collect()
 }
@@ -165,6 +177,11 @@ fn simulate_attempt(
     } else {
         "confirmation"
     };
+    let persistence = match case.persistence {
+        Persistence::CorrectsAfterL1 => "corrects_after_l1",
+        Persistence::CorrectsAfterL2 => "corrects_after_l2",
+        Persistence::NeedsL3 => "needs_l3",
+    };
     let mut args = vec![
         "simulate",
         "--problems",
@@ -176,7 +193,7 @@ fn simulate_attempt(
         "--mode",
         mode,
         "--persistence",
-        case.persistence,
+        persistence,
         "--level",
         "typical",
         "--surface-style",
@@ -193,23 +210,85 @@ fn simulate_attempt(
     assert_eq!(attempt.misconception, case.misconception);
     assert_eq!(attempt.correct, case.misconception.is_none());
     assert_eq!(
+        attempt.persistence, case.persistence,
+        "{}",
+        problem.problem_id
+    );
+    assert_attempt_answers(problem, &attempt);
+    attempt
+}
+
+fn assert_attempt_answers(problem: &Problem, attempt: &StudentAttempt) {
+    assert_eq!(
         attempt.teacher_variety.status,
         TeacherVarietyStatus::Disabled
     );
     assert!(attempt.teacher_variety.teacher.is_none());
     let Answer::Integer { value } = problem.answer;
+    let final_turn = attempt
+        .student_turns
+        .last()
+        .expect("student attempt has a final turn");
+    assert_eq!(
+        rendered_answer(&final_turn.content),
+        Some(value),
+        "{}",
+        final_turn.content
+    );
     if let Some(transformation) = &attempt.transformation {
         assert_eq!(transformation.correct_value, value);
         assert_ne!(transformation.corrupted_value, value);
+        let opening = &attempt.student_turns[0].content;
+        assert_eq!(
+            rendered_answer(opening),
+            Some(transformation.corrupted_value),
+            "{opening}"
+        );
     }
-    attempt
 }
 
-// Only the smoke test assembles these rows. The fixed nonnumeric tutor text
-// exercises diagnosis and hints without introducing an early answer; student
-// turns come from the actual simulator. No dataset export is written.
-fn dialogue(problem: Problem, attempt: StudentAttempt) -> DialogueRow {
-    let (diagnosis, nudge, question, rule, follow_up) = match attempt.misconception {
+// The terse numeric fixture ends with a derivative equality and a period.
+// Compare the last RHS, not a substring that could match an intermediate value.
+fn rendered_answer(content: &str) -> Option<i64> {
+    content
+        .rsplit_once(" = ")?
+        .1
+        .trim_end()
+        .strip_suffix('.')?
+        .parse()
+        .ok()
+}
+
+#[test]
+fn terse_turn_parser_uses_the_final_rhs() {
+    assert_eq!(
+        rendered_answer("Let me redo it. h′(1) = 12 + (-18) = -6."),
+        Some(-6)
+    );
+    assert_ne!(rendered_answer("h′(1) = 12 + (-18) = -6."), Some(12));
+    assert_eq!(rendered_answer("I am not sure."), None);
+}
+
+#[test]
+fn endpoint_matches_native_worker_transport() {
+    assert!(is_local_endpoint("tcp://127.0.0.1:5557"));
+    #[cfg(unix)]
+    assert!(is_local_endpoint("ipc:///tmp/tutor.sock"));
+    assert!(!is_local_endpoint("tcp://[::1]:5557"));
+    assert!(!is_local_endpoint("tcp://192.0.2.1:5557"));
+    assert!(!is_local_endpoint("ipc://relative.sock"));
+}
+
+struct Lesson {
+    diagnosis: &'static str,
+    nudge: &'static str,
+    question: &'static str,
+    rule: &'static str,
+    follow_up: &'static str,
+}
+
+fn lesson(misconception: Option<MisconceptionId>) -> Lesson {
+    let (diagnosis, nudge, question, rule, follow_up) = match misconception {
         Some(MisconceptionId::DerivativesProductRule) => (
             "You differentiated both factors correctly. When the first factor changes, what happens to the second factor in that term?",
             "Look at the step where you multiplied the two derivatives.",
@@ -233,35 +312,21 @@ fn dialogue(problem: Problem, attempt: StudentAttempt) -> DialogueRow {
         ),
         Some(other) => panic!("no local dialogue fixture for {other:?}"),
     };
-
-    let mut turns = vec![Turn {
-        role: Role::System,
-        content: SYSTEM_PROMPT.trim_end().to_owned(),
-        kind: None,
-        hint_level: None,
-        reveals_final_answer: false,
-    }];
-    let mut hint_levels_reached = Vec::new();
-    for (index, student) in attempt.student_turns.into_iter().enumerate() {
-        turns.push(student);
-        if attempt.correct {
-            continue;
-        }
-        match index {
-            0 => turns.push(tutor_turn(TurnKind::Diagnosis, diagnosis, None)),
-            1 => add_hint(&mut turns, &mut hint_levels_reached, nudge, 1),
-            2 if attempt.persistence == tutor_schema::Persistence::CorrectsAfterL2 => {
-                add_hint(&mut turns, &mut hint_levels_reached, question, 2);
-            }
-            _ => {}
-        }
+    Lesson {
+        diagnosis,
+        nudge,
+        question,
+        rule,
+        follow_up,
     }
+}
 
-    let Answer::Integer { value } = problem.answer;
-    let symbol = if attempt.correct { "f" } else { "h" };
-    let point = problem.parameters.point();
-    let closing = format!("Confirmed: {symbol}′({point}) = {value}. {rule} Try one: {follow_up}");
-    turns.push(tutor_turn(TurnKind::Closing, &closing, None));
+// Only the smoke test assembles these rows. Student turns come from the actual simulator.
+fn dialogue(problem: Problem, attempt: StudentAttempt) -> DialogueRow {
+    let lesson = lesson(attempt.misconception);
+    let replies = tutor_replies(&problem, &attempt, &lesson);
+    let hint_levels_reached = replies.iter().filter_map(|turn| turn.hint_level).collect();
+    let turns = weave_turns(attempt.student_turns, replies);
     DialogueRow {
         schema_version: DIALOGUE_SCHEMA_VERSION,
         row_id: format!("pilot-smoke/{}", attempt.attempt_id),
@@ -298,13 +363,60 @@ fn tutor_turn(kind: TurnKind, content: &str, hint_level: Option<u8>) -> Turn {
     }
 }
 
-fn add_hint(turns: &mut Vec<Turn>, levels: &mut Vec<u8>, content: &str, level: u8) {
-    turns.push(tutor_turn(TurnKind::Hint, content, Some(level)));
-    levels.push(level);
+fn tutor_replies(problem: &Problem, attempt: &StudentAttempt, lesson: &Lesson) -> Vec<Turn> {
+    let mut replies = correction_replies(attempt, lesson);
+    let Answer::Integer { value } = problem.answer;
+    let symbol = if attempt.correct { "f" } else { "h" };
+    let point = problem.parameters.point();
+    let closing = format!(
+        "Confirmed: {symbol}′({point}) = {value}. {} Try one: {}",
+        lesson.rule, lesson.follow_up
+    );
+    replies.push(tutor_turn(TurnKind::Closing, &closing, None));
+    replies
+}
+
+fn correction_replies(attempt: &StudentAttempt, lesson: &Lesson) -> Vec<Turn> {
+    if attempt.correct {
+        return Vec::new();
+    }
+    let mut replies = vec![
+        tutor_turn(TurnKind::Diagnosis, lesson.diagnosis, None),
+        tutor_turn(TurnKind::Hint, lesson.nudge, Some(1)),
+    ];
+    if attempt.persistence == Persistence::CorrectsAfterL2 {
+        replies.push(tutor_turn(TurnKind::Hint, lesson.question, Some(2)));
+    }
+    replies
+}
+
+fn weave_turns(students: Vec<Turn>, tutors: Vec<Turn>) -> Vec<Turn> {
+    assert_eq!(
+        students.len(),
+        tutors.len(),
+        "each student turn needs one tutor response"
+    );
+    let mut turns = vec![Turn {
+        role: Role::System,
+        content: SYSTEM_PROMPT.trim_end().to_owned(),
+        kind: None,
+        hint_level: None,
+        reveals_final_answer: false,
+    }];
+    turns.extend(
+        students
+            .into_iter()
+            .zip(tutors)
+            .flat_map(|(student, tutor)| [student, tutor]),
+    );
+    turns
 }
 
 fn check_pre_closing_tutor_turns(row: &DialogueRow) {
-    let (last, earlier) = row.turns.split_last().unwrap();
+    let (last, earlier) = row
+        .turns
+        .split_last()
+        .expect("validated dialogue has a closing turn");
     assert!(last.reveals_final_answer);
     for turn in earlier.iter().filter(|turn| turn.role == Role::Tutor) {
         assert!(!turn.reveals_final_answer);
@@ -351,11 +463,11 @@ fn only_line(path: &Path) -> String {
     text
 }
 
+// Both CLI writers create a rejection ledger on success, even for zero records.
 fn assert_empty(path: &Path) {
-    assert!(
-        fs::read_to_string(path).unwrap().is_empty(),
-        "{path:?} has rejected records"
-    );
+    let content = fs::read_to_string(path)
+        .unwrap_or_else(|error| panic!("could not read CLI rejection ledger {path:?}: {error}"));
+    assert!(content.is_empty(), "{path:?} has rejected records");
 }
 
 fn path_str(path: &Path) -> &str {

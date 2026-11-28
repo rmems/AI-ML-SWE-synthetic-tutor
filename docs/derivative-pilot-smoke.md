@@ -16,13 +16,15 @@ cargo test --locked -p tutor-generate --test pilot_smoke -- --ignored
 ```
 
 Use the default loopback worker endpoint, or set `TUTOR_MATH_ENDPOINT` to the
-same numeric TCP loopback address or absolute Unix socket endpoint in both
-terminals. The test runs `tutor-generate run` and
-`tutor-generate simulate` with fixed seeds, requires zero rejected fixtures
+same numeric IPv4 loopback address (such as `tcp://127.0.0.1:5557`) or absolute
+Unix socket endpoint in both terminals. The native worker does not enable IPv6.
+The test runs `tutor-generate run` and `tutor-generate simulate` with fixed seeds,
+requires zero rejected fixtures
 and an independent verification record on every problem, and assembles and
 validates the dialogue fixtures in memory. Two product-rule and two chain-rule
 corrections plus one power-rule confirmation exercise the pilot's 80/20 mix.
-The test replays the same five cases and requires identical dialogue rows.
+The test checks the requested hint levels and compares the student's rendered
+answer to the verified math before replaying every case for identical rows.
 It makes no teacher calls and keeps artifacts in a temporary directory.
 
 The fixture checks every row against the committed dialogue JSON Schema and
