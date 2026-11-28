@@ -312,6 +312,38 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_ordinary_aliases_publish_to_the_requested_ordinary_paths() {
+        for suffix in [".", " "] {
+            let root = tempfile::tempdir().unwrap();
+            let ordinary_root = ordinary_windows_test_path(root.path());
+            publish_artifacts(&ordinary_root.join(format!("replay{suffix}")), |staged| {
+                std::fs::write(staged.join("candidate.json"), b"candidate")?;
+                std::fs::write(staged.join("report.json"), b"report")?;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                std::fs::read(ordinary_root.join("replay/candidate.json")).unwrap(),
+                b"candidate"
+            );
+            assert_eq!(
+                std::fs::read(ordinary_root.join("replay/report.json")).unwrap(),
+                b"report"
+            );
+            publish_file(&ordinary_root.join(format!("request{suffix}")), |file| {
+                file.write_all(b"request")
+            })
+            .unwrap();
+            assert_eq!(
+                std::fs::read(ordinary_root.join("request")).unwrap(),
+                b"request"
+            );
+            assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_ordinary_aliases_refuse_existing_outputs() {
         let root = tempfile::tempdir().unwrap();
         let ordinary_root = ordinary_windows_test_path(root.path());
