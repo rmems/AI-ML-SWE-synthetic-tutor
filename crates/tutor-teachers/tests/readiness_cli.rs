@@ -375,20 +375,24 @@ fn recorded_response_keeps_deferred_admission_and_unverified_execution() {
         serde_json::from_slice(&std::fs::read(out.join("candidate.json")).unwrap()).unwrap();
     let report: Value =
         serde_json::from_slice(&std::fs::read(out.join("report.json")).unwrap()).unwrap();
+    let quarantine = serde_json::json!({
+        "generator": candidate["dialogue"]["provenance"]["generator"]["name"],
+        "origin": candidate["provenance"]["response_origin"],
+        "provider_verified": candidate["provenance"]["provider_execution_verified"],
+        "routing_verified": candidate["provenance"]["routing_execution_verified"],
+        "training_approved": candidate["training_approved"],
+        "export_approved": candidate["export_approved"],
+        "admission_code": report["admission_code"], "admitted": report["admitted"]
+    });
     assert_eq!(
-        candidate["dialogue"]["provenance"]["generator"]["name"],
-        "deferred_teacher_surface"
+        quarantine,
+        serde_json::json!({
+            "generator": "deferred_teacher_surface", "origin": "recorded",
+            "provider_verified": false, "routing_verified": false,
+            "training_approved": false, "export_approved": false,
+            "admission_code": "teacher_admission_blocked", "admitted": false
+        })
     );
-    assert_eq!(candidate["provenance"]["response_origin"], "recorded");
-    assert_eq!(
-        candidate["provenance"]["provider_execution_verified"],
-        false
-    );
-    assert_eq!(candidate["provenance"]["routing_execution_verified"], false);
-    assert_eq!(candidate["training_approved"], false);
-    assert_eq!(candidate["export_approved"], false);
-    assert_eq!(report["admission_code"], "teacher_admission_blocked");
-    assert_eq!(report["admitted"], false);
     assert_admission_blocked(&candidate, "teacher_admission_blocked");
 }
 
@@ -404,10 +408,11 @@ fn replay_io_failures_preserve_existing_paths_without_staging_leaks() {
     for out in [&file, &directory, &missing_parent] {
         assert_eq!(replay(&request, &response, out).status.code(), Some(1));
     }
+    let directory_entries = std::fs::read_dir(directory).unwrap().count();
+    let root_entries = std::fs::read_dir(&temp.0).unwrap().count();
     assert_eq!(std::fs::read(file).unwrap(), b"original");
-    assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);
     assert!(!missing_parent.exists());
-    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 4);
+    assert_eq!((directory_entries, root_entries), (0, 4));
 }
 
 #[cfg(unix)]
