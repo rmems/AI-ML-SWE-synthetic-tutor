@@ -8,7 +8,6 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
-atomicwrites.workspace = true
 clap.workspace = true
 jsonschema.workspace = true
 serde.workspace = true
@@ -19,6 +18,9 @@ tutor-schema.workspace = true
 tutor-verify.workspace = true
 tutor-build = { path = "../tutor-build" }
 url = "2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [lints]
 workspace = true

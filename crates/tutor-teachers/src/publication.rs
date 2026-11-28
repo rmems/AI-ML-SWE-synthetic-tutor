@@ -1,29 +1,45 @@
-//! Publish a complete replay directory without replacing an existing destination.
+//! Publish a complete artifact directory without replacing an existing destination.
 use std::path::Path;
 
 use crate::Error;
 
-pub(crate) fn publish_replay(
+pub(crate) fn publish_artifacts(
     out: &Path,
     write_artifacts: impl FnOnce(&Path) -> Result<(), Error>,
 ) -> Result<(), Error> {
-    // Reject roots and dot paths before the atomic-move helper requires a leaf.
+    // Require an output leaf rather than a root or dot path.
     out.file_name()
-        .ok_or("replay output must name a new directory")?;
+        .ok_or("artifact output must name a new directory")?;
     let parent = out
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let staged = tempfile::Builder::new()
-        .prefix(".tutor-replay-")
+        .prefix(".tutor-artifacts-")
         .tempdir_in(parent)?;
     write_artifacts(staged.path())?;
     // Same filesystem, one no-replace rename. In particular, an empty existing
     // directory (even one created during staging) must not be overwritten.
-    atomicwrites::move_atomic(staged.path(), out)?;
+    move_directory_new(staged.path(), out)?;
     // The old staging path no longer exists; do not attempt to remove it on drop.
     let _ = staged.keep();
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    // Path-based, no listing permission or process-global capability cache.
+    // Unsupported filesystems fail this call without affecting later attempts.
+    renameat_with(CWD, staged, CWD, out, RenameFlags::NOREPLACE).map_err(Into::into)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn move_directory_new(_staged: &Path, _out: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "artifact publication requires Linux no-replace directory rename",
+    ))
 }
 
 #[cfg(test)]
@@ -34,7 +50,7 @@ mod tests {
     fn staging_io_error_leaves_no_output_and_can_be_retried() {
         let root = tempfile::tempdir().unwrap();
         let out = root.path().join("replay");
-        let result = publish_replay(&out, |staged| {
+        let result = publish_artifacts(&out, |staged| {
             std::fs::write(staged.join("candidate.json"), b"candidate")?;
             assert!(
                 !out.exists(),
@@ -54,7 +70,7 @@ mod tests {
         );
         assert!(!out.exists());
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-        publish_replay(&out, |staged| {
+        publish_artifacts(&out, |staged| {
             std::fs::write(staged.join("candidate.json"), b"candidate")?;
             std::fs::write(staged.join("report.json"), b"report")?;
             assert!(!out.exists());
@@ -74,7 +90,7 @@ mod tests {
         for directory in [false, true] {
             let root = tempfile::tempdir().unwrap();
             let out = root.path().join("occupied");
-            let result = publish_replay(&out, |staged| {
+            let result = publish_artifacts(&out, |staged| {
                 std::fs::write(staged.join("candidate.json"), b"candidate")?;
                 std::fs::write(staged.join("report.json"), b"report")?;
                 if directory {
@@ -92,5 +108,24 @@ mod tests {
             }
             assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn invalid_rename_does_not_disable_later_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = root.path().join("staged");
+        std::fs::create_dir(&staged).unwrap();
+        // EINVAL also occurs on filesystems without NOREPLACE support. Trigger
+        // the same errno locally, without requiring a second mount or privileges.
+        let error = move_directory_new(&staged, &staged.join("child")).unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(rustix::io::Errno::INVAL.raw_os_error())
+        );
+        let out = root.path().join("published");
+        move_directory_new(&staged, &out).unwrap();
+        assert!(out.is_dir());
+        assert!(!staged.exists());
     }
 }

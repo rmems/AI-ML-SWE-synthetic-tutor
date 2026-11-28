@@ -397,7 +397,7 @@ fn recorded_response_keeps_deferred_admission_and_unverified_execution() {
 }
 
 #[test]
-fn replay_io_failures_preserve_existing_paths_without_staging_leaks() {
+fn artifact_io_failures_preserve_existing_paths_without_staging_leaks() {
     let temp = Temp::new();
     let (request, response) = handoff_fixture(&temp);
     let file = temp.0.join("file");
@@ -407,6 +407,12 @@ fn replay_io_failures_preserve_existing_paths_without_staging_leaks() {
     std::fs::create_dir(&directory).unwrap();
     for out in [&file, &directory, &missing_parent] {
         assert_eq!(replay(&request, &response, out).status.code(), Some(1));
+        assert_eq!(
+            cli(&["mock-smoke", "--out", out.to_str().unwrap()])
+                .status
+                .code(),
+            Some(1)
+        );
     }
     let directory_entries = std::fs::read_dir(directory).unwrap().count();
     let root_entries = std::fs::read_dir(&temp.0).unwrap().count();
@@ -417,16 +423,56 @@ fn replay_io_failures_preserve_existing_paths_without_staging_leaks() {
 
 #[cfg(unix)]
 #[test]
-fn replay_refuses_dangling_symlinks_without_touching_the_target() {
+fn artifact_commands_refuse_dangling_symlinks_without_touching_the_target() {
     let temp = Temp::new();
     let (request, response) = handoff_fixture(&temp);
     let out = temp.0.join("link");
     let target = temp.0.join("absent");
     std::os::unix::fs::symlink(&target, &out).unwrap();
     assert_eq!(replay(&request, &response, &out).status.code(), Some(1));
-    assert_eq!(std::fs::read_link(out).unwrap(), target);
+    assert_eq!(
+        cli(&["mock-smoke", "--out", out.to_str().unwrap()])
+            .status
+            .code(),
+        Some(1)
+    );
+    let link_target = std::fs::read_link(out).unwrap();
+    assert_eq!(link_target, target);
     assert!(!target.exists());
     assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 3);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn artifact_commands_publish_without_parent_listing_permission() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let drop = temp.0.join("drop");
+    std::fs::create_dir(&drop).unwrap();
+    std::fs::set_permissions(&drop, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let listing_denied = std::fs::File::open(&drop).is_err();
+    let replay_out = drop.join("replay");
+    let mock_out = drop.join("mock");
+    let replay_result = replay(&request, &response, &replay_out);
+    let mock_result = cli(&["mock-smoke", "--out", mock_out.to_str().unwrap()]);
+    // Restore before assertions so temporary-directory cleanup always has access.
+    std::fs::set_permissions(&drop, std::fs::Permissions::from_mode(0o700)).unwrap();
+    if !listing_denied {
+        eprintln!("parent read permission is bypassed for this user (e.g. root)");
+    }
+    assert_eq!(
+        (replay_result.status.code(), mock_result.status.code()),
+        (Some(2), Some(0))
+    );
+    for (out, candidates) in [
+        (&replay_out, "candidate.json"),
+        (&mock_out, "candidates.jsonl"),
+    ] {
+        assert!(out.join(candidates).is_file());
+        assert!(out.join("report.json").is_file());
+    }
+    assert_eq!(std::fs::read_dir(&drop).unwrap().count(), 2);
 }
 
 #[test]

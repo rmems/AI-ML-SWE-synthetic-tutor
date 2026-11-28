@@ -61,10 +61,14 @@ pub fn mock_smoke(config: &TeacherConfig, out: &Path) -> Result<Value, Error> {
         "export": "blocked",
         "rights_gate": "RM-2500 remains required; config validation is not approval"
     });
-    // Refuse existing output directories, including symlinks; never overwrite a run.
-    std::fs::create_dir(out)?;
-    std::fs::write(out.join("candidates.jsonl"), candidates)?;
-    std::fs::write(out.join("report.json"), serde_json::to_vec_pretty(&report)?)?;
+    crate::publication::publish_artifacts(out, |staged| {
+        std::fs::write(staged.join("candidates.jsonl"), candidates)?;
+        std::fs::write(
+            staged.join("report.json"),
+            serde_json::to_vec_pretty(&report)?,
+        )?;
+        Ok(())
+    })?;
     Ok(report)
 }
 

@@ -231,7 +231,7 @@ pub fn replay_response(
         "blockers": ["RM-2500 exact model/route/vendor rights evidence", "explicit run approval", "release schema lacks teacher rights provenance"],
         "live_generation": "blocked", "training": "blocked", "export": "blocked"
     });
-    crate::publication::publish_replay(out, |staged| {
+    crate::publication::publish_artifacts(out, |staged| {
         write_new(&staged.join("candidate.json"), &candidate)?;
         write_new(&staged.join("report.json"), &report)
     })?;

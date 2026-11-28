@@ -109,16 +109,16 @@ cargo run --offline --locked -p tutor-teachers -- replay-response \
 Exit 1 means invalid input, failed verification/validation, or I/O failure.
 Prepare/mock-response return 0 on success. These commands refuse existing output
 files/directories. Omitting `--config` on `prepare-request` uses the offline mock.
-Replay stages both output files in a temporary sibling directory and publishes
+Replay and mock-smoke stage both output files in a temporary sibling directory and publish
 the complete directory with one no-replace move. Existing files, directories
 (including empty ones), and symlinks are refused, even if created during staging.
 Staging errors remove the temporary directory and leave the destination absent,
-so the same output path can be retried. This uses the repository's existing
-`atomicwrites` helper on Linux/WSL and requires filesystem support for a
-no-replace directory rename; unsupported filesystems fail without publishing.
-A failure syncing the parent after the move can leave a complete pair despite
-exit 1. Abrupt termination can leave a temporary sibling; crash durability is
-not guaranteed. Consumers should read only the requested output directory.
+so the same output path can be retried. Publication uses a stateless no-replace
+directory rename on Linux/WSL. It requires parent write/search permission, not
+permission to list the parent. Unsupported platforms/filesystems fail without
+publishing or disabling later attempts. Abrupt termination can leave a temporary
+sibling; crash durability is not guaranteed. Consumers should read only the
+requested output directory, not `.tutor-artifacts-*` staging directories.
 
 `request.json` contains a SHA-256 `request_id` bound to its version-2 `payload`:
 teacher selection, instruction, verified static problem, and fixed correction
