@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::entry::{RUN_LOG_SCHEMA_VERSION, Record, RunLogEntry};
+use crate::entry::{GatePauseRecord, RUN_LOG_SCHEMA_VERSION, Record, RunLogEntry, RunRecord};
 
 /// Why a log read, verify, or append failed.
 #[derive(Debug, Error)]
@@ -398,54 +398,70 @@ fn lock_path(log: &Path) -> PathBuf {
 /// is an ancestor of another reserved path is the output directory itself
 /// and may hold the log.
 pub fn ensure_log_path_is_clear(log: &Path, reserved: &[PathBuf]) -> Result<(), RunLogError> {
-    if log.as_os_str().to_string_lossy().ends_with('/') {
-        return Err(RunLogError::Invalid {
-            field: "run_log.path",
-            reason: format!("{} ends in a directory separator", log.display()),
-        });
-    }
-    if log.is_dir() {
-        return Err(RunLogError::Invalid {
-            field: "run_log.path",
-            reason: format!("{} is a directory", log.display()),
-        });
-    }
-    // A dangling symlink has no canonical target for the missing-path
-    // comparison below. Publication can later create its target as an
-    // artifact, after which append would follow the link and overwrite that
-    // artifact. Ordinary new files are fine; only an existing symlink whose
-    // target is missing is ambiguous enough to reject.
-    if let Ok(metadata) = std::fs::symlink_metadata(log)
-        && metadata.file_type().is_symlink()
-        && matches!(
-            std::fs::metadata(log),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-        )
-    {
-        return Err(RunLogError::Invalid {
-            field: "run_log.path",
-            reason: format!("{} is a dangling symlink", log.display()),
-        });
-    }
-    let refuse = |relation: &str, artifact: &Path| RunLogError::Invalid {
-        field: "run_log.path",
-        reason: format!(
-            "{} {relation} the batch artifact {}",
-            log.display(),
-            artifact.display()
-        ),
-    };
+    validate_log_file_path(log)?;
     let log_path = normalized_path(log);
     let normalized: Vec<PathBuf> = reserved.iter().map(|path| normalized_path(path)).collect();
     for (artifact, path) in reserved.iter().zip(&normalized) {
-        if same_path(&log_path, path) {
-            return Err(refuse("aliases", artifact));
-        }
-        if !is_directory_entry(path, &normalized) && nested_under(&log_path, path) {
-            return Err(refuse("is nested under", artifact));
-        }
+        ensure_no_artifact_alias(log, &log_path, artifact, path, &normalized)?;
     }
     Ok(())
+}
+
+fn validate_log_file_path(log: &Path) -> Result<(), RunLogError> {
+    let invalid = |reason: String| RunLogError::Invalid {
+        field: "run_log.path",
+        reason,
+    };
+    if log.as_os_str().to_string_lossy().ends_with('/') {
+        return Err(invalid(format!(
+            "{} ends in a directory separator",
+            log.display()
+        )));
+    }
+    if log.is_dir() {
+        return Err(invalid(format!("{} is a directory", log.display())));
+    }
+    if dangling_symlink(log) {
+        return Err(invalid(format!("{} is a dangling symlink", log.display())));
+    }
+    Ok(())
+}
+
+fn dangling_symlink(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    metadata.file_type().is_symlink()
+        && matches!(
+            std::fs::metadata(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound
+        )
+}
+
+fn ensure_no_artifact_alias(
+    log: &Path,
+    log_path: &Path,
+    artifact: &Path,
+    path: &Path,
+    reserved: &[PathBuf],
+) -> Result<(), RunLogError> {
+    let relation = if same_path(log_path, path) {
+        Some("aliases")
+    } else if !is_directory_entry(path, reserved) && nested_under(log_path, path) {
+        Some("is nested under")
+    } else {
+        None
+    };
+    relation.map_or(Ok(()), |relation| {
+        Err(RunLogError::Invalid {
+            field: "run_log.path",
+            reason: format!(
+                "{} {relation} the batch artifact {}",
+                log.display(),
+                artifact.display()
+            ),
+        })
+    })
 }
 
 /// Whether `candidate` is the parent directory of another reserved path.
@@ -571,47 +587,62 @@ fn check_references(
     record: &Record,
     line: usize,
 ) -> Result<(), RunLogError> {
-    let find_run = |run_id: &str| {
-        prior.iter().find_map(|entry| match &entry.record {
-            Record::Run(run) if run.run_id == run_id => Some(run),
-            _ => None,
-        })
-    };
     match record {
-        Record::Run(run) => {
-            if find_run(&run.run_id).is_some() {
-                return Err(RunLogError::DuplicateRunId {
-                    line,
-                    run_id: run.run_id.clone(),
-                });
-            }
-            if let Some(replaces) = &run.replaces
-                && find_run(replaces).is_none()
-            {
-                return Err(RunLogError::ReplacesUnknown {
-                    line,
-                    run_id: replaces.clone(),
-                });
-            }
-        }
-        Record::GatePause(pause) => {
-            if let Some(run_id) = &pause.run_id {
-                let Some(run) = find_run(run_id) else {
-                    return Err(RunLogError::PauseRunUnknown {
-                        line,
-                        run_id: run_id.clone(),
-                    });
-                };
-                if run.family.is_some() && run.family.as_deref() != Some(pause.family.as_str()) {
-                    return Err(RunLogError::PauseRunFamilyMismatch {
-                        line,
-                        run_id: run_id.clone(),
-                        pause_family: pause.family.clone(),
-                        run_family: run.family.clone(),
-                    });
-                }
-            }
-        }
+        Record::Run(run) => check_run_references(prior, run, line),
+        Record::GatePause(pause) => check_pause_references(prior, pause, line),
+    }
+}
+
+fn prior_run<'a>(prior: &'a [RunLogEntry], run_id: &str) -> Option<&'a RunRecord> {
+    prior.iter().find_map(|entry| match &entry.record {
+        Record::Run(run) if run.run_id == run_id => Some(run.as_ref()),
+        _ => None,
+    })
+}
+
+fn check_run_references(
+    prior: &[RunLogEntry],
+    run: &RunRecord,
+    line: usize,
+) -> Result<(), RunLogError> {
+    if prior_run(prior, &run.run_id).is_some() {
+        return Err(RunLogError::DuplicateRunId {
+            line,
+            run_id: run.run_id.clone(),
+        });
+    }
+    if let Some(replaces) = &run.replaces
+        && prior_run(prior, replaces).is_none()
+    {
+        return Err(RunLogError::ReplacesUnknown {
+            line,
+            run_id: replaces.to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn check_pause_references(
+    prior: &[RunLogEntry],
+    pause: &GatePauseRecord,
+    line: usize,
+) -> Result<(), RunLogError> {
+    let Some(run_id) = &pause.run_id else {
+        return Ok(());
+    };
+    let Some(run) = prior_run(prior, run_id) else {
+        return Err(RunLogError::PauseRunUnknown {
+            line,
+            run_id: run_id.to_string(),
+        });
+    };
+    if run.family.is_some() && run.family.as_deref() != Some(pause.family.as_str()) {
+        return Err(RunLogError::PauseRunFamilyMismatch {
+            line,
+            run_id: run_id.to_string(),
+            pause_family: pause.family.clone(),
+            run_family: run.family.clone(),
+        });
     }
     Ok(())
 }
@@ -670,57 +701,64 @@ fn now_rfc3339_utc() -> String {
 /// optionally with fractional seconds. Leap seconds are not produced by the
 /// system clock and are rejected here.
 fn is_rfc3339_utc(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    if bytes.len() < 20
-        || bytes[4] != b'-'
-        || bytes[7] != b'-'
-        || bytes[10] != b'T'
-        || bytes[13] != b':'
-        || bytes[16] != b':'
-    {
+    let Some(fields) = timestamp_fields(value) else {
         return false;
-    }
-    let digit = |index: usize| bytes[index].is_ascii_digit();
-    if !(0..4).all(digit)
-        || !(5..7).all(digit)
-        || !(8..10).all(digit)
-        || !(11..13).all(digit)
-        || !(14..16).all(digit)
-        || !(17..19).all(digit)
-    {
-        return false;
-    }
-    let number = |start: usize, end: usize| -> u32 {
-        value[start..end].parse().expect("digit-only slice parses")
     };
-    let month = number(5, 7);
-    let day = number(8, 10);
-    let hour = number(11, 13);
-    let minute = number(14, 16);
-    let second = number(17, 19);
-    if !(1..=12).contains(&month) || hour >= 24 || minute >= 60 || second >= 60 {
-        return false;
+    valid_clock(fields)
+        && valid_calendar_day(fields.0, fields.1, fields.2)
+        && valid_utc_suffix(value)
+}
+
+fn timestamp_fields(value: &str) -> Option<(u32, u32, u32, u32, u32, u32)> {
+    let bytes = value.as_bytes();
+    let separators = bytes.len() >= 20
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':';
+    let digits = [0..4, 5..7, 8..10, 11..13, 14..16, 17..19]
+        .into_iter()
+        .all(|mut range| range.all(|index| bytes[index].is_ascii_digit()));
+    if !(separators && digits) {
+        return None;
     }
-    let year = number(0, 4);
-    let leap_year =
-        year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-    let days_in_month = match month {
+    let number = |start, end| value[start..end].parse::<u32>().ok();
+    Some((
+        number(0, 4)?,
+        number(5, 7)?,
+        number(8, 10)?,
+        number(11, 13)?,
+        number(14, 16)?,
+        number(17, 19)?,
+    ))
+}
+
+fn valid_clock(fields: (u32, u32, u32, u32, u32, u32)) -> bool {
+    let (_, month, _, hour, minute, second) = fields;
+    (1..=12).contains(&month) && hour < 24 && minute < 60 && second < 60
+}
+
+fn valid_calendar_day(year: u32, month: u32, day: u32) -> bool {
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let days = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
         4 | 6 | 9 | 11 => 30,
-        2 if leap_year => 29,
-        2 => 28,
-        _ => unreachable!("month was range-checked"),
+        2 if leap => 29,
+        _ => 28,
     };
-    if day == 0 || day > days_in_month {
-        return false;
-    }
+    (1..=days).contains(&day)
+}
+
+fn valid_utc_suffix(value: &str) -> bool {
+    let bytes = value.as_bytes();
     if bytes[19] == b'Z' {
         return bytes.len() == 20;
     }
-    if bytes[19] != b'.' || bytes.len() < 22 || *bytes.last().expect("nonempty") != b'Z' {
-        return false;
-    }
-    bytes[20..bytes.len() - 1].iter().all(u8::is_ascii_digit)
+    bytes[19] == b'.'
+        && bytes.len() >= 22
+        && bytes.ends_with(b"Z")
+        && bytes[20..bytes.len() - 1].iter().all(u8::is_ascii_digit)
 }
 
 /// `yyyymmddThhmmss` for run ids.
@@ -898,7 +936,7 @@ mod tests {
     fn corrupted_history_is_detected() {
         type Corrupt = fn(&str) -> String;
         type Expect = fn(&RunLogError) -> bool;
-        let cases: [(&str, usize, Corrupt, Expect); 6] = [
+        let cases: [(&str, usize, Corrupt, Expect); 3] = [
             (
                 "tampered.jsonl",
                 2,
@@ -923,6 +961,17 @@ mod tests {
                 },
                 |error| matches!(error, RunLogError::BrokenChain { line: 2 }),
             ),
+        ];
+        for (name, runs, corrupt, expected) in cases {
+            corrupted_log_fails_verify(name, runs, corrupt, expected);
+        }
+    }
+
+    #[test]
+    fn corrupted_history_is_detected_for_format_errors() {
+        type Corrupt = fn(&str) -> String;
+        type Expect = fn(&RunLogError) -> bool;
+        let cases: [(&str, usize, Corrupt, Expect); 3] = [
             (
                 // A duplicated field must not let the last copy win.
                 "duplicate-key.jsonl",
