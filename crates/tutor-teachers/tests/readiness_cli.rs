@@ -180,6 +180,52 @@ fn replay(request: &std::path::Path, response: &std::path::Path, out: &std::path
     ])
 }
 
+fn assert_replay_provenance(
+    candidate: &Value,
+    req: &Value,
+    request: &std::path::Path,
+    response: &std::path::Path,
+) {
+    assert_eq!(candidate["provenance"]["request_id"], req["request_id"]);
+    assert_eq!(
+        candidate["provenance"]["request_sha256"],
+        tutor_teachers::sha256(&std::fs::read(request).unwrap())
+    );
+    assert_eq!(
+        candidate["provenance"]["response_sha256"],
+        tutor_teachers::sha256(&std::fs::read(response).unwrap())
+    );
+    assert_eq!(candidate["provenance"]["response_origin"], "synthetic_mock");
+    assert_eq!(candidate["problem"], req["payload"]["problem"]);
+    for index in [0, 1, 3, 5, 6] {
+        assert_eq!(
+            candidate["dialogue"]["turns"][index],
+            req["payload"]["dialogue"]["turns"][index]
+        );
+    }
+    assert_ne!(
+        candidate["dialogue"]["turns"][2],
+        req["payload"]["dialogue"]["turns"][2]
+    );
+}
+
+fn assert_teacher_admission_blocked(candidate: &Value) {
+    let validator = jsonschema::validator_for(&tutor_schema::dialogue_json_schema()).unwrap();
+    let problem = Problem::from_value(candidate["problem"].clone()).unwrap();
+    let problems = BTreeMap::from([(problem.problem_id.clone(), problem)]);
+    let input = InputLine {
+        file: "extracted.json".into(),
+        line: None,
+        text: candidate["dialogue"].to_string(),
+    };
+    assert_eq!(
+        checks::check(&input, Some(&problems), &validator, &mut HashSet::new())
+            .unwrap_err()
+            .code,
+        "teacher_admission_blocked"
+    );
+}
+
 #[test]
 fn hermes_handoff_replays_and_admission_stays_blocked() {
     let temp = Temp::new();
@@ -203,41 +249,8 @@ fn hermes_handoff_replays_and_admission_stays_blocked() {
         assert_eq!(report["admission_code"], "teacher_admission_blocked");
         assert_eq!(report["candidate_sha256"], tutor_teachers::sha256(&bytes));
         let candidate: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(candidate["provenance"]["request_id"], req["request_id"]);
-        assert_eq!(
-            candidate["provenance"]["request_sha256"],
-            tutor_teachers::sha256(&std::fs::read(&request).unwrap())
-        );
-        assert_eq!(
-            candidate["provenance"]["response_sha256"],
-            tutor_teachers::sha256(&std::fs::read(&response).unwrap())
-        );
-        assert_eq!(candidate["provenance"]["response_origin"], "synthetic_mock");
-        assert_eq!(candidate["problem"], req["payload"]["problem"]);
-        for index in [0, 1, 3, 5, 6] {
-            assert_eq!(
-                candidate["dialogue"]["turns"][index],
-                req["payload"]["dialogue"]["turns"][index]
-            );
-        }
-        assert_ne!(
-            candidate["dialogue"]["turns"][2],
-            req["payload"]["dialogue"]["turns"][2]
-        );
-        let validator = jsonschema::validator_for(&tutor_schema::dialogue_json_schema()).unwrap();
-        let problem = Problem::from_value(candidate["problem"].clone()).unwrap();
-        let problems = BTreeMap::from([(problem.problem_id.clone(), problem)]);
-        let input = InputLine {
-            file: "extracted.json".into(),
-            line: None,
-            text: candidate["dialogue"].to_string(),
-        };
-        assert_eq!(
-            checks::check(&input, Some(&problems), &validator, &mut HashSet::new())
-                .unwrap_err()
-                .code,
-            "teacher_admission_blocked"
-        );
+        assert_replay_provenance(&candidate, &req, &request, &response);
+        assert_teacher_admission_blocked(&candidate);
         outputs.push(bytes);
     }
     assert_eq!(outputs[0], outputs[1]);

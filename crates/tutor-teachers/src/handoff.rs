@@ -127,10 +127,9 @@ pub fn synthetic_response(request_path: &Path, out: &Path) -> Result<(), Error> 
 }
 
 fn apply_response(request: &Request, response: &Response) -> Result<DialogueRow, Error> {
-    if response.version != VERSION
-        || response.request_id != request.request_id
-        || response.teacher != request.payload.teacher
-    {
+    let binding = (response.version, &response.request_id, &response.teacher);
+    let expected = (VERSION, &request.request_id, &request.payload.teacher);
+    if binding != expected {
         return Err("response version, request_id or teacher binding mismatch".into());
     }
     let mut row = request.payload.dialogue.clone();

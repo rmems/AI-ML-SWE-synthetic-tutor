@@ -90,7 +90,8 @@ fn validate_env_name(name: &str) -> Result<(), Error> {
         .bytes()
         .next()
         .is_some_and(|b| b.is_ascii_uppercase() || b == b'_');
-    if !(1..=128).contains(&name.len()) || !valid_start || !valid_chars {
+    let requirements = [(1..=128).contains(&name.len()), valid_start, valid_chars];
+    if !requirements.into_iter().all(|met| met) {
         return Err("api_key_env must be an uppercase environment variable NAME".into());
     }
     Ok(())
@@ -99,13 +100,15 @@ fn validate_env_name(name: &str) -> Result<(), Error> {
 fn validate_endpoint(value: &str) -> Result<(), Error> {
     let endpoint = url::Url::parse(value)
         .map_err(|_| "endpoint must be an HTTPS base URL without credentials")?;
-    let has_credentials = !endpoint.username().is_empty() || endpoint.password().is_some();
-    let has_suffix = endpoint.query().is_some() || endpoint.fragment().is_some();
-    if endpoint.scheme() != "https"
-        || endpoint.host_str().is_none()
-        || has_credentials
-        || has_suffix
-    {
+    let requirements = [
+        endpoint.scheme() == "https",
+        endpoint.host_str().is_some(),
+        endpoint.username().is_empty(),
+        endpoint.password().is_none(),
+        endpoint.query().is_none(),
+        endpoint.fragment().is_none(),
+    ];
+    if !requirements.into_iter().all(|met| met) {
         return Err("endpoint must be HTTPS with no credentials, query or fragment".into());
     }
     Ok(())
