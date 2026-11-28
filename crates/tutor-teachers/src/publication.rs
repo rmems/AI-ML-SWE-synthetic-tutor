@@ -292,20 +292,40 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn ordinary_windows_test_path(path: &Path) -> std::path::PathBuf {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+        use std::path::{Component, Prefix};
+        let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+        let ordinary = match path.components().next() {
+            Some(Component::Prefix(prefix)) => match prefix.kind() {
+                Prefix::VerbatimDisk(_) => wide[4..].to_vec(),
+                Prefix::VerbatimUNC(..) => r"\\"
+                    .encode_utf16()
+                    .chain(wide[8..].iter().copied())
+                    .collect(),
+                _ => wide,
+            },
+            _ => wide,
+        };
+        std::ffi::OsString::from_wide(&ordinary).into()
+    }
+
+    #[cfg(windows)]
     #[test]
     fn windows_ordinary_aliases_refuse_existing_outputs() {
         let root = tempfile::tempdir().unwrap();
-        let directory = root.path().join("replay");
-        let file = root.path().join("request");
+        let ordinary_root = ordinary_windows_test_path(root.path());
+        let directory = ordinary_root.join("replay");
+        let file = ordinary_root.join("request");
         std::fs::create_dir(&directory).unwrap();
         std::fs::write(&file, b"original").unwrap();
         for suffix in [".", " "] {
             assert!(
-                publish_artifacts(&root.path().join(format!("replay{suffix}")), |_| Ok(()))
+                publish_artifacts(&ordinary_root.join(format!("replay{suffix}")), |_| Ok(()))
                     .is_err()
             );
             assert!(
-                publish_file(&root.path().join(format!("request{suffix}")), |file| file
+                publish_file(&ordinary_root.join(format!("request{suffix}")), |file| file
                     .write_all(b"replacement"))
                 .is_err()
             );
@@ -320,8 +340,9 @@ mod tests {
     fn windows_long_staging_and_destination_paths_publish_without_overwrite() {
         use std::os::windows::ffi::OsStrExt;
         let root = tempfile::tempdir().unwrap();
-        let padding = 240usize.saturating_sub(root.path().as_os_str().encode_wide().count() + 1);
-        let short_parent = root.path().join("p".repeat(padding.max(1)));
+        let ordinary_root = ordinary_windows_test_path(root.path());
+        let padding = 240usize.saturating_sub(ordinary_root.as_os_str().encode_wide().count() + 1);
+        let short_parent = ordinary_root.join("p".repeat(padding.max(1)));
         let long_parent = short_parent.join("q".repeat(80));
         std::fs::create_dir_all(&long_parent).unwrap();
         assert!(long_parent.as_os_str().encode_wide().count() > 260);
