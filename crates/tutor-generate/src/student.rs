@@ -21,7 +21,7 @@ use tutor_schema::{
 pub const SIMULATOR_NAME: &str = "synthetic-student-simulator";
 
 /// Simulator version; bump when output for a seed changes.
-pub const SIMULATOR_VERSION: u32 = 2;
+pub const SIMULATOR_VERSION: u32 = 3;
 
 /// Explicit inputs for one attempt. `None` profile fields are drawn from `seed`.
 #[derive(Debug, Clone)]

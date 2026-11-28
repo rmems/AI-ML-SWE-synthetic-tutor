@@ -53,3 +53,17 @@ integrals. The seed list's `stats:variance-vs-std` and two `linear-algebra`
 entries are deferred — they are outside the math-first curriculum scope of the
 pilot and can return as new ids when those topics land (stats and linear algebra
 are not seeded areas yet).
+
+## v2: derivative-definition slice
+
+[The secant-to-tangent slice (#15)](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/15)
+distinguishes three traces by the first step where the reasoning goes wrong:
+
+| First wrong step | Primary label |
+|---|---|
+| Substitutes h = 0 directly, sees 0/0, and stops before simplification. For f(x) = x² at x = 2, cancel the shared h for h ≠ 0 and take the limit of 4 + h. | `limits.divide_by_zero_form` (existing label; now also listed for derivative definition) |
+| Evaluates a nonzero increment correctly, then calls that finite secant slope the exact derivative. | `derivatives.secant_as_tangent` |
+| Correctly simplifies for h ≠ 0 but mistakes missing value at h = 0 for a missing limit. | `derivatives.undefined_quotient_implies_no_limit` |
+
+These labels describe the taxonomy contract. They do not add a slope-table
+generator or let the simulator claim a secant transformation exists.

@@ -41,6 +41,8 @@ fn committed_schema_matches_generated() {
 
 #[test]
 fn gold_rows_are_valid_and_round_trip() {
+    let schema = serde_json::from_str(COMMITTED_SCHEMA).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
     for (index, file) in GOLD_ROWS.iter().enumerate() {
         let row = DialogueRow::from_json(file).expect("gold row validates");
         assert!(row.gold);
@@ -48,6 +50,47 @@ fn gold_rows_are_valid_and_round_trip() {
         let encoded = serde_json::to_value(&row).expect("serializes");
         let decoded: Value = serde_json::from_str(file).expect("json");
         assert_eq!(encoded, decoded, "gold row {index} round-trips");
+        assert!(
+            validator.is_valid(&decoded),
+            "schema permits existing v1 gold"
+        );
+    }
+}
+
+#[test]
+fn secant_labels_preserve_taxonomy_versions_on_every_topic() {
+    let schema = serde_json::from_str(COMMITTED_SCHEMA).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let definition = "calculus.derivatives.definition";
+    let secant = "derivatives.secant_as_tangent";
+    let undefined = "derivatives.undefined_quotient_implies_no_limit";
+    let divide_by_zero = "limits.divide_by_zero_form";
+    let topic_mappings = [
+        (secant, definition, 2),
+        (secant, "calculus.derivatives.tangent_lines", 2),
+        (undefined, definition, 2),
+        (undefined, "limits.limit_existence", 2),
+        (divide_by_zero, definition, 2),
+        (divide_by_zero, "limits.indeterminate_forms", 1),
+        (divide_by_zero, "limits.limit_evaluation", 1),
+        (divide_by_zero, "algebra.rational_expressions", 1),
+    ];
+
+    for (id, topic, minimum) in topic_mappings {
+        for version in [1, 2] {
+            let mut row = gold("chain");
+            row["topic"] = json!(topic);
+            row["misconceptions"] = json!([id]);
+            row["provenance"]["taxonomy_version"] = json!(version);
+            let expected = version >= minimum;
+            let label = format!("{id} / {topic} / taxonomy v{version}");
+            assert_eq!(validator.is_valid(&row), expected, "schema: {label}");
+            assert_eq!(
+                DialogueRow::from_value(row).is_ok(),
+                expected,
+                "Rust: {label}"
+            );
+        }
     }
 }
 
@@ -197,7 +240,7 @@ fn constraint_violations_are_rejected() {
         Box::new(|v| v["system_prompt_version"] = json!(2)),
         // Taxonomy version newer than supported.
         Box::new(|v| {
-            v["provenance"]["taxonomy_version"] = json!(2);
+            v["provenance"]["taxonomy_version"] = json!(tutor_schema::TAXONOMY_VERSION + 1);
         }),
         // Topic not among the misconception's taxonomy topics.
         Box::new(|v| v["topic"] = json!("algebra.polynomial_expansion")),
