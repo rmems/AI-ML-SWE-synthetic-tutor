@@ -107,7 +107,7 @@ pub struct GeneratorProvenance {
 }
 
 /// Where a generator runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum GeneratorLanguage {
     /// The `math-julia` worker, reached over ZMQ.

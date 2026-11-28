@@ -75,7 +75,11 @@ Hugging Face export ◄── split ◄── QA ◄─────────�
    ([#21](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/21)).
 
 Every batch leaves a run-log manifest
-([#7](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/7)).
+([#7](https://github.com/rmems/AI-ML-SWE-synthetic-tutor/issues/7)): each
+`tutor-generate` run or simulate appends one hash-chained entry to
+`run-log.jsonl` next to the batch (`schemas/run-log.schema.json`), and
+batches run one family at a time on the cadence in
+[docs/cadence.md](docs/cadence.md).
 
 ---
 
@@ -231,11 +235,12 @@ crates/
   tutor-wire/       ZMQ REQ client for the Julia worker (tutor-math/1 JSON envelope)
   tutor-verify/     independent answer verification + Rust<->Julia bridge proof test
   tutor-generate/   seeded problem generators (#18) and the procedural student simulator (#19)
+  tutor-runlog/     append-only, hash-chained generation run log + `tutor-runlog` verify/pause CLI (#7)
   tutor-teachers/   placeholder: teacher model clients (#17)
   tutor-build/      placeholder: dedup, splits, Hugging Face export (#8, #21)
 math-julia/         TutorMath: seeded problem generators + ZMQ REP worker
-schemas/            problem.schema.json, dialogue.schema.json, student-attempt.schema.json (generated), taxonomy.yaml
-docs/               mission, tutor policy (v1), rights
+schemas/            problem.schema.json, dialogue.schema.json, student-attempt.schema.json, run-log.schema.json (generated), taxonomy.yaml
+docs/               mission, tutor policy (v1), rights, batch cadence + run-log rules
 prompts/            versioned tutor system prompts
 curriculum/         coverage matrix (#16)
 datasets/           one folder per dataset family; generated rows are gitignored

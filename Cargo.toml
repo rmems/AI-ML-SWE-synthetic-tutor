@@ -22,6 +22,7 @@ rayon = "1.10"
 atomicwrites = "0.4"
 sha2 = "0.10"
 tutor-generate = { path = "crates/tutor-generate" }
+tutor-runlog = { path = "crates/tutor-runlog" }
 tutor-schema = { path = "crates/tutor-schema" }
 tutor-verify = { path = "crates/tutor-verify" }
 tutor-wire = { path = "crates/tutor-wire" }

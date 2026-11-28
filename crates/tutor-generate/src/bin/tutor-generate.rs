@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tutor_generate::student::{AttemptSpec, SIMULATOR_NAME, SIMULATOR_VERSION, simulate};
 use tutor_generate::{GENERATORS, RunConfig, run, spec};
+use tutor_runlog::{Counts, GeneratorUse, OutputRef, Record, RunLog, RunRecord, SeedUse, Stage};
 use tutor_schema::{MAX_SEED, MisconceptionId, Persistence, Problem, StudentLevel, SurfaceStyle};
 use tutor_wire::DEFAULT_ENDPOINT;
 
@@ -50,6 +51,20 @@ enum Command {
         /// Output directory.
         #[arg(long)]
         out: PathBuf,
+        /// Path of the append-only generation run log; defaults to
+        /// `<out>/run-log.jsonl`.
+        #[arg(long)]
+        run_log: Option<PathBuf>,
+        /// Dataset family this run feeds, recorded in the run log.
+        #[arg(long)]
+        family: Option<String>,
+        /// Generation spec reference (issue ref or URL) recorded in the run log.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Run id of the earlier run this one replaces (a rerun marker);
+        /// omit for a run that replaces nothing.
+        #[arg(long)]
+        replaces: Option<String>,
     },
     /// Simulate student attempts from verified/problems.jsonl.
     Simulate {
@@ -86,6 +101,20 @@ enum Command {
         /// Path to student-attempt.schema.json.
         #[arg(long, default_value = "schemas/student-attempt.schema.json")]
         schema: PathBuf,
+        /// Path of the append-only generation run log; defaults to
+        /// `<out>/run-log.jsonl`.
+        #[arg(long)]
+        run_log: Option<PathBuf>,
+        /// Dataset family this run feeds, recorded in the run log.
+        #[arg(long)]
+        family: Option<String>,
+        /// Generation spec reference (issue ref or URL) recorded in the run log.
+        #[arg(long)]
+        spec: Option<String>,
+        /// Run id of the earlier run this one replaces (a rerun marker);
+        /// omit for a run that replaces nothing.
+        #[arg(long)]
+        replaces: Option<String>,
     },
 }
 
@@ -100,6 +129,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout_secs,
             schema,
             out,
+            run_log,
+            family,
+            spec,
+            replaces,
         } => run_generation(GenerateArgs {
             generators,
             seed_start,
@@ -108,6 +141,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout_secs,
             schema,
             out,
+            run_log,
+            family,
+            spec,
+            replaces,
         }),
         Command::Simulate {
             problems,
@@ -121,6 +158,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             surface_style,
             teacher_variety,
             schema,
+            run_log,
+            family,
+            spec,
+            replaces,
         } => run_simulation(SimulateArgs {
             problems,
             out,
@@ -133,6 +174,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             surface_style,
             teacher_variety,
             schema,
+            run_log,
+            family,
+            spec,
+            replaces,
         }),
     }
 }
@@ -159,6 +204,10 @@ struct GenerateArgs {
     timeout_secs: u64,
     schema: PathBuf,
     out: PathBuf,
+    run_log: Option<PathBuf>,
+    family: Option<String>,
+    spec: Option<String>,
+    replaces: Option<String>,
 }
 
 fn run_generation(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> {
@@ -188,6 +237,14 @@ fn run_generation(args: GenerateArgs) -> Result<(), Box<dyn std::error::Error>> 
         out_dir: args.out.clone(),
         schema_json,
         schema: args.schema.display().to_string(),
+        run_log: Some(tutor_generate::RunLogTarget {
+            path: args
+                .run_log
+                .unwrap_or_else(|| args.out.join("run-log.jsonl")),
+            family: args.family,
+            spec: args.spec,
+            replaces: args.replaces,
+        }),
     })?;
     print_generation_report(&report, &args.out);
     if report.total_verified == 0 {
@@ -223,6 +280,10 @@ struct SimulateArgs {
     surface_style: Option<String>,
     teacher_variety: bool,
     schema: PathBuf,
+    run_log: Option<PathBuf>,
+    family: Option<String>,
+    spec: Option<String>,
+    replaces: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -304,6 +365,14 @@ struct SimulationContext<'a> {
 
 /// Derive a stable attempt seed from the caller's seed stream, problem ID, and
 /// per-problem attempt index, so unrelated input lines do not reseed a problem.
+/// The exact recipe [`stable_attempt_seed`] implements, recorded in the run
+/// log so a batch's seeds can be reproduced from the entry plus the input
+/// problem IDs (each committed attempt row also carries its `problem_id` and
+/// `seed`).
+const SEED_DERIVATION: &str = "u64::from_le_bytes(sha256(seed_start as u64 little-endian || \
+     problem_id as UTF-8 || 0xff || attempt_index as u64 little-endian)[0..8]) & MAX_SEED \
+     (MAX_SEED = 2^53 - 1)";
+
 fn stable_attempt_seed(seed_start: u64, problem_id: &str, attempt_index: u64) -> u64 {
     let mut hasher = Sha256::new();
     hasher.update(seed_start.to_le_bytes());
@@ -475,8 +544,26 @@ fn write_simulation_output(
 
     std::fs::create_dir_all(&args.out)?;
     let _lock = OutputLock::acquire(&args.out)?;
+    // Take the log's append lock and prove the run-log write can commit
+    // before any artifact is replaced: the destination must not alias a
+    // batch file, and the append — chain, `replaces`, record format — must
+    // validate against the log as it stands. A bad --run-log or a mistyped
+    // --replaces fails here, while the previous bundle is still intact. The
+    // destination is then opened for append before publication, so an
+    // unwritable log cannot strand a committed bundle merely because the
+    // open fails. The lock is held through the append, so no other writer
+    // can change the log between this check and the entry.
+    let log_path = run_log_path(args);
+    tutor_runlog::ensure_log_path_is_clear(&log_path, &reserved_log_paths(args))?;
+    let record = simulation_run_record(args, &batch, &manifest_text);
+    let log = RunLog::at(&log_path);
+    let mut locked = log.lock()?;
+    locked.check(&record)?;
+    locked.open_append()?;
+
     let existing = ensure_simulation_output(&args.out)?;
     publish_bundle(&args.out, &publication, &existing)?;
+    locked.append(record)?;
     println!(
         "student attempts: {} emitted ({} correct, {} correction), {} rejected -> {}",
         batch.attempts.len(),
@@ -569,6 +656,118 @@ fn publish_bundle(
     Ok(())
 }
 
+/// Where this simulation's run-log entry is appended (`--run-log` or
+/// `<out>/run-log.jsonl`).
+fn run_log_path(args: &SimulateArgs) -> PathBuf {
+    args.run_log
+        .clone()
+        .unwrap_or_else(|| args.out.join("run-log.jsonl"))
+}
+
+/// Files a run log must never overwrite: the bundle artifacts, the
+/// publication-control files, and this simulation's input.
+fn reserved_log_paths(args: &SimulateArgs) -> Vec<PathBuf> {
+    ARTIFACT_FILES
+        .iter()
+        .map(|name| args.out.join(name))
+        .chain([
+            args.out.clone(),
+            args.out.join("manifest.json"),
+            pending_publish_path(&args.out),
+            args.out.join(LOCK_FILE),
+            args.problems.clone(),
+        ])
+        .collect()
+}
+
+/// This simulation's entry for the generation run log: counts from the batch
+/// being committed, and the manifest digest of the text about to publish.
+fn simulation_run_record(
+    args: &SimulateArgs,
+    batch: &SimulationBatch,
+    manifest_text: &str,
+) -> Record {
+    Record::Run(Box::new(RunRecord {
+        run_id: tutor_runlog::new_run_id(),
+        family: args.family.clone(),
+        spec: args.spec.clone(),
+        stage: Stage::Simulate,
+        replaces: args.replaces.clone(),
+        environment: tutor_runlog::environment(),
+        generators: vec![GeneratorUse {
+            name: SIMULATOR_NAME.to_owned(),
+            version: SIMULATOR_VERSION,
+            language: tutor_schema::GeneratorLanguage::Rust,
+            seeds: SeedUse {
+                start: args.seed_start,
+                end: None,
+                derivation: Some(SEED_DERIVATION.to_owned()),
+            },
+            parameter_ranges: simulation_parameter_ranges(args),
+        }],
+        teacher: None,
+        counts: simulation_record_counts(batch),
+        output: OutputRef {
+            directory: args.out.display().to_string(),
+            manifest_sha256: Some(tutor_runlog::sha256_hex(manifest_text.as_bytes())),
+        },
+        split_manifest_sha256: None,
+        qa: None,
+    }))
+}
+
+/// Outcome counts for the entry, measured from the batch being committed.
+fn simulation_record_counts(batch: &SimulationBatch) -> Counts {
+    let mut rejected_by_reason = std::collections::BTreeMap::new();
+    for rejection in &batch.rejections {
+        let reason = rejection["stage"].as_str().unwrap_or("unknown");
+        *rejected_by_reason.entry(reason.to_owned()).or_insert(0_u64) += 1;
+    }
+    // Candidates that produced an attempt row: emitted + schema-stage rejects.
+    let produced = batch.attempts.len()
+        + batch
+            .rejections
+            .iter()
+            .filter(|rejection| rejection["stage"] == "schema")
+            .count();
+    Counts {
+        generated: produced as u64,
+        verified: batch.attempts.len() as u64,
+        rejected: batch.rejections.len() as u64,
+        rejected_by_reason,
+        deduplicated: None,
+        decontaminated: None,
+        exported: None,
+    }
+}
+
+/// The pinned options the simulator drew under, as the entry's
+/// `parameter_ranges`.
+fn simulation_parameter_ranges(
+    args: &SimulateArgs,
+) -> std::collections::BTreeMap<String, serde_json::Value> {
+    std::collections::BTreeMap::from([
+        (
+            "attempts_per_problem".to_owned(),
+            serde_json::json!(args.attempts_per_problem),
+        ),
+        ("mode".to_owned(), serde_json::json!(args.mode)),
+        (
+            "misconception".to_owned(),
+            serde_json::json!(args.misconception),
+        ),
+        ("level".to_owned(), serde_json::json!(args.level)),
+        (
+            "persistence".to_owned(),
+            serde_json::json!(args.persistence),
+        ),
+        (
+            "surface_style".to_owned(),
+            serde_json::json!(args.surface_style),
+        ),
+    ])
+}
+
 fn pending_publish_text(
     bundle_artifacts: &serde_json::Value,
     existing: &[(&'static str, serde_json::Value)],
@@ -608,9 +807,11 @@ struct OutputLock {
     path: PathBuf,
 }
 
+const LOCK_FILE: &str = ".simulate.lock";
+
 impl OutputLock {
     fn acquire(out: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let path = out.join(".simulate.lock");
+        let path = out.join(LOCK_FILE);
         let mut file = match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -824,4 +1025,27 @@ fn atomic_write_with(
             ))
         })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stable_attempt_seed_follows_the_logged_derivation() {
+        // Recompute by hand exactly as SEED_DERIVATION states it.
+        let (seed_start, problem_id, attempt_index) =
+            (7_u64, "chain_rule_at_point/v1/seed-1", 3_u64);
+        let mut bytes = seed_start.to_le_bytes().to_vec();
+        bytes.extend_from_slice(problem_id.as_bytes());
+        bytes.push(0xff);
+        bytes.extend_from_slice(&attempt_index.to_le_bytes());
+        let digest = Sha256::digest(&bytes);
+        let expected = u64::from_le_bytes(digest[..8].try_into().unwrap()) & ((1_u64 << 53) - 1);
+        assert_eq!(
+            stable_attempt_seed(seed_start, problem_id, attempt_index),
+            expected
+        );
+        assert!(SEED_DERIVATION.contains("0xff") && SEED_DERIVATION.contains("[0..8]"));
+    }
 }

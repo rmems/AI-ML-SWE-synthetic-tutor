@@ -22,12 +22,15 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
+use tutor_runlog::{
+    Counts, GeneratorUse, LockFile, OutputRef, Record, RunLog, RunRecord, SeedUse, Stage,
+};
 use tutor_schema::{
     Answer, Difficulty, GeneratorLanguage, GeneratorProvenance, MAX_SEED, MisconceptionId,
     Parameters, Problem, Step,
 };
 use tutor_verify::{Exponent, Rejection, Scalar};
-use tutor_wire::{MathClient, WireError};
+use tutor_wire::{MathClient, WireError, WorkerInfo};
 
 /// Version of the Rust-native binomial generator.
 pub const BINOMIAL_VERSION: u32 = 1;
@@ -323,10 +326,32 @@ pub struct RunReport {
     pub seeds: String,
     /// Per-generator and total counts.
     pub generators: BTreeMap<String, GeneratorCounts>,
+    /// `total_rejected` broken down by stable reason code.
+    pub rejected_by_reason: BTreeMap<String, u64>,
     /// Problems written to `verified/problems.jsonl`.
     pub total_verified: usize,
     /// Rejections written to `rejected/rejections.jsonl`.
     pub total_rejected: usize,
+}
+
+/// Where and under what identity a run logs itself to the generation run
+/// log (`docs/cadence.md`, `schemas/run-log.schema.json`).
+///
+/// `None` in [`RunConfig::run_log`] disables logging for library callers; the
+/// `tutor-generate` CLI always logs — a batch with no log entry does not
+/// exist for release purposes.
+pub struct RunLogTarget {
+    /// Path of the append-only JSONL run log. The CLI defaults to
+    /// `<out>/run-log.jsonl` so the log lives with the batch it describes.
+    pub path: PathBuf,
+    /// Dataset family the run feeds; `null` in the entry when `None`.
+    pub family: Option<String>,
+    /// Generation spec reference (issue ref or URL); `null` when `None`.
+    pub spec: Option<String>,
+    /// Run id of the earlier run this one replaces; `None` records that the
+    /// run replaces nothing — the log never infers it, so a rerun that
+    /// supersedes an earlier batch must name that run explicitly.
+    pub replaces: Option<String>,
 }
 
 /// Settings for [`run`].
@@ -348,6 +373,9 @@ pub struct RunConfig {
     pub schema_json: serde_json::Value,
     /// Schema identifier recorded in the manifest (usually the file path used).
     pub schema: String,
+    /// Run-log destination; `Some` appends a `run` entry after the batch is
+    /// committed.
+    pub run_log: Option<RunLogTarget>,
 }
 
 /// Generate `count` seeded problems per generator, verify each on the opposite
@@ -357,6 +385,13 @@ pub struct RunConfig {
 /// A run that verifies nothing writes only rejections and the manifest — it
 /// never truncates a `verified/problems.jsonl` left by an earlier successful
 /// run in the same directory.
+///
+/// When `config.run_log` is set, the run appends a `run` entry to the
+/// generation run log after the batch is committed — including a run that
+/// verified nothing, since a rejected-everything run is still a run. The
+/// append is proven out first: the log destination must not alias a batch
+/// artifact and the entry (chain, `replaces`, format) must be appendable —
+/// a doomed append fails before any earlier batch is replaced, not after.
 pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
     use rayon::prelude::*;
 
@@ -365,6 +400,12 @@ pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
 
     let endpoint = config.endpoint.clone();
     let timeout = config.timeout;
+    // Best-effort provenance ping: the Julia version is recorded on the
+    // run-log entry when the worker answers. A missing worker costs one
+    // (capped) timeout here; candidates then fail per-generator anyway.
+    let worker = MathClient::connect(&endpoint, timeout.min(Duration::from_secs(5)))
+        .ok()
+        .and_then(|mut client| client.ping().ok());
     let seed_end = config
         .seed_start
         .checked_add(config.count)
@@ -408,10 +449,24 @@ pub fn run(config: &RunConfig) -> std::io::Result<RunReport> {
         endpoint: config.endpoint.clone(),
         seeds: format!("{}..{}", config.seed_start, seed_end),
         generators: generator_counts(config, &verified, &rejected),
+        rejected_by_reason: reason_counts(&rejected),
         total_verified: verified.len(),
         total_rejected: rejected.len(),
     };
-    emit_outputs(config, &verified, &rejected, &report)?;
+    let manifest_text = manifest_text(&report, &verified, &rejected)?;
+    let summary = RunSummary {
+        report: &report,
+        worker: worker.as_ref(),
+        manifest_text: &manifest_text,
+    };
+    publish_run(
+        config,
+        &summary,
+        &RunOutputs {
+            verified: &verified,
+            rejected: &rejected,
+        },
+    )?;
     Ok(report)
 }
 
@@ -502,7 +557,7 @@ fn emit_outputs(
     config: &RunConfig,
     verified: &[Problem],
     rejected: &[RejectRecord],
-    report: &RunReport,
+    manifest_text: &str,
 ) -> std::io::Result<()> {
     let verified_dir = config.out_dir.join("verified");
     let rejected_dir = config.out_dir.join("rejected");
@@ -524,11 +579,58 @@ fn emit_outputs(
             .map(serde_json::to_value)
             .map(|v| v.unwrap()),
     )?;
-    let manifest = serde_json::to_string_pretty(report).map_err(|e| io_err(e.to_string()))?;
     let manifest_path = config.out_dir.join("manifest.json");
-    let tmp = manifest_path.with_extension("json.tmp");
-    std::fs::write(&tmp, manifest)?;
+    let tmp = config.out_dir.join(MANIFEST_STAGING_FILE);
+    std::fs::write(&tmp, manifest_text)?;
     publish(&tmp, &manifest_path)
+}
+
+/// Serialize `manifest.json`: the report plus a sha256/bytes entry per
+/// artifact file this run commits, so the manifest digest recorded in the
+/// run log binds the batch's contents, not just its counts.
+fn manifest_text(
+    report: &RunReport,
+    verified: &[Problem],
+    rejected: &[RejectRecord],
+) -> std::io::Result<String> {
+    let mut artifacts = serde_json::Map::new();
+    if !verified.is_empty() {
+        artifacts.insert(
+            "verified/problems.jsonl".to_owned(),
+            jsonl_metadata(
+                verified
+                    .iter()
+                    .map(serde_json::to_value)
+                    .map(|v| v.unwrap()),
+            ),
+        );
+    }
+    artifacts.insert(
+        "rejected/rejections.jsonl".to_owned(),
+        jsonl_metadata(
+            rejected
+                .iter()
+                .map(serde_json::to_value)
+                .map(|v| v.unwrap()),
+        ),
+    );
+    let mut manifest = serde_json::to_value(report).map_err(|e| io_err(e.to_string()))?;
+    manifest["artifacts"] = serde_json::Value::Object(artifacts);
+    serde_json::to_string_pretty(&manifest).map_err(|e| io_err(e.to_string()))
+}
+
+/// sha256 + byte count of `rows` rendered as JSONL — the same bytes
+/// `write_jsonl` emits — so the manifest describes the committed file.
+fn jsonl_metadata(rows: impl Iterator<Item = serde_json::Value>) -> serde_json::Value {
+    let mut rendered = Vec::new();
+    for row in rows {
+        rendered.extend_from_slice(serde_json::to_string(&row).unwrap().as_bytes());
+        rendered.push(b'\n');
+    }
+    serde_json::json!({
+        "sha256": tutor_runlog::sha256_hex(&rendered),
+        "bytes": rendered.len(),
+    })
 }
 
 /// Write `rows` to a temporary sibling of `path`, then rename it into place.
@@ -551,6 +653,180 @@ fn publish(tmp: &Path, dest: &Path) -> std::io::Result<()> {
         std::fs::remove_file(dest)?;
     }
     std::fs::rename(tmp, dest)
+}
+
+/// Rejections grouped by stable reason code.
+fn reason_counts(rejected: &[RejectRecord]) -> BTreeMap<String, u64> {
+    let mut counts = BTreeMap::new();
+    for record in rejected {
+        *counts.entry(record.code.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+/// Staging name the manifest is written to before its atomic rename.
+const MANIFEST_STAGING_FILE: &str = "manifest.json.tmp";
+
+/// Lock file serializing `run` publishes into one output directory.
+const RUN_LOCK_FILE: &str = ".run.lock";
+
+/// What a finished run reports to its log entry.
+struct RunSummary<'a> {
+    report: &'a RunReport,
+    worker: Option<&'a WorkerInfo>,
+    /// The manifest text about to be committed.
+    manifest_text: &'a str,
+}
+
+fn log_err(err: tutor_runlog::RunLogError) -> std::io::Error {
+    io_err(format!("run log append failed: {err}"))
+}
+
+/// The rows a run publishes.
+struct RunOutputs<'a> {
+    verified: &'a [Problem],
+    rejected: &'a [RejectRecord],
+}
+
+/// Publish a finished run and append its log entry.
+///
+/// One run publishes into an output directory at a time (`.run.lock`), so
+/// two runs cannot interleave their artifact and manifest renames. With a
+/// run log, the destination is checked before anything is created (it must
+/// not alias, or sit under, a batch artifact or staging file — a misplaced
+/// `--run-log` would overwrite the output it should only describe), then
+/// the log's append lock is taken and the entry — existing chain,
+/// `replaces` resolution, record format — is validated before any artifact
+/// is replaced: a bad path or a `replaces` naming no earlier run fails
+/// while the previous batch is intact. The log is opened for append before
+/// publication as well, so an unwritable destination cannot strand a
+/// committed batch merely because the open fails. The lock is held through
+/// the append, so nothing can change the log between the check and the entry.
+fn publish_run(
+    config: &RunConfig,
+    summary: &RunSummary<'_>,
+    outputs: &RunOutputs<'_>,
+) -> std::io::Result<()> {
+    let _out_lock = LockFile::acquire(&config.out_dir.join(RUN_LOCK_FILE)).map_err(|err| {
+        io_err(format!(
+            "output directory {}: {err}",
+            config.out_dir.display()
+        ))
+    })?;
+    let emit = || {
+        emit_outputs(
+            config,
+            outputs.verified,
+            outputs.rejected,
+            summary.manifest_text,
+        )
+    };
+    let Some(target) = config.run_log.as_ref() else {
+        return emit();
+    };
+    tutor_runlog::ensure_log_path_is_clear(&target.path, &reserved_run_paths(config))
+        .map_err(log_err)?;
+    let log = RunLog::at(&target.path);
+    let mut locked = log.lock().map_err(log_err)?;
+    let record = run_record(config, target, summary);
+    locked.check(&record).map_err(log_err)?;
+    locked.open_append().map_err(log_err)?;
+    emit()?;
+    locked.append(record).map_err(log_err)?;
+    Ok(())
+}
+
+/// Paths a run log may not take: the batch's artifacts, staging and lock
+/// files, the output directory itself, and the schema it validates with.
+fn reserved_run_paths(config: &RunConfig) -> [PathBuf; 9] {
+    [
+        config.out_dir.clone(),
+        config.out_dir.join("verified"),
+        config.out_dir.join("rejected"),
+        config.out_dir.join("verified/problems.jsonl"),
+        config.out_dir.join("rejected/rejections.jsonl"),
+        config.out_dir.join("manifest.json"),
+        config.out_dir.join(MANIFEST_STAGING_FILE),
+        config.out_dir.join(RUN_LOCK_FILE),
+        PathBuf::from(&config.schema),
+    ]
+}
+
+/// This run's entry for the generation run log: counts from the report
+/// (never estimated), the manifest digest of the text about to be committed,
+/// and Julia versions from the worker's `ping` reply when it answered.
+fn run_record(config: &RunConfig, target: &RunLogTarget, summary: &RunSummary<'_>) -> Record {
+    let RunSummary {
+        report,
+        worker,
+        manifest_text,
+    } = *summary;
+    let mut environment = tutor_runlog::environment();
+    if let Some(info) = worker {
+        environment.julia_version = Some(info.julia_version.clone());
+        environment.julia_worker_version = Some(info.worker_version.clone());
+    }
+    // Overflow was checked in `run`.
+    let seed_end = config.seed_start + config.count;
+    let mut seen = std::collections::HashSet::new();
+    let mut generators: Vec<&'static GeneratorSpec> = config
+        .generators
+        .iter()
+        .filter(|spec| seen.insert(spec.name))
+        .copied()
+        .collect();
+    generators.sort_by_key(|spec| spec.name);
+    let generators = generators
+        .into_iter()
+        .map(|spec| GeneratorUse {
+            name: spec.name.to_owned(),
+            version: spec.version,
+            language: match spec.backend {
+                Backend::Rust => GeneratorLanguage::Rust,
+                Backend::Julia => GeneratorLanguage::Julia,
+            },
+            seeds: SeedUse {
+                start: config.seed_start,
+                end: Some(seed_end),
+                derivation: None,
+            },
+            parameter_ranges: parameter_ranges(spec),
+        })
+        .collect();
+    Record::Run(Box::new(RunRecord {
+        run_id: tutor_runlog::new_run_id(),
+        family: target.family.clone(),
+        spec: target.spec.clone(),
+        stage: Stage::Generate,
+        replaces: target.replaces.clone(),
+        environment,
+        generators,
+        teacher: None,
+        counts: Counts {
+            generated: report.generators.values().map(|c| c.generated as u64).sum(),
+            verified: report.total_verified as u64,
+            rejected: report.total_rejected as u64,
+            rejected_by_reason: report.rejected_by_reason.clone(),
+            deduplicated: None,
+            decontaminated: None,
+            exported: None,
+        },
+        output: OutputRef {
+            directory: config.out_dir.display().to_string(),
+            manifest_sha256: Some(tutor_runlog::sha256_hex(manifest_text.as_bytes())),
+        },
+        split_manifest_sha256: None,
+        qa: None,
+    }))
+}
+
+/// A generator's declared draw bounds as the entry's `parameter_ranges`.
+fn parameter_ranges(spec: &GeneratorSpec) -> BTreeMap<String, serde_json::Value> {
+    serde_json::to_value(spec.difficulty)
+        .ok()
+        .and_then(|value| value.as_object().cloned())
+        .map(|map| map.into_iter().collect())
+        .unwrap_or_default()
 }
 
 /// Per-generator generated/verified/rejected counts for the manifest.
