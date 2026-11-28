@@ -320,15 +320,23 @@ mod tests {
         std::fs::create_dir(&directory).unwrap();
         std::fs::write(&file, b"original").unwrap();
         for suffix in [".", " "] {
-            assert!(
-                publish_artifacts(&ordinary_root.join(format!("replay{suffix}")), |_| Ok(()))
-                    .is_err()
-            );
-            assert!(
-                publish_file(&ordinary_root.join(format!("request{suffix}")), |file| file
-                    .write_all(b"replacement"))
-                .is_err()
-            );
+            let mut directory_staged = false;
+            let directory_result =
+                publish_artifacts(&ordinary_root.join(format!("replay{suffix}")), |staged| {
+                    std::fs::write(staged.join("candidate.json"), b"candidate")?;
+                    std::fs::write(staged.join("report.json"), b"report")?;
+                    directory_staged = true;
+                    Ok(())
+                });
+            assert_eq!((directory_result.is_err(), directory_staged), (true, true));
+            let mut file_staged = false;
+            let file_result =
+                publish_file(&ordinary_root.join(format!("request{suffix}")), |file| {
+                    file.write_all(b"replacement")?;
+                    file_staged = true;
+                    Ok(())
+                });
+            assert_eq!((file_result.is_err(), file_staged), (true, true));
         }
         assert_eq!(std::fs::read(file).unwrap(), b"original");
         assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);
