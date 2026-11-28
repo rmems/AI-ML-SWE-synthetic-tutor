@@ -28,6 +28,9 @@ Inputs are built into the binary: the existing static
 Rust's existing verifier recomputes the answer and replays the steps before
 the mock drafts one correction and one confirmation. Production schema, policy
 and answer-grounding checks then validate the drafts separately.
+The correction wrongly applies the simple power rule to the entire polynomial
+as a base, matching `derivatives.power_rule_overgeneralised`; the confirmation
+extends the quadratic to a cubic. No taxonomy or topic mapping is changed.
 
 Outputs under the chosen directory:
 
@@ -109,10 +112,14 @@ files/directories. Omitting `--config` on `prepare-request` uses the offline moc
 
 `request.json` contains a SHA-256 `request_id` bound to its version-2 `payload`:
 teacher selection, instruction, verified static problem, and fixed correction
-dialogue. Version 1 handoff files must be regenerated after the routing change.
+dialogue. Regenerate older handoff files after changes to routing, fixture or
+digest encoding; replay accepts only this implementation's exact payload.
 `send_authorized` is always false: producing a file grants no permission
 to send it. Replaying recomputes the fixture and checks the whole request against
 this implementation; editing/re-hashing its problem, policy or approval fails.
+The embedded draft is already marked `mock_teacher_surface`; extracting it with
+its matching verified problem still fails release admission. Quality checks use
+an in-memory copy and never write or return a draft with an admissible marker.
 
 After rights and explicit run approval are resolved outside this rehearsal,
 Hermes can give the request file to the selected teacher with its existing
@@ -155,6 +162,12 @@ replace independent review of future teacher wording.
 
 `replay/candidate.json` is quarantined. Its provenance binds the request ID,
 request/response file hashes, teacher, response origin, fixture and dialogue.
+`dialogue_sha256` hashes the nested dialogue object encoded as compact UTF-8 JSON
+with recursively sorted object keys and no whitespace (`serde_json::Value`
+serialization). The request ID uses the same encoding for `payload`. Hashes of
+request, response and candidate files instead cover their exact on-disk bytes.
+This is the repository's JSON encoding, not a general RFC 8785 canonicalizer;
+copy the emitted request ID into responses rather than recomputing it in Hermes.
 It also records the intended provider options and keeps both
 `provider_execution_verified` and `routing_execution_verified` false. Echoed
 metadata does not prove the serving provider or routing actually used.

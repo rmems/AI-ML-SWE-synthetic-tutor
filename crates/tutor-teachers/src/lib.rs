@@ -19,3 +19,9 @@ pub fn sha256(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     format!("{:x}", Sha256::digest(bytes))
 }
+
+// Hash the compact JSON Value encoding used inside emitted envelopes: recursively
+// sorted object keys, UTF-8 and no whitespace. Not an RFC 8785 canonicalizer.
+pub(crate) fn json_sha256(value: &impl serde::Serialize) -> Result<String, Error> {
+    Ok(sha256(&serde_json::to_vec(&serde_json::to_value(value)?)?))
+}

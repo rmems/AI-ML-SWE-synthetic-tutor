@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use tutor_build::{checks, input::InputLine};
 use tutor_schema::{DialogueRow, Problem};
 
-use crate::{Error, Provider, TeacherConfig, sha256};
+use crate::{Error, Provider, TeacherConfig, json_sha256, sha256};
 
 // Reuse the existing static schema fixture. This is not a fresh Julia run.
 pub(crate) const PROBLEM: &str = include_str!("../../tutor-schema/tests/fixtures/problem.json");
@@ -27,15 +27,10 @@ pub fn mock_smoke(config: &TeacherConfig, out: &Path) -> Result<Value, Error> {
     let problems = BTreeMap::from([(problem.problem_id.clone(), problem.clone())]);
     let mut candidates = String::new();
     for correction in [false, true] {
-        let mut row = draft_fixture(&problem, correction)?;
-        // Reuse production schema/policy/grounding checks before marking the
-        // result as a mock. The on-disk mock marker must never pass assembly.
+        let row = draft_fixture(&problem, correction)?;
+        // Quality validation is separate from admission; the draft is already
+        // quarantined and keeps that marker in every emitted artifact.
         check_draft(&row, &problems, &validator)?;
-        row.provenance
-            .generator
-            .as_mut()
-            .ok_or("missing draft generator")?
-            .name = GENERATOR.into();
         let candidate = json!({
             "kind": "mock_teacher_candidate_v1",
             "training_approved": false,
@@ -45,7 +40,7 @@ pub fn mock_smoke(config: &TeacherConfig, out: &Path) -> Result<Value, Error> {
                 "teacher": config,
                 "fixture_sha256": sha256(PROBLEM.as_bytes()),
                 "config_sha256": sha256(&serde_json::to_vec(config)?),
-                "dialogue_sha256": sha256(&serde_json::to_vec(&row)?),
+                "dialogue_sha256": json_sha256(&row)?,
                 "implementation_version": env!("CARGO_PKG_VERSION"),
                 "fixture_version": 1,
                 "verification_scope": "rust_recompute_of_static_fixture_not_fresh_julia_run"
@@ -78,10 +73,20 @@ pub(crate) fn check_draft(
     problems: &BTreeMap<String, Problem>,
     validator: &jsonschema::Validator,
 ) -> Result<(), Error> {
+    // The production gate rejects mock markers before grounding. Use a private,
+    // in-memory copy to exercise those quality checks; never return or write it.
+    // The original remains marked and is independently rejected at admission.
+    let mut quality_only = row.clone();
+    quality_only
+        .provenance
+        .generator
+        .as_mut()
+        .ok_or("missing draft generator")?
+        .name = "offline_fixture_draft".into();
     let input = InputLine {
         file: "mock-in-memory.json".into(),
         line: None,
-        text: serde_json::to_string(row)?,
+        text: serde_json::to_string(&quality_only)?,
     };
     checks::check(&input, Some(problems), validator, &mut HashSet::new())
         .map_err(|rejected| format!("mock candidate validation failed: {}", rejected.code))?;
@@ -94,17 +99,21 @@ pub(crate) fn draft_fixture(problem: &Problem, correction: bool) -> Result<Dialo
     let mut turns = vec![json!({"role": "system", "content": PROMPT})];
     if correction {
         turns.extend([
-            json!({"role": "student", "kind": "attempt", "content": format!("{} My attempt: f'(x) = 6x^2 - 2, so f'(2) = 22.", problem.statement)}),
-            json!({"role": "tutor", "kind": "diagnosis", "content": "You multiplied the quadratic coefficient by its exponent. What happens to that exponent when you differentiate?"}),
-            json!({"role": "student", "kind": "attempt", "content": "I left the exponent unchanged. I need to reduce it."}),
-            json!({"role": "tutor", "kind": "hint", "hint_level": 1, "content": "Apply both parts of the power rule, then evaluate at the requested point."}),
+            json!({"role": "student", "kind": "attempt", "content": format!("{} My attempt: write the entire polynomial as (3x^2 - 2x + 5)^1. Applying the power rule directly gives 1*(3x^2 - 2x + 5)^0 = 1, so f'(2) = 1.", problem.statement)}),
+            json!({"role": "tutor", "kind": "diagnosis", "content": "You used the entire polynomial as the base. Does the simple power rule assume the base is x itself?"}),
+            json!({"role": "student", "kind": "attempt", "content": "I treated the whole polynomial as if it were the variable x."}),
+            json!({"role": "tutor", "kind": "hint", "hint_level": 1, "content": "Return to the original sum and apply the power rule separately to its powers of x before evaluating."}),
             json!({"role": "student", "kind": "attempt", "content": "The derivative is 6x - 2, so f'(2) = 10."}),
         ]);
     } else {
         turns.push(json!({"role": "student", "kind": "attempt", "content": format!("{} My attempt: f'(x) = 6x - 2, so f'(2) = 10.", problem.statement)}));
     }
-    turns.push(json!({"role": "tutor", "kind": "closing", "reveals_final_answer": true,
-        "content": "Confirmed: f'(2) = 10. Multiply by the exponent and reduce it by one, then substitute the point. Try one: differentiate g(x) = x^2 + x at the same point."}));
+    let closing = if correction {
+        "Confirmed: f'(2) = 10. The simple power rule applies directly to powers of x, not to an arbitrary expression used as the base. Try one: differentiate g(x) = x^2 + x at the same point."
+    } else {
+        "Confirmed: f'(2) = 10. You differentiated each term and substituted correctly. Try a harder variant: differentiate g(x) = x^3 - 2x^2 + x at the same point."
+    };
+    turns.push(json!({"role": "tutor", "kind": "closing", "reveals_final_answer": true, "content": closing}));
     Ok(DialogueRow::from_value(json!({
         "schema_version": 1,
         "row_id": if correction {"mock-power-correction-v1"} else {"mock-power-confirmation-v1"},
@@ -116,7 +125,7 @@ pub(crate) fn draft_fixture(problem: &Problem, correction: bool) -> Result<Dialo
         "hint_levels_reached": if correction {vec![1]} else {vec![]},
         "turns": turns,
         "provenance": {"source": "generated", "taxonomy_version": 1,
-            "generator": {"name": "offline_fixture_draft", "version": 1}},
+            "generator": {"name": GENERATOR, "version": 1}},
         "gold": false
     }))?)
 }

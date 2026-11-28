@@ -61,6 +61,7 @@ fn mock_is_repeatable_validated_and_never_exportable() {
         let candidate: Value = serde_json::from_str(text).unwrap();
         assert_eq!(candidate["training_approved"], false);
         assert_eq!(candidate["export_approved"], false);
+        assert_dialogue_digest(&candidate);
         assert!(!validator.is_valid(&candidate));
         let problem = Problem::from_value(candidate["problem"].clone()).unwrap();
         assert_eq!(
@@ -210,41 +211,40 @@ fn openrouter_rejects_other_pins_and_altered_routing() {
     let temp = Temp::new();
     let (request, response) = handoff_fixture(&temp);
     let req: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
-    for field in [
-        "model",
-        "endpoint",
-        "route",
-        "serving_vendor",
-        "api_key_env",
+    for (field, value) in [
+        ("model", "different-model"),
+        ("endpoint", "https://example.invalid/api/v1"),
+        ("route", "different-route"),
+        ("serving_vendor", "different-vendor"),
+        ("api_key_env", "DIFFERENT_API_KEY"),
     ] {
         let mut config = req["payload"]["teacher"].clone();
-        config[field] = "different".into();
+        config[field] = value.into();
         let path = temp.0.join("wrong-pin.json");
         std::fs::write(&path, config.to_string()).unwrap();
-        assert!(
-            !cli(&["check-config", "--config", path.to_str().unwrap()])
-                .status
-                .success()
-        );
+        let result = cli(&["check-config", "--config", path.to_str().unwrap()]);
+        assert!(!result.status.success());
+        assert!(String::from_utf8_lossy(&result.stderr).contains("pinned OpenRouter pilot config"));
     }
-    let mut changed = req.clone();
-    changed["payload"]["openrouter_provider"]["allow_fallbacks"] = true.into();
-    std::fs::write(&request, changed.to_string()).unwrap();
-    assert_eq!(
-        replay(&request, &response, &temp.0.join("bad-routing"))
-            .status
-            .code(),
-        Some(1)
-    );
-    changed = req;
-    changed["payload"]["openrouter_provider"]["only"] = serde_json::json!(["different"]);
-    std::fs::write(&request, changed.to_string()).unwrap();
-    assert_eq!(
-        replay(&request, &response, &temp.0.join("bad-provider"))
-            .status
-            .code(),
-        Some(1)
-    );
+    for (field, value) in [
+        ("allow_fallbacks", serde_json::json!(true)),
+        ("only", serde_json::json!(["different"])),
+    ] {
+        let mut changed = req.clone();
+        changed["payload"]["openrouter_provider"][field] = value;
+        // Keep both digest and response binding valid: policy must still reject.
+        changed["request_id"] =
+            tutor_teachers::sha256(changed["payload"].to_string().as_bytes()).into();
+        let mut resp: Value = serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
+        resp["request_id"] = changed["request_id"].clone();
+        std::fs::write(&request, changed.to_string()).unwrap();
+        std::fs::write(&response, resp.to_string()).unwrap();
+        let out = temp.0.join("bad-routing");
+        let result = replay(&request, &response, &out);
+        assert_eq!(result.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("verified fixture and policy"));
+        assert!(!out.exists());
+    }
 }
 
 fn replay(request: &std::path::Path, response: &std::path::Path, out: &std::path::Path) -> Output {
@@ -265,6 +265,7 @@ fn assert_replay_provenance(
     request: &std::path::Path,
     response: &std::path::Path,
 ) {
+    assert_dialogue_digest(candidate);
     assert_eq!(candidate["provenance"]["request_id"], req["request_id"]);
     assert_eq!(
         candidate["provenance"]["request_sha256"],
@@ -288,7 +289,14 @@ fn assert_replay_provenance(
     );
 }
 
-fn assert_teacher_admission_blocked(candidate: &Value) {
+fn assert_dialogue_digest(candidate: &Value) {
+    assert_eq!(
+        candidate["provenance"]["dialogue_sha256"],
+        tutor_teachers::sha256(candidate["dialogue"].to_string().as_bytes())
+    );
+}
+
+fn assert_admission_blocked(candidate: &Value, expected_code: &str) {
     let validator = jsonschema::validator_for(&tutor_schema::dialogue_json_schema()).unwrap();
     let problem = Problem::from_value(candidate["problem"].clone()).unwrap();
     let problems = BTreeMap::from([(problem.problem_id.clone(), problem)]);
@@ -301,7 +309,7 @@ fn assert_teacher_admission_blocked(candidate: &Value) {
         checks::check(&input, Some(&problems), &validator, &mut HashSet::new())
             .unwrap_err()
             .code,
-        "teacher_admission_blocked"
+        expected_code
     );
 }
 
@@ -311,6 +319,11 @@ fn hermes_handoff_replays_and_admission_stays_blocked() {
     let (request, response) = handoff_fixture(&temp);
     let req: Value = serde_json::from_str(&std::fs::read_to_string(&request).unwrap()).unwrap();
     assert_eq!(req["payload"]["send_authorized"], false);
+    assert_eq!(
+        req["request_id"],
+        tutor_teachers::sha256(req["payload"].to_string().as_bytes())
+    );
+    assert_admission_blocked(&req["payload"], "mock_teacher_not_exportable");
     let mut outputs = Vec::new();
     for dir in ["a", "b"] {
         let out = temp.0.join(dir);
@@ -329,7 +342,7 @@ fn hermes_handoff_replays_and_admission_stays_blocked() {
         assert_eq!(report["candidate_sha256"], tutor_teachers::sha256(&bytes));
         let candidate: Value = serde_json::from_slice(&bytes).unwrap();
         assert_replay_provenance(&candidate, &req, &request, &response);
-        assert_teacher_admission_blocked(&candidate);
+        assert_admission_blocked(&candidate, "teacher_admission_blocked");
         outputs.push(bytes);
     }
     assert_eq!(outputs[0], outputs[1]);

@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use tutor_build::{checks, input::InputLine};
 use tutor_schema::{DialogueRow, Problem};
 
-use crate::{Error, Provider, TeacherConfig, sha256, smoke};
+use crate::{Error, Provider, TeacherConfig, json_sha256, sha256, smoke};
 
 const VERSION: u32 = 2;
 const LIMIT: u64 = 64 * 1024;
@@ -85,7 +85,7 @@ fn request(config: &TeacherConfig) -> Result<Request, Error> {
         problem,
         dialogue,
     };
-    let request_id = sha256(&serde_json::to_vec(&payload)?);
+    let request_id = json_sha256(&payload)?;
     Ok(Request {
         request_id,
         payload,
@@ -136,8 +136,8 @@ pub fn synthetic_response(request_path: &Path, out: &Path) -> Result<(), Error> 
         version: VERSION, request_id: request.request_id,
         teacher: request.payload.teacher, origin: Origin::SyntheticMock,
         replacements: vec![
-            Replacement { turn_index: 2, content: "You handled the coefficient. When taking a derivative, how should the exponent change?".into() },
-            Replacement { turn_index: 4, content: "Use both steps of the power rule before evaluating at the given point.".into() },
+            Replacement { turn_index: 2, content: "What is the base in the simple power rule: x, or the entire expression you used?".into() },
+            Replacement { turn_index: 4, content: "Differentiate the original polynomial term by term using powers of x, then substitute the given point.".into() },
         ],
     };
     write_new(out, &response)
@@ -206,7 +206,7 @@ pub fn replay_response(
         "provenance": {
             "request_id": request.request_id, "request_sha256": sha256(request_raw.as_bytes()),
             "response_sha256": sha256(response_raw.as_bytes()), "response_origin": response.origin,
-            "teacher": response.teacher, "dialogue_sha256": sha256(&serde_json::to_vec(&row)?),
+            "teacher": response.teacher, "dialogue_sha256": json_sha256(&row)?,
             "intended_openrouter_provider": request.payload.openrouter_provider,
             "provider_execution_verified": false,
             "routing_execution_verified": false,
