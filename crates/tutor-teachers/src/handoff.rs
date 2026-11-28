@@ -49,6 +49,15 @@ enum Origin {
     Recorded,
 }
 
+impl Origin {
+    fn quarantine(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::SyntheticMock => ("mock_teacher_surface", "mock_teacher_not_exportable"),
+            Self::Recorded => ("deferred_teacher_surface", "teacher_admission_blocked"),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Replacement {
@@ -184,11 +193,12 @@ pub fn replay_response(
     let problems = BTreeMap::from([(problem.problem_id.clone(), problem.clone())]);
     let validator = jsonschema::validator_for(&tutor_schema::dialogue_json_schema())?;
     smoke::check_draft(&row, &problems, &validator)?;
+    let (generator, admission_code) = response.origin.quarantine();
     row.provenance
         .generator
         .as_mut()
         .ok_or("missing draft generator")?
-        .name = "deferred_teacher_surface".into();
+        .name = generator.into();
     let input = InputLine {
         file: "replay-candidate.json".into(),
         line: None,
@@ -197,7 +207,7 @@ pub fn replay_response(
     let rejection = checks::check(&input, Some(&problems), &validator, &mut HashSet::new())
         .err()
         .ok_or("teacher admission unexpectedly allowed; refusing to write")?;
-    if rejection.code != "teacher_admission_blocked" {
+    if rejection.code != admission_code {
         return Err("unexpected admission rejection".into());
     }
     let candidate = json!({
@@ -221,8 +231,9 @@ pub fn replay_response(
         "blockers": ["RM-2500 exact model/route/vendor rights evidence", "explicit run approval", "release schema lacks teacher rights provenance"],
         "live_generation": "blocked", "training": "blocked", "export": "blocked"
     });
-    std::fs::create_dir(out)?;
-    write_new(&out.join("candidate.json"), &candidate)?;
-    write_new(&out.join("report.json"), &report)?;
+    crate::publication::publish_replay(out, |staged| {
+        write_new(&staged.join("candidate.json"), &candidate)?;
+        write_new(&staged.join("report.json"), &report)
+    })?;
     Ok(report)
 }

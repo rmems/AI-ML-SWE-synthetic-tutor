@@ -8,11 +8,13 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+atomicwrites.workspace = true
 clap.workspace = true
 jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
+tempfile = "3"
 tutor-schema.workspace = true
 tutor-verify.workspace = true
 tutor-build = { path = "../tutor-build" }

@@ -1707,11 +1707,13 @@ dependencies = [
 name = "tutor-teachers"
 version = "0.1.0"
 dependencies = [
+ "atomicwrites",
  "clap",
  "jsonschema",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "tutor-build",
  "tutor-schema",
  "tutor-verify",

@@ -338,11 +338,15 @@ fn hermes_handoff_replays_and_admission_stays_blocked() {
         let report: Value =
             serde_json::from_slice(&std::fs::read(out.join("report.json")).unwrap()).unwrap();
         assert_eq!(report["admitted"], false);
-        assert_eq!(report["admission_code"], "teacher_admission_blocked");
+        assert_eq!(report["admission_code"], "mock_teacher_not_exportable");
         assert_eq!(report["candidate_sha256"], tutor_teachers::sha256(&bytes));
         let candidate: Value = serde_json::from_slice(&bytes).unwrap();
         assert_replay_provenance(&candidate, &req, &request, &response);
-        assert_admission_blocked(&candidate, "teacher_admission_blocked");
+        assert_eq!(
+            candidate["dialogue"]["provenance"]["generator"]["name"],
+            "mock_teacher_surface"
+        );
+        assert_admission_blocked(&candidate, "mock_teacher_not_exportable");
         outputs.push(bytes);
     }
     assert_eq!(outputs[0], outputs[1]);
@@ -355,17 +359,69 @@ fn hermes_handoff_replays_and_admission_stays_blocked() {
             .status
             .success()
     );
+}
 
-    // A synthetic fixture exercising the recorded-response parser, not a real call.
+#[test]
+fn recorded_response_keeps_deferred_admission_and_unverified_execution() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    // Invented wording exercises the recorded parser, not a real provider call.
     let mut recorded: Value = serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
     recorded["origin"] = "recorded".into();
     std::fs::write(&response, recorded.to_string()).unwrap();
+    let out = temp.0.join("recorded");
+    assert_eq!(replay(&request, &response, &out).status.code(), Some(2));
+    let candidate: Value =
+        serde_json::from_slice(&std::fs::read(out.join("candidate.json")).unwrap()).unwrap();
+    let report: Value =
+        serde_json::from_slice(&std::fs::read(out.join("report.json")).unwrap()).unwrap();
     assert_eq!(
-        replay(&request, &response, &temp.0.join("recorded"))
-            .status
-            .code(),
-        Some(2)
+        candidate["dialogue"]["provenance"]["generator"]["name"],
+        "deferred_teacher_surface"
     );
+    assert_eq!(candidate["provenance"]["response_origin"], "recorded");
+    assert_eq!(
+        candidate["provenance"]["provider_execution_verified"],
+        false
+    );
+    assert_eq!(candidate["provenance"]["routing_execution_verified"], false);
+    assert_eq!(candidate["training_approved"], false);
+    assert_eq!(candidate["export_approved"], false);
+    assert_eq!(report["admission_code"], "teacher_admission_blocked");
+    assert_eq!(report["admitted"], false);
+    assert_admission_blocked(&candidate, "teacher_admission_blocked");
+}
+
+#[test]
+fn replay_io_failures_preserve_existing_paths_without_staging_leaks() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let file = temp.0.join("file");
+    let directory = temp.0.join("empty-directory");
+    let missing_parent = temp.0.join("missing/replay");
+    std::fs::write(&file, b"original").unwrap();
+    std::fs::create_dir(&directory).unwrap();
+    for out in [&file, &directory, &missing_parent] {
+        assert_eq!(replay(&request, &response, out).status.code(), Some(1));
+    }
+    assert_eq!(std::fs::read(file).unwrap(), b"original");
+    assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);
+    assert!(!missing_parent.exists());
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 4);
+}
+
+#[cfg(unix)]
+#[test]
+fn replay_refuses_dangling_symlinks_without_touching_the_target() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let out = temp.0.join("link");
+    let target = temp.0.join("absent");
+    std::os::unix::fs::symlink(&target, &out).unwrap();
+    assert_eq!(replay(&request, &response, &out).status.code(), Some(1));
+    assert_eq!(std::fs::read_link(out).unwrap(), target);
+    assert!(!target.exists());
+    assert_eq!(std::fs::read_dir(&temp.0).unwrap().count(), 3);
 }
 
 #[test]

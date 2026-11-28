@@ -109,6 +109,16 @@ cargo run --offline --locked -p tutor-teachers -- replay-response \
 Exit 1 means invalid input, failed verification/validation, or I/O failure.
 Prepare/mock-response return 0 on success. These commands refuse existing output
 files/directories. Omitting `--config` on `prepare-request` uses the offline mock.
+Replay stages both output files in a temporary sibling directory and publishes
+the complete directory with one no-replace move. Existing files, directories
+(including empty ones), and symlinks are refused, even if created during staging.
+Staging errors remove the temporary directory and leave the destination absent,
+so the same output path can be retried. This uses the repository's existing
+`atomicwrites` helper on Linux/WSL and requires filesystem support for a
+no-replace directory rename; unsupported filesystems fail without publishing.
+A failure syncing the parent after the move can leave a complete pair despite
+exit 1. Abrupt termination can leave a temporary sibling; crash durability is
+not guaranteed. Consumers should read only the requested output directory.
 
 `request.json` contains a SHA-256 `request_id` bound to its version-2 `payload`:
 teacher selection, instruction, verified static problem, and fixed correction
@@ -172,8 +182,10 @@ It also records the intended provider options and keeps both
 `provider_execution_verified` and `routing_execution_verified` false. Echoed
 metadata does not prove the serving provider or routing actually used.
 `replay/report.json` binds the candidate file hash and reports the actual release
-admission rejection `teacher_admission_blocked`. Both wrapped and extracted
-teacher-marked dialogues remain ineligible for release assembly. Missing rights
+admission rejection. Synthetic responses permanently retain the row generator
+`mock_teacher_surface` and rejection `mock_teacher_not_exportable`, including
+after extraction. Recorded responses use `deferred_teacher_surface` and
+`teacher_admission_blocked`. Both remain ineligible for release assembly. Missing rights
 evidence or run approval cannot be supplied as a response flag; such fields are
 rejected, and there is no admission override. Even a valid recorded response
 remains blocked until the release provenance support lands in its own scope.
