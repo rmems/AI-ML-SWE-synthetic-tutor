@@ -69,3 +69,4 @@ jobs:
           cat worker.log
           grep -q listening worker.log
           cargo test --locked -p tutor-verify --test julia_bridge -- --ignored
+          cargo test --locked -p tutor-generate --test pilot_smoke -- --ignored
