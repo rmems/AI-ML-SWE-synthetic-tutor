@@ -223,29 +223,45 @@ fn fold_glyph(ch: char) -> char {
 /// does not count, so instructions cannot make equal math look different.
 pub fn math_signature(document: &str) -> Vec<&str> {
     let tokens: Vec<&str> = document.split(' ').filter(|t| !t.is_empty()).collect();
-    let is_operator = |token: &str| token.chars().all(|ch| MATH_OPERATORS.contains(&ch));
     (0..tokens.len())
-        .filter(|&index| {
-            let token = tokens[index];
-            let near_operator = [index.wrapping_sub(1), index + 1]
-                .iter()
-                .any(|&n| tokens.get(n).is_some_and(|t| is_operator(t)));
-            let near_function = index
-                .checked_sub(1)
-                .and_then(|n| tokens.get(n))
-                .is_some_and(|t| {
-                    t.chars().count() == 1 && t.chars().all(|ch| ch.is_ascii_alphabetic())
-                });
-            let after_function_at = index >= 2
-                && tokens[index - 1] == "at"
-                && tokens[index - 2].chars().count() == 1
-                && tokens[index - 2].chars().all(|ch| ch.is_ascii_alphabetic());
-            is_operator(token)
-                || (token.chars().any(|ch| ch.is_ascii_digit())
-                    && (near_operator || near_function || after_function_at))
-        })
+        .filter(|&index| significant_math_token(&tokens, index))
         .map(|index| tokens[index])
         .collect()
+}
+
+fn significant_math_token(tokens: &[&str], index: usize) -> bool {
+    let token = tokens[index];
+    is_operator_token(token)
+        || (token.chars().any(|ch| ch.is_ascii_digit()) && math_digit_context(tokens, index))
+}
+
+fn is_operator_token(token: &str) -> bool {
+    token.chars().all(|ch| MATH_OPERATORS.contains(&ch))
+}
+
+fn math_digit_context(tokens: &[&str], index: usize) -> bool {
+    near_operator(tokens, index) || near_function(tokens, index) || after_function_at(tokens, index)
+}
+
+fn near_operator(tokens: &[&str], index: usize) -> bool {
+    [index.wrapping_sub(1), index + 1]
+        .iter()
+        .any(|&n| tokens.get(n).is_some_and(|t| is_operator_token(t)))
+}
+
+fn near_function(tokens: &[&str], index: usize) -> bool {
+    index
+        .checked_sub(1)
+        .and_then(|n| tokens.get(n))
+        .is_some_and(|t| function_name(t))
+}
+
+fn after_function_at(tokens: &[&str], index: usize) -> bool {
+    index >= 2 && tokens[index - 1] == "at" && function_name(tokens[index - 2])
+}
+
+fn function_name(token: &str) -> bool {
+    token.chars().count() == 1 && token.chars().all(|ch| ch.is_ascii_alphabetic())
 }
 
 /// The fingerprint of already-normalized or raw `text`.
