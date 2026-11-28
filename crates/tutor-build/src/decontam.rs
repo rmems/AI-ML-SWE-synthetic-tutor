@@ -116,7 +116,7 @@ fn parse_record(file: &std::path::Path, chunk: &Chunk<'_>) -> Result<HeldOutItem
         .statement
         .as_ref()
         .is_some_and(|statement| !statement.document.trim().is_empty());
-    if item.problem_ids.is_empty() && !has_statement_text && words < dedup::SHINGLE_WORDS {
+    if metadata_only_record(&item, has_statement_text, words) {
         return Err(BuildError::heldout(
             file,
             format!(
@@ -125,6 +125,10 @@ fn parse_record(file: &std::path::Path, chunk: &Chunk<'_>) -> Result<HeldOutItem
         ));
     }
     Ok(item)
+}
+
+fn metadata_only_record(item: &HeldOutItem, has_statement_text: bool, words: usize) -> bool {
+    item.problem_ids.is_empty() && !has_statement_text && words < dedup::SHINGLE_WORDS
 }
 
 impl HeldOutItem {
