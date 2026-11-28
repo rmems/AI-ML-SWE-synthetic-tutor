@@ -8,16 +8,22 @@ pub(crate) fn publish_file(
     write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
 ) -> Result<(), Error> {
     #[cfg(windows)]
-    let out = windows_destination(out)?;
+    let out = windows_extended_path(out)?;
     #[cfg(not(windows))]
     let out = out.to_path_buf();
     let parent = out
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let mut staged = tempfile::Builder::new()
-        .prefix(".tutor-handoff-")
-        .tempfile_in(parent)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".tutor-handoff-");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Match ordinary file creation; tempfile applies the caller's umask.
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut staged = builder.tempfile_in(parent)?;
     write(staged.as_file_mut())?;
     // Close before publication, including on Windows. Portable no-clobber file
     // persistence does not need the directory-rename support required for pairs.
@@ -66,29 +72,42 @@ fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
-    // The Windows implementation calls MoveFileExW with WRITE_THROUGH only:
-    // no REPLACE_EXISTING, COPY_ALLOWED or capability cache. Rust canonicalize
-    // supplies absolute extended-length paths, including UNC/verbatim handling;
-    // atomicwrites itself only encodes its arguments as UTF-16.
-    let staged = std::fs::canonicalize(staged)?;
-    let out = windows_destination(out)?;
+    // MoveFileExW with WRITE_THROUGH only: no REPLACE_EXISTING or COPY_ALLOWED.
+    // atomicwrites only encodes arguments as UTF-16, so normalize both first.
+    let staged = windows_extended_path(staged)?;
+    let out = windows_extended_path(out)?;
     atomicwrites::move_atomic(&staged, &out)
 }
 
 #[cfg(windows)]
-fn windows_destination(out: &Path) -> std::io::Result<std::path::PathBuf> {
-    let parent = out
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    let leaf = out.file_name().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "artifact output must name a new file or directory",
-        )
-    })?;
-    // Canonicalize only the existing parent: the destination must remain absent.
-    Ok(std::fs::canonicalize(parent)?.join(leaf))
+fn windows_extended_path(path: &Path) -> std::io::Result<std::path::PathBuf> {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use std::path::{Component, Prefix};
+    // GetFullPathNameW semantics normalize the entire ordinary path (including
+    // trailing dots/spaces), without opening handles or querying ancestors.
+    // Rust leaves explicit verbatim paths unchanged.
+    let absolute = std::path::absolute(path)?;
+    let Some(Component::Prefix(prefix)) = absolute.components().next() else {
+        return Err(std::io::Error::other("Windows path has no absolute prefix"));
+    };
+    if prefix.kind().is_verbatim() {
+        return Ok(absolute);
+    }
+    let (tag, skip) = match prefix.kind() {
+        Prefix::Disk(_) => (r"\\?\", 0),
+        Prefix::UNC(..) => (r"\\?\UNC\", 2),
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "artifact paths must use a drive or UNC share, not a device namespace",
+            ));
+        }
+    };
+    let wide: Vec<u16> = tag
+        .encode_utf16()
+        .chain(absolute.as_os_str().encode_wide().skip(skip))
+        .collect();
+    Ok(std::ffi::OsString::from_wide(&wide).into())
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -235,36 +254,101 @@ mod tests {
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn published_file_preserves_ordinary_creation_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let ordinary = root.path().join("ordinary");
+        let published = root.path().join("published");
+        std::fs::write(&ordinary, b"ordinary").unwrap();
+        publish_file(&published, |file| file.write_all(b"published")).unwrap();
+        assert_eq!(
+            std::fs::metadata(published).unwrap().permissions().mode(),
+            std::fs::metadata(ordinary).unwrap().permissions().mode()
+        );
+    }
+
     #[cfg(windows)]
     #[test]
-    fn windows_long_staging_paths_and_verbatim_destinations_publish_without_overwrite() {
+    fn windows_path_conversion_needs_no_existing_paths_or_network_access() {
+        for (input, expected) in [
+            (r"C:\missing\out. ", r"\\?\C:\missing\out"),
+            (
+                r"\\server.invalid\share\missing\out.",
+                r"\\?\UNC\server.invalid\share\missing\out",
+            ),
+            (r"\\?\C:\missing\literal.", r"\\?\C:\missing\literal."),
+            (
+                r"\\?\UNC\server.invalid\share\literal. ",
+                r"\\?\UNC\server.invalid\share\literal. ",
+            ),
+        ] {
+            assert_eq!(
+                windows_extended_path(Path::new(input)).unwrap(),
+                Path::new(expected)
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_ordinary_aliases_refuse_existing_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("replay");
+        let file = root.path().join("request");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(&file, b"original").unwrap();
+        for suffix in [".", " "] {
+            assert!(
+                publish_artifacts(&root.path().join(format!("replay{suffix}")), |_| Ok(()))
+                    .is_err()
+            );
+            assert!(
+                publish_file(&root.path().join(format!("request{suffix}")), |file| file
+                    .write_all(b"replacement"))
+                .is_err()
+            );
+        }
+        assert_eq!(std::fs::read(file).unwrap(), b"original");
+        assert_eq!(std::fs::read_dir(directory).unwrap().count(), 0);
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_long_staging_and_destination_paths_publish_without_overwrite() {
         use std::os::windows::ffi::OsStrExt;
         let root = tempfile::tempdir().unwrap();
         let padding = 240usize.saturating_sub(root.path().as_os_str().encode_wide().count() + 1);
-        let parent = root.path().join("p".repeat(padding.max(1)));
-        std::fs::create_dir(&parent).unwrap();
-        // With a normal short TEMP root, only staging crosses MAX_PATH; this
-        // also works when the caller's TEMP root is already an extended path.
-        for out in [
-            parent.join("out"),
-            std::fs::canonicalize(&parent).unwrap().join("verbatim"),
-        ] {
-            publish_artifacts(&out, |staged| {
-                assert!(staged.as_os_str().encode_wide().count() > 260);
-                std::fs::write(staged.join("candidate.json"), b"candidate")?;
-                std::fs::write(staged.join("report.json"), b"report")?;
-                Ok(())
-            })
-            .unwrap();
-            assert_eq!(
-                std::fs::read(out.join("candidate.json")).unwrap(),
-                b"candidate"
-            );
-            assert_eq!(std::fs::read(out.join("report.json")).unwrap(), b"report");
-            assert!(publish_artifacts(&out, |_| Ok(())).is_err());
+        let short_parent = root.path().join("p".repeat(padding.max(1)));
+        let long_parent = short_parent.join("q".repeat(80));
+        std::fs::create_dir_all(&long_parent).unwrap();
+        assert!(long_parent.as_os_str().encode_wide().count() > 260);
+        // Exercise both a short destination with long staging, and a long
+        // ordinary destination; also cover explicitly verbatim destinations.
+        for parent in [short_parent, long_parent] {
+            for out in [
+                parent.join("out"),
+                windows_extended_path(&parent.join("verbatim")).unwrap(),
+            ] {
+                publish_artifacts(&out, |staged| {
+                    assert!(staged.as_os_str().encode_wide().count() > 260);
+                    std::fs::write(staged.join("candidate.json"), b"candidate")?;
+                    std::fs::write(staged.join("report.json"), b"report")?;
+                    Ok(())
+                })
+                .unwrap();
+                assert_eq!(
+                    std::fs::read(out.join("candidate.json")).unwrap(),
+                    b"candidate"
+                );
+                assert_eq!(std::fs::read(out.join("report.json")).unwrap(), b"report");
+                assert!(publish_artifacts(&out, |_| Ok(())).is_err());
+            }
+            let file_out = parent.join("request");
+            publish_file(&file_out, |file| file.write_all(b"request")).unwrap();
+            assert_eq!(std::fs::read(file_out).unwrap(), b"request");
         }
-        let file_out = parent.join("request");
-        publish_file(&file_out, |file| file.write_all(b"request")).unwrap();
-        assert_eq!(std::fs::read(file_out).unwrap(), b"request");
     }
 }

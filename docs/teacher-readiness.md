@@ -113,7 +113,8 @@ Request and mock-response JSON are written to sibling temporary files and
 published only after the complete write, without overwriting existing paths.
 Ordinary write failures remove the temporary file and leave the destination
 absent. Standalone file preparation remains available beyond the platforms
-supporting directory publication below.
+supporting directory publication below. On Unix, published JSON keeps ordinary
+file-creation permissions (`0666` filtered by the caller’s umask).
 Replay and mock-smoke stage both output files in a temporary sibling directory and publish
 the complete directory with one no-replace move. Existing files, directories
 (including empty ones), and symlinks are refused, even if created during staging.
@@ -123,9 +124,13 @@ no-replace directory rename requiring parent write/search permission, not listin
 Native Windows uses `atomicwrites::move_atomic`: its Windows implementation calls
 [`MoveFileExW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
 with `MOVEFILE_WRITE_THROUGH`, without replacement or cross-volume copy flags.
-The move arguments use Rust's [extended-length canonical paths](https://doc.rust-lang.org/std/fs/fn.canonicalize.html),
-including canonicalizing the destination parent without requiring the destination
-to exist. This avoids the dependency's raw `MAX_PATH` limit on staging names.
+The move arguments use Rust's [absolute path normalization](https://doc.rust-lang.org/std/path/fn.absolute.html)
+before adding extended-length drive/UNC prefixes. This normalizes the full ordinary
+path, including trailing dots/spaces, while preserving explicitly verbatim paths.
+It queries no filesystem handles or ancestors and does not require the destination
+to exist. Both staging names and destinations can cross the raw `MAX_PATH` limit.
+Native regressions cover ordinary aliases, verbatim/UNC conversion without network
+access, and long staging/destination paths; Windows and SMB execution remain unverified.
 The staged directory is on the same volume as the destination. Windows success,
 retry and existing-destination tests remain enabled; they are **not verified on
 Windows here** (only a Linux toolchain/runner was available). The existing repo
