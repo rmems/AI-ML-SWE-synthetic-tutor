@@ -61,41 +61,52 @@ impl TeacherConfig {
             return Ok(());
         }
         for value in [&self.model, &self.route, &self.serving_vendor] {
-            if value.is_empty()
-                || value.len() > 200
-                || !value
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"-._/:".contains(&b))
-            {
-                return Err(
-                    "model, route and serving_vendor must be non-secret identifiers".into(),
-                );
-            }
+            validate_identifier(value)?;
         }
-        let name = self
-            .api_key_env
-            .as_deref()
-            .ok_or("api_key_env NAME is required")?;
-        if name.is_empty()
-            || name.len() > 128
-            || name.as_bytes()[0].is_ascii_digit()
-            || !name
-                .bytes()
-                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-        {
-            return Err("api_key_env must be an uppercase environment variable NAME".into());
-        }
-        let endpoint = url::Url::parse(self.endpoint.as_deref().ok_or("endpoint is required")?)
-            .map_err(|_| "endpoint must be an HTTPS base URL without credentials")?;
-        if endpoint.scheme() != "https"
-            || endpoint.host_str().is_none()
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-        {
-            return Err("endpoint must be HTTPS with no credentials, query or fragment".into());
-        }
-        Ok(())
+        validate_env_name(
+            self.api_key_env
+                .as_deref()
+                .ok_or("api_key_env NAME is required")?,
+        )?;
+        validate_endpoint(self.endpoint.as_deref().ok_or("endpoint is required")?)
     }
+}
+
+fn validate_identifier(value: &str) -> Result<(), Error> {
+    let valid_chars = value
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-._/:".contains(&b));
+    if !(1..=200).contains(&value.len()) || !valid_chars {
+        return Err("model, route and serving_vendor must be non-secret identifiers".into());
+    }
+    Ok(())
+}
+
+fn validate_env_name(name: &str) -> Result<(), Error> {
+    let valid_chars = name
+        .bytes()
+        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_');
+    let valid_start = name
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_uppercase() || b == b'_');
+    if !(1..=128).contains(&name.len()) || !valid_start || !valid_chars {
+        return Err("api_key_env must be an uppercase environment variable NAME".into());
+    }
+    Ok(())
+}
+
+fn validate_endpoint(value: &str) -> Result<(), Error> {
+    let endpoint = url::Url::parse(value)
+        .map_err(|_| "endpoint must be an HTTPS base URL without credentials")?;
+    let has_credentials = !endpoint.username().is_empty() || endpoint.password().is_some();
+    let has_suffix = endpoint.query().is_some() || endpoint.fragment().is_some();
+    if endpoint.scheme() != "https"
+        || endpoint.host_str().is_none()
+        || has_credentials
+        || has_suffix
+    {
+        return Err("endpoint must be HTTPS with no credentials, query or fragment".into());
+    }
+    Ok(())
 }

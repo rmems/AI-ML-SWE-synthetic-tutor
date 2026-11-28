@@ -8,7 +8,7 @@ use tutor_schema::{DialogueRow, Problem};
 use crate::{Error, Provider, TeacherConfig, sha256};
 
 // Reuse the existing static schema fixture. This is not a fresh Julia run.
-const PROBLEM: &str = include_str!("../../tutor-schema/tests/fixtures/problem.json");
+pub(crate) const PROBLEM: &str = include_str!("../../tutor-schema/tests/fixtures/problem.json");
 const PROMPT: &str = include_str!("../../../prompts/tutor-system-v1.txt");
 const GENERATOR: &str = "mock_teacher_surface";
 
@@ -31,7 +31,11 @@ pub fn mock_smoke(config: &TeacherConfig, out: &Path) -> Result<Value, Error> {
         // Reuse production schema/policy/grounding checks before marking the
         // result as a mock. The on-disk mock marker must never pass assembly.
         check_draft(&row, &problems, &validator)?;
-        row.provenance.generator.as_mut().unwrap().name = GENERATOR.into();
+        row.provenance
+            .generator
+            .as_mut()
+            .ok_or("missing draft generator")?
+            .name = GENERATOR.into();
         let candidate = json!({
             "kind": "mock_teacher_candidate_v1",
             "training_approved": false,
@@ -69,7 +73,7 @@ pub fn mock_smoke(config: &TeacherConfig, out: &Path) -> Result<Value, Error> {
     Ok(report)
 }
 
-fn check_draft(
+pub(crate) fn check_draft(
     row: &DialogueRow,
     problems: &BTreeMap<String, Problem>,
     validator: &jsonschema::Validator,
@@ -84,7 +88,7 @@ fn check_draft(
     Ok(())
 }
 
-fn draft_fixture(problem: &Problem, correction: bool) -> Result<DialogueRow, Error> {
+pub(crate) fn draft_fixture(problem: &Problem, correction: bool) -> Result<DialogueRow, Error> {
     // Only wording is mocked. The fixture's problem, answer, steps and student
     // attempts are fixed. No arbitrary prompt or user data input is accepted.
     let mut turns = vec![json!({"role": "system", "content": PROMPT})];

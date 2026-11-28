@@ -137,3 +137,193 @@ fn invalid_config_and_attempts_to_supply_keys_fail_without_echo() {
         assert!(!String::from_utf8_lossy(&result.stderr).contains("never-echo-this-fixture-value"));
     }
 }
+
+fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
+    let request = temp.0.join("request.json");
+    let response = temp.0.join("response.json");
+    let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../configs/teacher.deepseek.example.json");
+    assert!(
+        cli(&[
+            "prepare-request",
+            "--config",
+            config.to_str().unwrap(),
+            "--out",
+            request.to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    assert!(
+        cli(&[
+            "mock-response",
+            "--request",
+            request.to_str().unwrap(),
+            "--out",
+            response.to_str().unwrap()
+        ])
+        .status
+        .success()
+    );
+    (request, response)
+}
+
+fn replay(request: &std::path::Path, response: &std::path::Path, out: &std::path::Path) -> Output {
+    cli(&[
+        "replay-response",
+        "--request",
+        request.to_str().unwrap(),
+        "--response",
+        response.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ])
+}
+
+#[test]
+fn hermes_handoff_replays_and_admission_stays_blocked() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let req: Value = serde_json::from_str(&std::fs::read_to_string(&request).unwrap()).unwrap();
+    assert_eq!(req["payload"]["send_authorized"], false);
+    let mut outputs = Vec::new();
+    for dir in ["a", "b"] {
+        let out = temp.0.join(dir);
+        let result = replay(&request, &response, &out);
+        assert_eq!(
+            result.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let bytes = std::fs::read(out.join("candidate.json")).unwrap();
+        let report: Value =
+            serde_json::from_slice(&std::fs::read(out.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["admitted"], false);
+        assert_eq!(report["admission_code"], "teacher_admission_blocked");
+        assert_eq!(report["candidate_sha256"], tutor_teachers::sha256(&bytes));
+        let candidate: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(candidate["provenance"]["request_id"], req["request_id"]);
+        assert_eq!(
+            candidate["provenance"]["request_sha256"],
+            tutor_teachers::sha256(&std::fs::read(&request).unwrap())
+        );
+        assert_eq!(
+            candidate["provenance"]["response_sha256"],
+            tutor_teachers::sha256(&std::fs::read(&response).unwrap())
+        );
+        assert_eq!(candidate["provenance"]["response_origin"], "synthetic_mock");
+        assert_eq!(candidate["problem"], req["payload"]["problem"]);
+        for index in [0, 1, 3, 5, 6] {
+            assert_eq!(
+                candidate["dialogue"]["turns"][index],
+                req["payload"]["dialogue"]["turns"][index]
+            );
+        }
+        assert_ne!(
+            candidate["dialogue"]["turns"][2],
+            req["payload"]["dialogue"]["turns"][2]
+        );
+        let validator = jsonschema::validator_for(&tutor_schema::dialogue_json_schema()).unwrap();
+        let problem = Problem::from_value(candidate["problem"].clone()).unwrap();
+        let problems = BTreeMap::from([(problem.problem_id.clone(), problem)]);
+        let input = InputLine {
+            file: "extracted.json".into(),
+            line: None,
+            text: candidate["dialogue"].to_string(),
+        };
+        assert_eq!(
+            checks::check(&input, Some(&problems), &validator, &mut HashSet::new())
+                .unwrap_err()
+                .code,
+            "teacher_admission_blocked"
+        );
+        outputs.push(bytes);
+    }
+    assert_eq!(outputs[0], outputs[1]);
+    assert_eq!(
+        replay(&request, &response, &temp.0.join("a")).status.code(),
+        Some(1)
+    );
+    assert!(
+        !cli(&["prepare-request", "--out", request.to_str().unwrap()])
+            .status
+            .success()
+    );
+
+    // A synthetic fixture exercising the recorded-response parser, not a real call.
+    let mut recorded: Value = serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
+    recorded["origin"] = "recorded".into();
+    std::fs::write(&response, recorded.to_string()).unwrap();
+    assert_eq!(
+        replay(&request, &response, &temp.0.join("recorded"))
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn replay_rejects_mismatches_invalid_wording_and_approval_claims() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let base: Value = serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
+    for (pointer, value) in [
+        ("/version", serde_json::json!(2)),
+        ("/request_id", serde_json::json!("different")),
+        ("/teacher/model", serde_json::json!("different-model")),
+        ("/teacher/route", serde_json::json!("different-route")),
+        ("/replacements/0/turn_index", serde_json::json!(1)),
+        ("/replacements/1/turn_index", serde_json::json!(2)),
+        (
+            "/replacements/0/content",
+            serde_json::json!("The answer is 10."),
+        ),
+        ("/replacements/0/content", serde_json::json!("")),
+        ("/replacements", serde_json::json!([])),
+    ] {
+        let mut invalid = base.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        std::fs::write(&response, invalid.to_string()).unwrap();
+        let out = temp.0.join("must-not-exist");
+        assert_eq!(
+            replay(&request, &response, &out).status.code(),
+            Some(1),
+            "{pointer}"
+        );
+        assert!(!out.exists());
+    }
+    let mut invalid = base.clone();
+    invalid["rights_approved"] = true.into();
+    std::fs::write(&response, invalid.to_string()).unwrap();
+    assert_eq!(
+        replay(&request, &response, &temp.0.join("approval"))
+            .status
+            .code(),
+        Some(1)
+    );
+    std::fs::write(&response, "x".repeat(65537)).unwrap();
+    assert_eq!(
+        replay(&request, &response, &temp.0.join("oversized"))
+            .status
+            .code(),
+        Some(1)
+    );
+    std::fs::write(&response, base.to_string()).unwrap();
+    let original: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
+    for pointer in ["/payload/send_authorized", "/payload/problem/answer/value"] {
+        let mut invalid = original.clone();
+        *invalid.pointer_mut(pointer).unwrap() = if pointer.ends_with("value") {
+            serde_json::json!(11)
+        } else {
+            serde_json::json!(true)
+        };
+        std::fs::write(&request, invalid.to_string()).unwrap();
+        assert_eq!(
+            replay(&request, &response, &temp.0.join("forged-request"))
+                .status
+                .code(),
+            Some(1)
+        );
+    }
+}

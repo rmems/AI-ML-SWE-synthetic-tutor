@@ -4,9 +4,11 @@
 //! not rights approval. Mock candidates cannot enter the release assembler.
 
 mod config;
+mod handoff;
 mod smoke;
 
 pub use config::{Provider, TeacherConfig};
+pub use handoff::{prepare_request, replay_response, synthetic_response};
 pub use smoke::mock_smoke;
 
 /// Errors from configuration, fixture verification, validation, or local I/O.
