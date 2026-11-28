@@ -45,8 +45,23 @@ fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
 #[cfg(windows)]
 fn move_directory_new(staged: &Path, out: &Path) -> std::io::Result<()> {
     // The Windows implementation calls MoveFileExW with WRITE_THROUGH only:
-    // no REPLACE_EXISTING, COPY_ALLOWED, parent read-open or capability cache.
-    atomicwrites::move_atomic(staged, out)
+    // no REPLACE_EXISTING, COPY_ALLOWED or capability cache. Rust canonicalize
+    // supplies absolute extended-length paths, including UNC/verbatim handling;
+    // atomicwrites itself only encodes its arguments as UTF-16.
+    let staged = std::fs::canonicalize(staged)?;
+    let parent = out
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let leaf = out.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "artifact output must name a new directory",
+        )
+    })?;
+    // Canonicalize only the existing parent: the destination must remain absent.
+    let out = std::fs::canonicalize(parent)?.join(leaf);
+    atomicwrites::move_atomic(&staged, &out)
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
@@ -169,5 +184,35 @@ mod tests {
             std::io::ErrorKind::Unsupported
         );
         assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_long_staging_paths_and_verbatim_destinations_publish_without_overwrite() {
+        use std::os::windows::ffi::OsStrExt;
+        let root = tempfile::tempdir().unwrap();
+        let padding = 240usize.saturating_sub(root.path().as_os_str().encode_wide().count() + 1);
+        let parent = root.path().join("p".repeat(padding.max(1)));
+        std::fs::create_dir(&parent).unwrap();
+        // With a normal short TEMP root, only staging crosses MAX_PATH; this
+        // also works when the caller's TEMP root is already an extended path.
+        for out in [
+            parent.join("out"),
+            std::fs::canonicalize(&parent).unwrap().join("verbatim"),
+        ] {
+            publish_artifacts(&out, |staged| {
+                assert!(staged.as_os_str().encode_wide().count() > 260);
+                std::fs::write(staged.join("candidate.json"), b"candidate")?;
+                std::fs::write(staged.join("report.json"), b"report")?;
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                std::fs::read(out.join("candidate.json")).unwrap(),
+                b"candidate"
+            );
+            assert_eq!(std::fs::read(out.join("report.json")).unwrap(), b"report");
+            assert!(publish_artifacts(&out, |_| Ok(())).is_err());
+        }
     }
 }

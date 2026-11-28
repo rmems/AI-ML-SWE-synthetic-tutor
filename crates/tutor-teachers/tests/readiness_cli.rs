@@ -143,9 +143,8 @@ fn invalid_config_and_attempts_to_supply_keys_fail_without_echo() {
     }
 }
 
-fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
+fn prepared_request_fixture(temp: &Temp) -> PathBuf {
     let request = temp.0.join("request.json");
-    let response = temp.0.join("response.json");
     let config = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../configs/teacher.deepseek.example.json");
     assert!(
@@ -159,6 +158,12 @@ fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
         .status
         .success()
     );
+    request
+}
+
+fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
+    let request = prepared_request_fixture(temp);
+    let response = temp.0.join("response.json");
     assert!(
         cli(&[
             "mock-response",
@@ -176,7 +181,7 @@ fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
 #[test]
 fn prepared_openrouter_request_binds_pins_without_execution_claims() {
     let temp = Temp::new();
-    let (request, _) = handoff_fixture(&temp);
+    let request = prepared_request_fixture(&temp);
     let req: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
     assert_eq!(req["payload"]["version"], 2);
     assert_eq!(

@@ -118,6 +118,9 @@ no-replace directory rename requiring parent write/search permission, not listin
 Native Windows uses `atomicwrites::move_atomic`: its Windows implementation calls
 [`MoveFileExW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
 with `MOVEFILE_WRITE_THROUGH`, without replacement or cross-volume copy flags.
+The move arguments use Rust's [extended-length canonical paths](https://doc.rust-lang.org/std/fs/fn.canonicalize.html),
+including canonicalizing the destination parent without requiring the destination
+to exist. This avoids the dependency's raw `MAX_PATH` limit on staging names.
 The staged directory is on the same volume as the destination. Windows success,
 retry and existing-destination tests remain enabled; they are **not verified on
 Windows here** (only a Linux toolchain/runner was available). The existing repo
