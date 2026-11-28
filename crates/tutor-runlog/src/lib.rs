@@ -117,17 +117,7 @@ fn pin_format_constraints(schema: &mut serde_json::Value) {
                 .get_mut("properties")
                 .and_then(serde_json::Value::as_object_mut)
             {
-                for (name, property) in properties.iter_mut() {
-                    if name == "recorded_at" {
-                        property["pattern"] = serde_json::Value::String(
-                            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$".to_owned(),
-                        );
-                    }
-                    if name.ends_with("_sha256") {
-                        property["pattern"] =
-                            serde_json::Value::String("^[0-9a-f]{64}$".to_owned());
-                    }
-                }
+                pin_property_formats(properties);
             }
             for value in map.values_mut() {
                 pin_format_constraints(value);
@@ -139,6 +129,25 @@ fn pin_format_constraints(schema: &mut serde_json::Value) {
             }
         }
         _ => {}
+    }
+}
+
+fn pin_property_formats(properties: &mut serde_json::Map<String, serde_json::Value>) {
+    for (name, property) in properties.iter_mut() {
+        pin_property_format(name, property);
+    }
+}
+
+fn pin_property_format(name: &str, property: &mut serde_json::Value) {
+    let pattern = if name == "recorded_at" {
+        Some(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$")
+    } else if name.ends_with("_sha256") {
+        Some("^[0-9a-f]{64}$")
+    } else {
+        None
+    };
+    if let Some(pattern) = pattern {
+        property["pattern"] = serde_json::Value::String(pattern.to_owned());
     }
 }
 
