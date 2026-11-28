@@ -130,6 +130,31 @@ fn check_provenance(
     problems_given: bool,
     problem: Option<&Problem>,
 ) -> Result<(), (&'static str, String)> {
+    // Mock readiness candidates remain ineligible even if their outer envelope
+    // is removed. No configuration/approval flag can promote mock wording.
+    if row
+        .provenance
+        .generator
+        .as_ref()
+        .is_some_and(|g| g.name == "mock_teacher_surface")
+    {
+        return Err((
+            "mock_teacher_not_exportable",
+            "mock teacher candidates are not approved training/export rows".to_owned(),
+        ));
+    }
+    if row
+        .provenance
+        .generator
+        .as_ref()
+        .is_some_and(|g| g.name == "deferred_teacher_surface")
+    {
+        return Err((
+            "teacher_admission_blocked",
+            "teacher candidate lacks admitted rights/approval provenance; RM-2500 remains required"
+                .to_owned(),
+        ));
+    }
     check_generated(row, problems_given, problem)?;
     let Some(problem) = problem else {
         // Hand-written row with no matching problem: its provenance is the
