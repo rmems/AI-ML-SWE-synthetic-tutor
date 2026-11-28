@@ -225,9 +225,9 @@ fn assert_attempt_answers(problem: &Problem, attempt: &StudentAttempt) {
     );
     assert!(attempt.teacher_variety.teacher.is_none());
     let Answer::Integer { value } = problem.answer;
-    let final_turn = attempt
+    let (final_turn, earlier) = attempt
         .student_turns
-        .last()
+        .split_last()
         .expect("student attempt has a final turn");
     assert_eq!(
         rendered_answer(&final_turn.content),
@@ -238,34 +238,41 @@ fn assert_attempt_answers(problem: &Problem, attempt: &StudentAttempt) {
     if let Some(transformation) = &attempt.transformation {
         assert_eq!(transformation.correct_value, value);
         assert_ne!(transformation.corrupted_value, value);
-        let opening = &attempt.student_turns[0].content;
+        assert_planted_answers(earlier, transformation.corrupted_value);
+    }
+}
+
+fn assert_planted_answers(before_final: &[Turn], expected: i64) {
+    for (index, turn) in before_final.iter().enumerate() {
         assert_eq!(
-            rendered_answer(opening),
-            Some(transformation.corrupted_value),
-            "{opening}"
+            rendered_answer(&turn.content),
+            Some(expected),
+            "student turn {index} should still show the planted error: {}",
+            turn.content
         );
     }
 }
 
-// The terse numeric fixture ends with a derivative equality and a period.
-// Compare the last RHS, not a substring that could match an intermediate value.
+// The terse fixture ends with an equality or a "still get <value>" retry.
+// Compare the terminal answer, not an intermediate number in the working.
 fn rendered_answer(content: &str) -> Option<i64> {
-    content
-        .rsplit_once(" = ")?
-        .1
-        .trim_end()
-        .strip_suffix('.')?
-        .parse()
-        .ok()
+    let (_, number) = content
+        .rsplit_once(" = ")
+        .or_else(|| content.rsplit_once(" get "))?;
+    number.trim_end().strip_suffix('.')?.parse().ok()
 }
 
 #[test]
-fn terse_turn_parser_uses_the_final_rhs() {
+fn terse_turn_parser_detects_equations_and_retries() {
     assert_eq!(
         rendered_answer("Let me redo it. h′(1) = 12 + (-18) = -6."),
         Some(-6)
     );
     assert_ne!(rendered_answer("h′(1) = 12 + (-18) = -6."), Some(12));
+    assert_eq!(
+        rendered_answer("I thought I would still get -12."),
+        Some(-12)
+    );
     assert_eq!(rendered_answer("I am not sure."), None);
 }
 
