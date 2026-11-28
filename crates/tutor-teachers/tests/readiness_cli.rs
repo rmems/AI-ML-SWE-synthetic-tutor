@@ -168,6 +168,85 @@ fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
     (request, response)
 }
 
+#[test]
+fn openrouter_pins_and_options_are_bound_without_execution_claims() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let req: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
+    assert_eq!(req["payload"]["version"], 2);
+    assert_eq!(
+        req["payload"]["teacher"]["model"],
+        "deepseek/deepseek-v4.1-flash-1017"
+    );
+    assert_eq!(
+        req["payload"]["teacher"]["endpoint"],
+        "https://openrouter.ai/api/v1"
+    );
+    assert_eq!(
+        req["payload"]["teacher"]["api_key_env"],
+        "OPENROUTER_API_KEY"
+    );
+    assert_eq!(
+        req["payload"]["openrouter_provider"],
+        serde_json::json!({"only":["deepseek"],"allow_fallbacks":false})
+    );
+    let out = temp.0.join("replay");
+    assert_eq!(replay(&request, &response, &out).status.code(), Some(2));
+    let candidate: Value =
+        serde_json::from_slice(&std::fs::read(out.join("candidate.json")).unwrap()).unwrap();
+    assert_eq!(
+        candidate["provenance"]["intended_openrouter_provider"],
+        req["payload"]["openrouter_provider"]
+    );
+    assert_eq!(
+        candidate["provenance"]["provider_execution_verified"],
+        false
+    );
+    assert_eq!(candidate["provenance"]["routing_execution_verified"], false);
+}
+
+#[test]
+fn openrouter_rejects_other_pins_and_altered_routing() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let req: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
+    for field in [
+        "model",
+        "endpoint",
+        "route",
+        "serving_vendor",
+        "api_key_env",
+    ] {
+        let mut config = req["payload"]["teacher"].clone();
+        config[field] = "different".into();
+        let path = temp.0.join("wrong-pin.json");
+        std::fs::write(&path, config.to_string()).unwrap();
+        assert!(
+            !cli(&["check-config", "--config", path.to_str().unwrap()])
+                .status
+                .success()
+        );
+    }
+    let mut changed = req.clone();
+    changed["payload"]["openrouter_provider"]["allow_fallbacks"] = true.into();
+    std::fs::write(&request, changed.to_string()).unwrap();
+    assert_eq!(
+        replay(&request, &response, &temp.0.join("bad-routing"))
+            .status
+            .code(),
+        Some(1)
+    );
+    changed = req;
+    changed["payload"]["openrouter_provider"]["only"] = serde_json::json!(["different"]);
+    std::fs::write(&request, changed.to_string()).unwrap();
+    assert_eq!(
+        replay(&request, &response, &temp.0.join("bad-provider"))
+            .status
+            .code(),
+        Some(1)
+    );
+}
+
 fn replay(request: &std::path::Path, response: &std::path::Path, out: &std::path::Path) -> Output {
     cli(&[
         "replay-response",
@@ -282,7 +361,7 @@ fn replay_rejects_mismatches_invalid_wording_and_approval_claims() {
     let (request, response) = handoff_fixture(&temp);
     let base: Value = serde_json::from_slice(&std::fs::read(&response).unwrap()).unwrap();
     for (pointer, value) in [
-        ("/version", serde_json::json!(2)),
+        ("/version", serde_json::json!(99)),
         ("/request_id", serde_json::json!("different")),
         ("/teacher/model", serde_json::json!("different-model")),
         ("/teacher/route", serde_json::json!("different-route")),

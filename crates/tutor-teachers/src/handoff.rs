@@ -8,17 +8,27 @@ use serde_json::{Value, json};
 use tutor_build::{checks, input::InputLine};
 use tutor_schema::{DialogueRow, Problem};
 
-use crate::{Error, TeacherConfig, sha256, smoke};
+use crate::{Error, Provider, TeacherConfig, sha256, smoke};
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 const LIMIT: u64 = 64 * 1024;
-const INSTRUCTION: &str = "Rewrite only the diagnosis and hint wording at turn indices 2 and 4. Preserve their meaning and the hint level. Do not reveal the answer, add math claims, or change the problem, student, system or closing turns. Return JSON with version=1, request_id copied exactly, teacher copied exactly, origin=recorded, and replacements=[{turn_index:2,content:...},{turn_index:4,content:...}]. No other fields. This file is an unsent preparation artifact, not authorization to contact a provider.";
+const INSTRUCTION: &str = "Rewrite only the diagnosis and hint wording at turn indices 2 and 4. Preserve their meaning and the hint level. Do not reveal the answer, add math claims, or change the problem, student, system or closing turns. Return JSON with version=2, request_id copied exactly, teacher copied exactly, origin=recorded, and replacements=[{turn_index:2,content:...},{turn_index:4,content:...}]. No other fields. This file is an unsent preparation artifact, not authorization to contact a provider.";
+
+// Intended OpenRouter request-body provider options. These are bound into the
+// handoff; this offline runner cannot attest that Hermes sends them unchanged.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenRouterProvider {
+    only: Vec<String>,
+    allow_fallbacks: bool,
+}
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Payload {
     version: u32,
     teacher: TeacherConfig,
+    openrouter_provider: Option<OpenRouterProvider>,
     send_authorized: bool,
     instruction: String,
     problem: Problem,
@@ -63,6 +73,13 @@ fn request(config: &TeacherConfig) -> Result<Request, Error> {
     let payload = Payload {
         version: VERSION,
         teacher: config.clone(),
+        openrouter_provider: match config.provider {
+            Provider::Mock => None,
+            Provider::Deepseek => Some(OpenRouterProvider {
+                only: vec!["deepseek".into()],
+                allow_fallbacks: false,
+            }),
+        },
         send_authorized: false,
         instruction: INSTRUCTION.into(),
         problem,
@@ -190,6 +207,9 @@ pub fn replay_response(
             "request_id": request.request_id, "request_sha256": sha256(request_raw.as_bytes()),
             "response_sha256": sha256(response_raw.as_bytes()), "response_origin": response.origin,
             "teacher": response.teacher, "dialogue_sha256": sha256(&serde_json::to_vec(&row)?),
+            "intended_openrouter_provider": request.payload.openrouter_provider,
+            "provider_execution_verified": false,
+            "routing_execution_verified": false,
             "fixture_sha256": sha256(smoke::PROBLEM.as_bytes()),
             "verification_scope": "rust_recompute_of_static_fixture_not_fresh_julia_run"
         }

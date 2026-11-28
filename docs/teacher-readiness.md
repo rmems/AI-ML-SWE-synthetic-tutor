@@ -1,6 +1,7 @@
 # Offline teacher readiness for Hermes
 
-Hermes is the command runner; DeepSeek would be the teacher. This slice proves
+Hermes is the command runner; DeepSeek through OpenRouter is the intended teacher
+route. This slice proves
 local candidate drafting, a file request/response handoff and validation. Hermes
 can own a later provider call; this repo requires no direct network adapter for
 that handoff. It does **not** approve provider rights. RM-2500 remains a gate.
@@ -40,16 +41,28 @@ assembler rejects the envelopes. Extracted dialogues also fail with
 `mock_teacher_not_exportable`; there is no flag to approve mock data for training.
 Do not strip or relabel provenance to feed them into training or export.
 
-## Select a future teacher without enabling it
+## Pinned OpenRouter selection, without enabling it
 
-Copy `configs/teacher.deepseek.example.json` to a local configuration file.
-Set `provider` to `deepseek`, `model` to the exact intended model pin, `endpoint`
-to the intended HTTPS API base URL, and record its `route` and `serving_vendor`.
-The example's `.invalid` endpoint and pin values are deliberately placeholders,
-not claims about current provider APIs, terms or available models.
+`configs/teacher.deepseek.example.json` pins this pilot's intended selection:
 
-`api_key_env` is the environment variable **name** `TUTOR_TEACHER_API_KEY` only.
-Do not put a key in JSON. No environment value is read in this implementation.
+| Field | Value |
+| --- | --- |
+| `provider` | `deepseek` |
+| `model` | `deepseek/deepseek-v4.1-flash-1017` |
+| `endpoint` | `https://openrouter.ai/api/v1` |
+| `route` | `openrouter` |
+| `serving_vendor` | `deepseek` |
+| `api_key_env` | `OPENROUTER_API_KEY` |
+
+The non-mock configuration must match this pin; other selections fail closed.
+Routing references checked 2026-11-28: [OpenRouter API documentation](https://openrouter.ai/docs/api_reference/overview),
+[model catalog entry](https://openrouter.ai/deepseek/deepseek-v4.1-flash-1017),
+and [provider routing](https://openrouter.ai/docs/guides/routing/provider-selection).
+Catalog presence and API configuration are not rights clearance or a runtime test.
+
+`api_key_env` is the environment variable **name** `OPENROUTER_API_KEY` only,
+owned by Hermes for a future authorized call. Do not put a key in JSON. No
+environment value is read, stored or logged by this implementation.
 Unknown fields, embedded URL credentials, URL query strings and fragments fail.
 
 ```sh
@@ -58,14 +71,15 @@ cargo run --offline --locked -p tutor-teachers -- check-config \
   --config configs/teacher.deepseek.example.json
 ```
 
-Success means only that the configuration shape is valid. Passing that same file
+Success means only that the configuration and pilot pin are valid. Passing that same file
 to `mock-smoke` fails before output creation; it never silently falls back to mock.
 
 Before any future live call/run: resolve RM-2500 with reproducible terms
 snapshots and exact model/route/vendor pins, approve the generation spec and the
 run. Training/export additionally need a release schema that carries and enforces
 teacher rights provenance; the current schema/assembler cannot admit teacher rows.
-The repo's documented route policy still applies; this config does not override it.
+This pilot selects OpenRouter explicitly; it does not change `docs/rights.md` or
+grant the selected route permission to generate training data.
 This slice makes no claim that current terms permit a provider or route. It does
 not configure Hermes authentication or provide a live-generation switch.
 
@@ -93,9 +107,10 @@ Exit 1 means invalid input, failed verification/validation, or I/O failure.
 Prepare/mock-response return 0 on success. These commands refuse existing output
 files/directories. Omitting `--config` on `prepare-request` uses the offline mock.
 
-`request.json` contains a SHA-256 `request_id` bound to its versioned `payload`:
+`request.json` contains a SHA-256 `request_id` bound to its version-2 `payload`:
 teacher selection, instruction, verified static problem, and fixed correction
-dialogue. `send_authorized` is always false: producing a file grants no permission
+dialogue. Version 1 handoff files must be regenerated after the routing change.
+`send_authorized` is always false: producing a file grants no permission
 to send it. Replaying recomputes the fixture and checks the whole request against
 this implementation; editing/re-hashing its problem, policy or approval fails.
 
@@ -106,9 +121,25 @@ HTTP client or additional adapter code is needed for this **bounded wording
 handoff**. Do not change the unsent artifact's `send_authorized` field. This
 implementation offers no provider invocation or authorization mechanism.
 
+For the OpenRouter config, `payload.openrouter_provider` contains the intended
+OpenRouter request-body `provider` options:
+
+```json
+{"only": ["deepseek"], "allow_fallbacks": false}
+```
+
+These options are immutable and covered by the request hash. When a future call
+is authorized, Hermes must preserve them as the API body's `provider` field,
+along with the pinned model and base URL. **This offline runner does not enforce
+or verify what Hermes actually sends.** Check that Hermes's selected provider
+tool can pass these options unchanged before approving a live run; if it cannot,
+that is a runner-capability blocker, not permission to silently use defaults or
+fallbacks. No automatic route/model fallback is implemented here. Mock requests
+carry `openrouter_provider: null`.
+
 The response is the JSON object requested by `payload.instruction`:
 
-- `version`: 1; `request_id`: copy exactly from the request.
+- `version`: 2; `request_id`: copy exactly from the request.
 - `teacher`: copy `payload.teacher` exactly, including model/endpoint/route/vendor.
 - `origin`: `recorded` for saved teacher output; `synthetic_mock` for the offline
   fixture. This is caller-declared provenance, not proof of provider execution.
@@ -124,6 +155,9 @@ replace independent review of future teacher wording.
 
 `replay/candidate.json` is quarantined. Its provenance binds the request ID,
 request/response file hashes, teacher, response origin, fixture and dialogue.
+It also records the intended provider options and keeps both
+`provider_execution_verified` and `routing_execution_verified` false. Echoed
+metadata does not prove the serving provider or routing actually used.
 `replay/report.json` binds the candidate file hash and reports the actual release
 admission rejection `teacher_admission_blocked`. Both wrapped and extracted
 teacher-marked dialogues remain ineligible for release assembly. Missing rights

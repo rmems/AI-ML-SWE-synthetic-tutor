@@ -68,7 +68,29 @@ impl TeacherConfig {
                 .as_deref()
                 .ok_or("api_key_env NAME is required")?,
         )?;
-        validate_endpoint(self.endpoint.as_deref().ok_or("endpoint is required")?)
+        validate_endpoint(self.endpoint.as_deref().ok_or("endpoint is required")?)?;
+        self.validate_openrouter_pin()
+    }
+
+    fn validate_openrouter_pin(&self) -> Result<(), Error> {
+        let selection = (
+            self.model.as_str(),
+            self.endpoint.as_deref(),
+            self.route.as_str(),
+            self.serving_vendor.as_str(),
+            self.api_key_env.as_deref(),
+        );
+        let pilot = (
+            "deepseek/deepseek-v4.1-flash-1017",
+            Some("https://openrouter.ai/api/v1"),
+            "openrouter",
+            "deepseek",
+            Some("OPENROUTER_API_KEY"),
+        );
+        if selection != pilot {
+            return Err("DeepSeek selection must match the pinned OpenRouter pilot config; this is not rights approval".into());
+        }
+        Ok(())
     }
 }
 

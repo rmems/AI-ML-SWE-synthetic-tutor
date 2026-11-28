@@ -99,7 +99,7 @@ fn run() -> Result<ExitCode, Error> {
         Command::CheckConfig { config } => {
             read_config(&config)?;
             println!(
-                "Configuration shape valid. No endpoint contacted or credential read. Live generation, training and export remain BLOCKED pending RM-2500 exact model/route/vendor evidence, approved generation spec and explicit run approval. Hermes file handoff is available; no direct network adapter."
+                "Configuration valid (offline mock or pinned DeepSeek through OpenRouter). No endpoint contacted or credential read. Live generation, training and export remain BLOCKED pending RM-2500 exact model/route/vendor evidence, approved generation spec and explicit run approval. Hermes file handoff is available; actual provider routing remains unverified."
             );
         }
     }

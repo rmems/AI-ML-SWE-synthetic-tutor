@@ -1,8 +1,8 @@
 {
   "provider": "deepseek",
-  "model": "exact-model-pin-required",
-  "endpoint": "https://teacher.example.invalid/v1",
-  "route": "route-evidence-required",
-  "serving_vendor": "vendor-evidence-required",
-  "api_key_env": "TUTOR_TEACHER_API_KEY"
+  "model": "deepseek/deepseek-v4.1-flash-1017",
+  "endpoint": "https://openrouter.ai/api/v1",
+  "route": "openrouter",
+  "serving_vendor": "deepseek",
+  "api_key_env": "OPENROUTER_API_KEY"
 }
