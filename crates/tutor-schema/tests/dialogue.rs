@@ -58,28 +58,39 @@ fn gold_rows_are_valid_and_round_trip() {
 }
 
 #[test]
-fn secant_labels_require_the_version_that_defined_the_topic_mapping() {
+fn secant_labels_preserve_taxonomy_versions_on_every_topic() {
     let schema = serde_json::from_str(COMMITTED_SCHEMA).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
-    for id in [
-        "derivatives.secant_as_tangent",
-        "derivatives.undefined_quotient_implies_no_limit",
-        "limits.divide_by_zero_form",
-    ] {
-        let mut row = gold("chain");
-        row["topic"] = json!("calculus.derivatives.definition");
-        row["misconceptions"] = json!([id]);
-        row["provenance"]["taxonomy_version"] = json!(1);
-        assert!(!validator.is_valid(&row), "schema rejects v1 for {id}");
-        assert!(
-            DialogueRow::from_value(row.clone())
-                .unwrap_err()
-                .to_string()
-                .contains("predates the row's misconception label")
-        );
-        row["provenance"]["taxonomy_version"] = json!(2);
-        assert!(validator.is_valid(&row), "schema permits v2 for {id}");
-        DialogueRow::from_value(row).expect("v2 secant topic mapping is valid");
+    let definition = "calculus.derivatives.definition";
+    let secant = "derivatives.secant_as_tangent";
+    let undefined = "derivatives.undefined_quotient_implies_no_limit";
+    let divide_by_zero = "limits.divide_by_zero_form";
+    let topic_mappings = [
+        (secant, definition, 2),
+        (secant, "calculus.derivatives.tangent_lines", 2),
+        (undefined, definition, 2),
+        (undefined, "limits.limit_existence", 2),
+        (divide_by_zero, definition, 2),
+        (divide_by_zero, "limits.indeterminate_forms", 1),
+        (divide_by_zero, "limits.limit_evaluation", 1),
+        (divide_by_zero, "algebra.rational_expressions", 1),
+    ];
+
+    for (id, topic, minimum) in topic_mappings {
+        for version in [1, 2] {
+            let mut row = gold("chain");
+            row["topic"] = json!(topic);
+            row["misconceptions"] = json!([id]);
+            row["provenance"]["taxonomy_version"] = json!(version);
+            let expected = version >= minimum;
+            let label = format!("{id} / {topic} / taxonomy v{version}");
+            assert_eq!(validator.is_valid(&row), expected, "schema: {label}");
+            assert_eq!(
+                DialogueRow::from_value(row).is_ok(),
+                expected,
+                "Rust: {label}"
+            );
+        }
     }
 }
 
