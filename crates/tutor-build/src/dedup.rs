@@ -222,42 +222,82 @@ fn fold_glyph(ch: char) -> char {
 /// is. A number in prose (`in 2 sentences`) has no operator neighbour and
 /// does not count, so instructions cannot make equal math look different.
 pub fn math_signature(document: &str) -> Vec<&str> {
-    let tokens: Vec<&str> = document.split(' ').filter(|t| !t.is_empty()).collect();
+    let tokens = MathTokens::new(document);
     (0..tokens.len())
-        .filter(|&index| significant_math_token(&tokens, index))
-        .map(|index| tokens[index])
+        .filter(|&index| tokens.significant(index))
+        .map(|index| tokens.token(index))
         .collect()
 }
 
-fn significant_math_token(tokens: &[&str], index: usize) -> bool {
-    let token = tokens[index];
-    is_operator_token(token)
-        || (token.chars().any(|ch| ch.is_ascii_digit()) && math_digit_context(tokens, index))
+struct MathTokens<'a> {
+    tokens: Vec<&'a str>,
 }
 
-fn is_operator_token(token: &str) -> bool {
-    token.chars().all(|ch| MATH_OPERATORS.contains(&ch))
-}
+impl<'a> MathTokens<'a> {
+    fn new(document: &'a str) -> Self {
+        Self {
+            tokens: document.split(' ').filter(|t| !t.is_empty()).collect(),
+        }
+    }
 
-fn math_digit_context(tokens: &[&str], index: usize) -> bool {
-    near_operator(tokens, index) || near_function(tokens, index) || after_function_at(tokens, index)
-}
+    fn token(&self, index: usize) -> &'a str {
+        self.tokens[index]
+    }
 
-fn near_operator(tokens: &[&str], index: usize) -> bool {
-    [index.wrapping_sub(1), index + 1]
-        .iter()
-        .any(|&n| tokens.get(n).is_some_and(|t| is_operator_token(t)))
-}
+    fn len(&self) -> usize {
+        self.tokens.len()
+    }
 
-fn near_function(tokens: &[&str], index: usize) -> bool {
-    index
-        .checked_sub(1)
-        .and_then(|n| tokens.get(n))
-        .is_some_and(|t| function_name(t))
-}
+    fn significant(&self, index: usize) -> bool {
+        let token = self.token(index);
+        Self::operator(token)
+            || self.function_context(index)
+            || (token.chars().any(|ch| ch.is_ascii_digit()) && self.digit_context(index))
+    }
 
-fn after_function_at(tokens: &[&str], index: usize) -> bool {
-    index >= 2 && tokens[index - 1] == "at" && function_name(tokens[index - 2])
+    fn digit_context(&self, index: usize) -> bool {
+        self.near_operator(index) || self.near_function(index) || self.after_function_at(index)
+    }
+
+    fn function_context(&self, index: usize) -> bool {
+        function_name(self.token(index))
+            && (self.near_function_digit(index) || self.before_at_digit(index))
+    }
+
+    fn near_function_digit(&self, index: usize) -> bool {
+        self.tokens
+            .get(index + 1)
+            .is_some_and(|next| next.chars().any(|ch| ch.is_ascii_digit()))
+    }
+
+    fn before_at_digit(&self, index: usize) -> bool {
+        self.tokens.get(index + 1) == Some(&"at")
+            && self
+                .tokens
+                .get(index + 2)
+                .is_some_and(|value| value.chars().any(|ch| ch.is_ascii_digit()))
+    }
+
+    fn near_operator(&self, index: usize) -> bool {
+        [index.wrapping_sub(1), index + 1]
+            .iter()
+            .any(|&n| self.tokens.get(n).is_some_and(|t| Self::operator(t)))
+    }
+
+    fn near_function(&self, index: usize) -> bool {
+        index
+            .checked_sub(1)
+            .and_then(|n| self.tokens.get(n))
+            .is_some_and(|t| function_name(t))
+    }
+
+    fn after_function_at(&self, index: usize) -> bool {
+        index >= 2 && self.tokens[index - 1] == "at" && function_name(self.tokens[index - 2])
+    }
+
+    fn operator(token: &str) -> bool {
+        token.chars().all(|ch| MATH_OPERATORS.contains(&ch))
+    }
 }
 
 fn function_name(token: &str) -> bool {
