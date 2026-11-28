@@ -1,0 +1,8 @@
+{
+  "provider": "deepseek",
+  "model": "exact-model-pin-required",
+  "endpoint": "https://teacher.example.invalid/v1",
+  "route": "route-evidence-required",
+  "serving_vendor": "vendor-evidence-required",
+  "api_key_env": "TUTOR_TEACHER_API_KEY"
+}

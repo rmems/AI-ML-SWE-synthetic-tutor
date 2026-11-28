@@ -1706,6 +1706,17 @@ dependencies = [
 [[package]]
 name = "tutor-teachers"
 version = "0.1.0"
+dependencies = [
+ "clap",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tutor-build",
+ "tutor-schema",
+ "tutor-verify",
+ "url",
+]
 
 [[package]]
 name = "tutor-validate"

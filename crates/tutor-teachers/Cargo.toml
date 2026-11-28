@@ -1,11 +1,22 @@
 [package]
 name = "tutor-teachers"
-description = "Teacher model clients for DeepSeek V4.1 Flash and MiMo V2.6 Flash (placeholder; see issue #17)."
+description = "Offline teacher readiness smoke; live providers remain gated by RM-2500."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 repository.workspace = true
+
+[dependencies]
+clap.workspace = true
+jsonschema.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tutor-schema.workspace = true
+tutor-verify.workspace = true
+tutor-build = { path = "../tutor-build" }
+url = "2"
 
 [lints]
 workspace = true
