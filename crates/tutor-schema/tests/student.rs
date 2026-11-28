@@ -90,6 +90,22 @@ fn correction_attempt_validates_and_round_trips() {
 }
 
 #[test]
+fn secant_attempts_require_v2_in_rust_and_json_schema() {
+    let mut attempt = correction_attempt();
+    let id = MisconceptionId::DerivativesSecantAsTangent;
+    attempt.topic = "calculus.derivatives.definition".into();
+    attempt.misconception = Some(id);
+    attempt.transformation.as_mut().unwrap().misconception = id;
+    let schema = jsonschema::validator_for(&student_attempt_json_schema()).unwrap();
+    attempt.provenance.taxonomy_version = 1;
+    assert!(attempt.validate().is_err());
+    assert!(!schema.is_valid(&serde_json::to_value(&attempt).unwrap()));
+    attempt.provenance.taxonomy_version = 2;
+    attempt.validate().unwrap();
+    assert!(schema.is_valid(&serde_json::to_value(&attempt).unwrap()));
+}
+
+#[test]
 fn correct_attempt_must_not_carry_a_label() {
     let mut attempt = correction_attempt();
     attempt.correct = true;

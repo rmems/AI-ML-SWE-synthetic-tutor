@@ -233,6 +233,17 @@ impl DialogueRow {
             ));
         }
         self.validate_misconceptions()?;
+        if self
+            .misconceptions
+            .iter()
+            .any(|id| id.introduced_for_topic(&self.topic) > self.provenance.taxonomy_version)
+        {
+            return Err(invalid(
+                "provenance.taxonomy_version",
+                "predates the row's misconception label",
+            ));
+        }
+
         self.validate_topic()?;
         self.validate_provenance()?;
         let levels = self.validate_turns()?;

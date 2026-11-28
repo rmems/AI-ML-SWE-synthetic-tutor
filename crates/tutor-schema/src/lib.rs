@@ -26,7 +26,7 @@ pub use student::{
 pub const PROBLEM_SCHEMA_VERSION: u32 = 1;
 
 /// Current `version` of the misconception taxonomy in `schemas/taxonomy.yaml`.
-pub const TAXONOMY_VERSION: u32 = 1;
+pub const TAXONOMY_VERSION: u32 = 2;
 
 /// Largest generator seed (2^53 - 1), so seeds survive any JSON parser exactly.
 pub const MAX_SEED: u64 = (1 << 53) - 1;
@@ -307,6 +307,12 @@ pub enum MisconceptionId {
     /// `derivatives.quotient_rule`.
     #[serde(rename = "derivatives.quotient_rule")]
     DerivativesQuotientRule,
+    /// `derivatives.secant_as_tangent`.
+    #[serde(rename = "derivatives.secant_as_tangent")]
+    DerivativesSecantAsTangent,
+    /// `derivatives.undefined_quotient_implies_no_limit`.
+    #[serde(rename = "derivatives.undefined_quotient_implies_no_limit")]
+    DerivativesUndefinedQuotientImpliesNoLimit,
     /// `functions.composition_order`.
     #[serde(rename = "functions.composition_order")]
     FunctionsCompositionOrder,
@@ -354,6 +360,8 @@ impl MisconceptionId {
         Self::DerivativesPowerRuleOvergeneralised,
         Self::DerivativesProductRule,
         Self::DerivativesQuotientRule,
+        Self::DerivativesSecantAsTangent,
+        Self::DerivativesUndefinedQuotientImpliesNoLimit,
         Self::FunctionsCompositionOrder,
         Self::FunctionsDomainRange,
         Self::FunctionsInverseNotReciprocal,
@@ -379,6 +387,10 @@ impl MisconceptionId {
             Self::DerivativesPowerRuleOvergeneralised => "derivatives.power_rule_overgeneralised",
             Self::DerivativesProductRule => "derivatives.product_rule",
             Self::DerivativesQuotientRule => "derivatives.quotient_rule",
+            Self::DerivativesSecantAsTangent => "derivatives.secant_as_tangent",
+            Self::DerivativesUndefinedQuotientImpliesNoLimit => {
+                "derivatives.undefined_quotient_implies_no_limit"
+            }
             Self::FunctionsCompositionOrder => "functions.composition_order",
             Self::FunctionsDomainRange => "functions.domain_range",
             Self::FunctionsInverseNotReciprocal => "functions.inverse_not_reciprocal",
@@ -390,6 +402,20 @@ impl MisconceptionId {
             Self::LimitsOneSidedLimit => "limits.one_sided_limit",
             Self::TrigIdentityConfusion => "trig.identity_confusion",
             Self::TrigUnitCircle => "trig.unit_circle",
+        }
+    }
+
+    /// Earliest taxonomy version that includes this label for the given topic.
+    ///
+    /// Callers check membership in [`Self::topics`] separately.
+    pub fn introduced_for_topic(self, topic: &str) -> u32 {
+        match (self, topic) {
+            (
+                Self::DerivativesSecantAsTangent | Self::DerivativesUndefinedQuotientImpliesNoLimit,
+                _,
+            )
+            | (Self::LimitsDivideByZeroForm, "calculus.derivatives.definition") => 2,
+            _ => 1,
         }
     }
 
@@ -407,7 +433,7 @@ impl MisconceptionId {
 
 /// Topics per [`MisconceptionId`], in [`MisconceptionId::ALL`] order, copied
 /// from `schemas/taxonomy.yaml`.
-const TOPICS: [&[&str]; 20] = [
+const TOPICS: [&[&str]; 22] = [
     &[
         "algebra.distributive_property",
         "algebra.polynomial_expansion",
@@ -435,6 +461,11 @@ const TOPICS: [&[&str]; 20] = [
         "calculus.derivatives.quotient_rule",
         "calculus.derivatives.rational_functions",
     ],
+    &[
+        "calculus.derivatives.definition",
+        "calculus.derivatives.tangent_lines",
+    ],
+    &["calculus.derivatives.definition", "limits.limit_existence"],
     &["functions.composition", "functions.function_notation"],
     &[
         "functions.domain",
@@ -455,6 +486,7 @@ const TOPICS: [&[&str]; 20] = [
         "limits.indeterminate_forms",
         "limits.limit_evaluation",
         "algebra.rational_expressions",
+        "calculus.derivatives.definition",
     ],
     &[
         "limits.indeterminate_forms",

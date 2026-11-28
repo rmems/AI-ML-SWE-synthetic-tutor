@@ -81,6 +81,16 @@
           "type": "string"
         },
         {
+          "const": "derivatives.secant_as_tangent",
+          "description": "`derivatives.secant_as_tangent`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.undefined_quotient_implies_no_limit",
+          "description": "`derivatives.undefined_quotient_implies_no_limit`.",
+          "type": "string"
+        },
+        {
           "const": "functions.composition_order",
           "description": "`functions.composition_order`.",
           "type": "string"

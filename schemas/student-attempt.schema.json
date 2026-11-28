@@ -49,6 +49,16 @@
           "type": "string"
         },
         {
+          "const": "derivatives.secant_as_tangent",
+          "description": "`derivatives.secant_as_tangent`.",
+          "type": "string"
+        },
+        {
+          "const": "derivatives.undefined_quotient_implies_no_limit",
+          "description": "`derivatives.undefined_quotient_implies_no_limit`.",
+          "type": "string"
+        },
+        {
           "const": "functions.composition_order",
           "description": "`functions.composition_order`.",
           "type": "string"
@@ -244,7 +254,7 @@
         "taxonomy_version": {
           "description": "Taxonomy version used for the misconception label.",
           "format": "uint32",
-          "maximum": 1,
+          "maximum": 2,
           "minimum": 1,
           "type": "integer"
         }
@@ -856,6 +866,70 @@
       "if": {
         "properties": {
           "misconception": {
+            "const": "derivatives.secant_as_tangent"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "topic": {
+            "enum": [
+              "calculus.derivatives.definition",
+              "calculus.derivatives.tangent_lines"
+            ]
+          },
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "derivatives.secant_as_tangent"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.undefined_quotient_implies_no_limit"
+          }
+        },
+        "required": [
+          "misconception"
+        ]
+      },
+      "then": {
+        "properties": {
+          "topic": {
+            "enum": [
+              "calculus.derivatives.definition",
+              "limits.limit_existence"
+            ]
+          },
+          "transformation": {
+            "properties": {
+              "misconception": {
+                "const": "derivatives.undefined_quotient_implies_no_limit"
+              }
+            },
+            "required": [
+              "misconception"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
             "const": "functions.composition_order"
           }
         },
@@ -1062,7 +1136,8 @@
             "enum": [
               "limits.indeterminate_forms",
               "limits.limit_evaluation",
-              "algebra.rational_expressions"
+              "algebra.rational_expressions",
+              "calculus.derivatives.definition"
             ]
           },
           "transformation": {
@@ -1206,6 +1281,141 @@
             "required": [
               "misconception"
             ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.secant_as_tangent"
+          },
+          "topic": {
+            "const": "calculus.derivatives.definition"
+          }
+        },
+        "required": [
+          "misconception",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.secant_as_tangent"
+          },
+          "topic": {
+            "const": "calculus.derivatives.tangent_lines"
+          }
+        },
+        "required": [
+          "misconception",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.undefined_quotient_implies_no_limit"
+          },
+          "topic": {
+            "const": "calculus.derivatives.definition"
+          }
+        },
+        "required": [
+          "misconception",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "derivatives.undefined_quotient_implies_no_limit"
+          },
+          "topic": {
+            "const": "limits.limit_existence"
+          }
+        },
+        "required": [
+          "misconception",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconception": {
+            "const": "limits.divide_by_zero_form"
+          },
+          "topic": {
+            "const": "calculus.derivatives.definition"
+          }
+        },
+        "required": [
+          "misconception",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
           }
         }
       }

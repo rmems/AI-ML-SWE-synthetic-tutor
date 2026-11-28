@@ -1,4 +1,4 @@
-# Misconception taxonomy — version 1.
+# Misconception taxonomy — version 2.
 #
 # The label set for synthetic student errors: every planted error in a dataset row
 # carries exactly one primary `id` from this file, and the simulator, problem
@@ -24,7 +24,7 @@
 #   diagnostic_question  what a tutor should ask to surface the misconception
 #   first_hint         hint-ladder level 1: the first hint a tutor should give
 #   topics             at least two curriculum topic IDs where it can appear
-version: 1
+version: 2
 misconceptions:
   - id: algebra.distribution_error
     status: active
@@ -215,6 +215,50 @@ misconceptions:
       - calculus.derivatives.quotient_rule
       - calculus.derivatives.rational_functions
 
+  - id: derivatives.secant_as_tangent
+    status: active
+    error_pattern: >-
+      Treats a correctly computed secant slope for one nonzero increment as
+      the exact instantaneous slope.
+    bites_at: >-
+      Interpreting a finite difference as the final derivative rather than an
+      estimate of the limiting slope.
+    wrong_attempt: |-
+      For f(x) = x² at x = 2, the secant with h = 1/10 has slope 41/10.
+      Student concludes f′(2) is exactly 41/10. Correct: f′(2) is 4.
+    correct_reasoning: >-
+      For h ≠ 0 the secant slope is 4 + h. Each finite h gives an approximation;
+      as h approaches zero, the slope approaches 4.
+    diagnostic_question: >-
+      Would a different nonzero step give the same slope, or a different estimate?
+    first_hint: >-
+      Compare slopes at more than one nonzero step before naming an exact slope.
+    topics:
+      - calculus.derivatives.definition
+      - calculus.derivatives.tangent_lines
+
+  - id: derivatives.undefined_quotient_implies_no_limit
+    status: active
+    error_pattern: >-
+      Correctly simplifies the difference quotient for nonzero increments but
+      insists its limit cannot exist because the original quotient is undefined at zero.
+    bites_at: >-
+      Interpreting the punctured-domain condition after correctly simplifying the quotient.
+    wrong_attempt: |-
+      For f(x) = x² at x = 2, student correctly finds the quotient 4 + h for
+      h ≠ 0. They conclude f′(2) does not exist because the unsimplified
+      quotient is undefined at h = 0. Correct: the limit is 4.
+    correct_reasoning: >-
+      A limit depends on nearby nonzero increments. The quotient need not be
+      defined at h = 0 for its nearby values to tend to 4.
+    diagnostic_question: >-
+      Does the limit ask what happens at zero or what happens close to zero?
+    first_hint: >-
+      Keep the increment nonzero and ask where the simplified slopes approach.
+    topics:
+      - calculus.derivatives.definition
+      - limits.limit_existence
+
   - id: functions.composition_order
     status: active
     error_pattern: >-
@@ -371,6 +415,7 @@ misconceptions:
       - limits.indeterminate_forms
       - limits.limit_evaluation
       - algebra.rational_expressions
+      - calculus.derivatives.definition
 
   - id: limits.infinity_indeterminate_form
     status: active

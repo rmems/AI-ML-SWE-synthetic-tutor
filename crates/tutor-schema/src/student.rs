@@ -230,6 +230,15 @@ impl StudentAttempt {
             ));
         }
         self.validate_provenance()?;
+        if self.misconception.is_some_and(|id| {
+            id.introduced_for_topic(&self.topic) > self.provenance.taxonomy_version
+        }) {
+            return Err(invalid(
+                "provenance.taxonomy_version",
+                "predates the attempt's misconception label",
+            ));
+        }
+
         self.validate_label()?;
         self.validate_turns()?;
         self.validate_teacher_variety()
@@ -483,7 +492,25 @@ fn semantic_attempt_constraints() -> Vec<serde_json::Value> {
             }
         })
     }));
+    constraints.extend(newer_taxonomy_constraints());
     constraints
+}
+
+fn newer_taxonomy_constraints() -> Vec<serde_json::Value> {
+    MisconceptionId::ALL.iter().flat_map(|id| {
+        id.topics().iter().filter_map(|topic| {
+            let version = id.introduced_for_topic(topic);
+            (version > 1).then(|| serde_json::json!({
+                "if": {
+                    "properties": {"misconception": {"const": id.as_str()}, "topic": {"const": topic}},
+                    "required": ["misconception", "topic"]
+                },
+                "then": {
+                    "properties": {"provenance": {"properties": {"taxonomy_version": {"minimum": version}}}}
+                }
+            }))
+        })
+    }).collect()
 }
 
 fn correctness_shape_constraint() -> serde_json::Value {

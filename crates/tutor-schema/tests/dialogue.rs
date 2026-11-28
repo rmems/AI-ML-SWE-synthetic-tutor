@@ -52,6 +52,28 @@ fn gold_rows_are_valid_and_round_trip() {
 }
 
 #[test]
+fn secant_labels_require_the_version_that_defined_the_topic_mapping() {
+    for id in [
+        "derivatives.secant_as_tangent",
+        "derivatives.undefined_quotient_implies_no_limit",
+        "limits.divide_by_zero_form",
+    ] {
+        let mut row = gold("chain");
+        row["topic"] = json!("calculus.derivatives.definition");
+        row["misconceptions"] = json!([id]);
+        row["provenance"]["taxonomy_version"] = json!(1);
+        assert!(
+            DialogueRow::from_value(row.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("predates the row's misconception label")
+        );
+        row["provenance"]["taxonomy_version"] = json!(2);
+        DialogueRow::from_value(row).expect("v2 secant topic mapping is valid");
+    }
+}
+
+#[test]
 fn gold_rows_cover_required_shapes() {
     let chain = DialogueRow::from_json(GOLD_ROWS[0]).unwrap();
     let sign = DialogueRow::from_json(GOLD_ROWS[1]).unwrap();
@@ -197,7 +219,7 @@ fn constraint_violations_are_rejected() {
         Box::new(|v| v["system_prompt_version"] = json!(2)),
         // Taxonomy version newer than supported.
         Box::new(|v| {
-            v["provenance"]["taxonomy_version"] = json!(2);
+            v["provenance"]["taxonomy_version"] = json!(tutor_schema::TAXONOMY_VERSION + 1);
         }),
         // Topic not among the misconception's taxonomy topics.
         Box::new(|v| v["topic"] = json!("algebra.polynomial_expansion")),
