@@ -22,7 +22,8 @@
         "taxonomy_version": {
           "description": "`version` of `schemas/taxonomy.yaml` the `misconceptions` labels were\ntaken from. Currently [`crate::TAXONOMY_VERSION`].",
           "format": "uint32",
-          "minimum": 0,
+          "maximum": 2,
+          "minimum": 1,
           "type": "integer"
         }
       },
@@ -296,7 +297,154 @@
   "$id": "https://github.com/rmems/AI-ML-SWE-synthetic-tutor/schemas/dialogue.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
-  "description": "One tutoring dialogue row (schema_version 1). Mirrors tutor_schema::DialogueRow; regenerate with `cargo run -p tutor-schema --example print_dialogue_schema`. The schema expresses shape; crates/tutor-schema and crates/tutor-validate enforce the turn-level policy constraints.",
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "misconceptions": {
+            "contains": {
+              "const": "derivatives.secant_as_tangent"
+            }
+          },
+          "topic": {
+            "const": "calculus.derivatives.definition"
+          }
+        },
+        "required": [
+          "misconceptions",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconceptions": {
+            "contains": {
+              "const": "derivatives.secant_as_tangent"
+            }
+          },
+          "topic": {
+            "const": "calculus.derivatives.tangent_lines"
+          }
+        },
+        "required": [
+          "misconceptions",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconceptions": {
+            "contains": {
+              "const": "derivatives.undefined_quotient_implies_no_limit"
+            }
+          },
+          "topic": {
+            "const": "calculus.derivatives.definition"
+          }
+        },
+        "required": [
+          "misconceptions",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconceptions": {
+            "contains": {
+              "const": "derivatives.undefined_quotient_implies_no_limit"
+            }
+          },
+          "topic": {
+            "const": "limits.limit_existence"
+          }
+        },
+        "required": [
+          "misconceptions",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "misconceptions": {
+            "contains": {
+              "const": "limits.divide_by_zero_form"
+            }
+          },
+          "topic": {
+            "const": "calculus.derivatives.definition"
+          }
+        },
+        "required": [
+          "misconceptions",
+          "topic"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provenance": {
+            "properties": {
+              "taxonomy_version": {
+                "minimum": 2
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "description": "One tutoring dialogue row (schema_version 1). Mirrors tutor_schema::DialogueRow; regenerate with `cargo run -p tutor-schema --example print_dialogue_schema`. The schema checks shape and taxonomy provenance; crates/tutor-schema and crates/tutor-validate enforce the turn-level policy constraints.",
   "properties": {
     "gold": {
       "description": "`true` only for hand-written exemplar rows under `datasets/gold/`.",

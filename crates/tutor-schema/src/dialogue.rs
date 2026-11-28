@@ -568,8 +568,8 @@ fn require_non_empty(field: &'static str, value: &str) -> Result<(), SchemaError
 
 /// The JSON Schema for [`DialogueRow`], generated from the types above.
 ///
-/// Post-processing pins `schema_version` to [`DIALOGUE_SCHEMA_VERSION`] and
-/// `topic` to the dotted-ID pattern, which `schemars` cannot express.
+/// Post-processing pins the schema version, the dotted topic pattern, and
+/// taxonomy version expectations that `schemars` cannot infer.
 pub fn dialogue_json_schema() -> serde_json::Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(DialogueRow))
         .expect("generated schema serializes");
@@ -586,8 +586,8 @@ pub fn dialogue_json_schema() -> serde_json::Value {
         serde_json::Value::String(
             "One tutoring dialogue row (schema_version 1). Mirrors tutor_schema::DialogueRow; \
              regenerate with `cargo run -p tutor-schema --example print_dialogue_schema`. \
-             The schema expresses shape; crates/tutor-schema and crates/tutor-validate enforce \
-             the turn-level policy constraints."
+             The schema checks shape and taxonomy provenance; crates/tutor-schema and \
+             crates/tutor-validate enforce the turn-level policy constraints."
                 .to_owned(),
         ),
     );
@@ -599,5 +599,41 @@ pub fn dialogue_json_schema() -> serde_json::Value {
         "type": "string",
         "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)*$"
     });
+    let taxonomy_version =
+        &mut schema["$defs"]["DialogueProvenance"]["properties"]["taxonomy_version"];
+    taxonomy_version["minimum"] = serde_json::json!(1);
+    taxonomy_version["maximum"] = serde_json::json!(crate::TAXONOMY_VERSION);
+    schema["allOf"] = serde_json::Value::Array(newer_taxonomy_constraints());
     schema
+}
+
+fn newer_taxonomy_constraints() -> Vec<serde_json::Value> {
+    MisconceptionId::ALL
+        .iter()
+        .flat_map(|id| {
+            id.topics().iter().filter_map(|topic| {
+                let version = id.introduced_for_topic(topic);
+                (version > 1).then(|| taxonomy_version_constraint(*id, topic, version))
+            })
+        })
+        .collect()
+}
+
+fn taxonomy_version_constraint(
+    id: MisconceptionId,
+    topic: &str,
+    minimum: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "if": {
+            "properties": {
+                "misconceptions": {"contains": {"const": id.as_str()}},
+                "topic": {"const": topic}
+            },
+            "required": ["misconceptions", "topic"]
+        },
+        "then": {
+            "properties": {"provenance": {"properties": {"taxonomy_version": {"minimum": minimum}}}}
+        }
+    })
 }

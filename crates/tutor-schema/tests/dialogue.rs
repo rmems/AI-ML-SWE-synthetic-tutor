@@ -41,6 +41,8 @@ fn committed_schema_matches_generated() {
 
 #[test]
 fn gold_rows_are_valid_and_round_trip() {
+    let schema = serde_json::from_str(COMMITTED_SCHEMA).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
     for (index, file) in GOLD_ROWS.iter().enumerate() {
         let row = DialogueRow::from_json(file).expect("gold row validates");
         assert!(row.gold);
@@ -48,11 +50,17 @@ fn gold_rows_are_valid_and_round_trip() {
         let encoded = serde_json::to_value(&row).expect("serializes");
         let decoded: Value = serde_json::from_str(file).expect("json");
         assert_eq!(encoded, decoded, "gold row {index} round-trips");
+        assert!(
+            validator.is_valid(&decoded),
+            "schema permits existing v1 gold"
+        );
     }
 }
 
 #[test]
 fn secant_labels_require_the_version_that_defined_the_topic_mapping() {
+    let schema = serde_json::from_str(COMMITTED_SCHEMA).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
     for id in [
         "derivatives.secant_as_tangent",
         "derivatives.undefined_quotient_implies_no_limit",
@@ -62,6 +70,7 @@ fn secant_labels_require_the_version_that_defined_the_topic_mapping() {
         row["topic"] = json!("calculus.derivatives.definition");
         row["misconceptions"] = json!([id]);
         row["provenance"]["taxonomy_version"] = json!(1);
+        assert!(!validator.is_valid(&row), "schema rejects v1 for {id}");
         assert!(
             DialogueRow::from_value(row.clone())
                 .unwrap_err()
@@ -69,6 +78,7 @@ fn secant_labels_require_the_version_that_defined_the_topic_mapping() {
                 .contains("predates the row's misconception label")
         );
         row["provenance"]["taxonomy_version"] = json!(2);
+        assert!(validator.is_valid(&row), "schema permits v2 for {id}");
         DialogueRow::from_value(row).expect("v2 secant topic mapping is valid");
     }
 }
