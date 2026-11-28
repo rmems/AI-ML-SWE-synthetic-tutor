@@ -173,11 +173,10 @@ fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
     (request, response)
 }
 
-#[cfg(any(target_os = "linux", windows))]
 #[test]
-fn openrouter_pins_and_options_are_bound_without_execution_claims() {
+fn prepared_openrouter_request_binds_pins_without_execution_claims() {
     let temp = Temp::new();
-    let (request, response) = handoff_fixture(&temp);
+    let (request, _) = handoff_fixture(&temp);
     let req: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
     assert_eq!(req["payload"]["version"], 2);
     assert_eq!(
@@ -196,6 +195,15 @@ fn openrouter_pins_and_options_are_bound_without_execution_claims() {
         req["payload"]["openrouter_provider"],
         serde_json::json!({"only":["deepseek"],"allow_fallbacks":false})
     );
+    assert_eq!(req["payload"]["send_authorized"], false);
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn openrouter_replay_keeps_routing_and_execution_unverified() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let req: Value = serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
     let out = temp.0.join("replay");
     assert_eq!(replay(&request, &response, &out).status.code(), Some(2));
     let candidate: Value =
