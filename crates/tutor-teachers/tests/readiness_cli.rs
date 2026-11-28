@@ -1,10 +1,13 @@
 //! Exercise the public command, deterministic artifacts and release refusal.
+#[cfg(target_os = "linux")]
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use serde_json::Value;
+#[cfg(target_os = "linux")]
 use tutor_build::{checks, input::InputLine};
+#[cfg(target_os = "linux")]
 use tutor_schema::Problem;
 
 struct Temp(PathBuf);
@@ -32,6 +35,7 @@ fn cli(args: &[&str]) -> Output {
         .unwrap()
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn mock_is_repeatable_validated_and_never_exportable() {
     let temp = Temp::new();
@@ -169,6 +173,7 @@ fn handoff_fixture(temp: &Temp) -> (PathBuf, PathBuf) {
     (request, response)
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn openrouter_pins_and_options_are_bound_without_execution_claims() {
     let temp = Temp::new();
@@ -259,6 +264,7 @@ fn replay(request: &std::path::Path, response: &std::path::Path, out: &std::path
     ])
 }
 
+#[cfg(target_os = "linux")]
 fn assert_replay_provenance(
     candidate: &Value,
     req: &Value,
@@ -289,6 +295,7 @@ fn assert_replay_provenance(
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_dialogue_digest(candidate: &Value) {
     assert_eq!(
         candidate["provenance"]["dialogue_sha256"],
@@ -296,6 +303,7 @@ fn assert_dialogue_digest(candidate: &Value) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn assert_admission_blocked(candidate: &Value, expected_code: &str) {
     let validator = jsonschema::validator_for(&tutor_schema::dialogue_json_schema()).unwrap();
     let problem = Problem::from_value(candidate["problem"].clone()).unwrap();
@@ -313,6 +321,7 @@ fn assert_admission_blocked(candidate: &Value, expected_code: &str) {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn hermes_handoff_replays_and_admission_stays_blocked() {
     let temp = Temp::new();
@@ -361,6 +370,7 @@ fn hermes_handoff_replays_and_admission_stays_blocked() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn recorded_response_keeps_deferred_admission_and_unverified_execution() {
     let temp = Temp::new();
@@ -473,6 +483,22 @@ fn artifact_commands_publish_without_parent_listing_permission() {
         assert!(out.join("report.json").is_file());
     }
     assert_eq!(std::fs::read_dir(&drop).unwrap().count(), 2);
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn artifact_commands_fail_closed_on_unsupported_platforms() {
+    let temp = Temp::new();
+    let (request, response) = handoff_fixture(&temp);
+    let out = temp.0.join("out");
+    for result in [
+        replay(&request, &response, &out),
+        cli(&["mock-smoke", "--out", out.to_str().unwrap()]),
+    ] {
+        assert_eq!(result.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&result.stderr).contains("requires Linux"));
+        assert!(!out.exists());
+    }
 }
 
 #[test]

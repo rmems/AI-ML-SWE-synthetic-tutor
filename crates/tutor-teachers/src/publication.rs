@@ -46,6 +46,7 @@ fn move_directory_new(_staged: &Path, _out: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn staging_io_error_leaves_no_output_and_can_be_retried() {
         let root = tempfile::tempdir().unwrap();
@@ -127,5 +128,23 @@ mod tests {
         move_directory_new(&staged, &out).unwrap();
         assert!(out.is_dir());
         assert!(!staged.exists());
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn unsupported_platform_does_not_publish_staged_files() {
+        let root = tempfile::tempdir().unwrap();
+        let out = root.path().join("out");
+        let error = publish_artifacts(&out, |staged| {
+            std::fs::write(staged.join("candidate.json"), b"candidate")?;
+            std::fs::write(staged.join("report.json"), b"report")?;
+            Ok(())
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
     }
 }
